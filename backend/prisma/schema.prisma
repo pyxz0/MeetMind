@@ -1,0 +1,91 @@
+generator client {
+  // 生成与本项目 Prisma Client 依赖兼容的客户端代码。
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // PostgreSQL 连接串由 prisma7.config.ts 的 DATABASE_URL 提供。
+  provider = "postgresql"
+}
+
+/// 会议处理阶段；当前保存成功的纪要使用 READY。
+enum MeetingStatus {
+  DRAFT
+  PROCESSING
+  READY
+  FAILED
+}
+
+/// 行动项的跟踪状态，供后续待办管理功能使用。
+enum TodoStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+/// 会议主记录：保存原始文本、生成纪要和创建时间。
+model Meeting {
+  /// 数据库自增主键，也是前端详情和删除接口使用的 ID。
+  id        Int           @id @default(autoincrement())
+  /// 会议显示名称；未提供标题时使用默认名称。
+  title     String        @default("未命名会议") @db.VarChar(200)
+  /// 用户输入的完整会议原文。
+  content   String        @db.Text
+  /// AI 生成的摘要，可为空以兼容尚未生成摘要的草稿。
+  summary   String?       @db.Text
+  /// 主记录状态，用于区分草稿、处理中、完成和失败。
+  status    MeetingStatus @default(READY)
+  /// 带时区的创建时间，映射为数据库的 snake_case 字段名。
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  /// 该会议提取出的关键决策，删除会议时一并删除。
+  decisions Decision[]
+  /// 该会议提取出的行动项，删除会议时一并删除。
+  todos     Todo[]
+
+  /// 常用历史列表按时间排序；状态筛选列表按状态和时间排序。
+  @@index([createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("meetings")
+}
+
+/// AI 从会议内容中提取的决策条目。
+model Decision {
+  id        Int      @id @default(autoincrement())
+  /// 所属会议的外键。
+  meetingId Int      @map("meeting_id")
+  /// 决策的原文描述。
+  content   String   @db.Text
+  /// 同一会议内的展示顺序。
+  sortOrder Int      @default(0) @map("sort_order")
+  /// 删除所属会议时级联删除此决策。
+  meeting   Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  /// 按会议读取并按录入顺序展示决策。
+  @@index([meetingId, sortOrder])
+  @@map("meeting_decisions")
+}
+
+/// AI 从会议内容中提取的待办或行动项。
+model Todo {
+  id        Int        @id @default(autoincrement())
+  /// 所属会议的外键。
+  meetingId Int        @map("meeting_id")
+  /// 需要完成的任务描述。
+  content   String     @db.Text
+  /// 负责人可能未被会议原文明确指定。
+  assignee  String?    @db.VarChar(120)
+  /// 保留自然语言截止时间，例如“下周一”，避免丢失模型原始表达。
+  deadline  String?    @db.VarChar(120)
+  /// 待办处理状态，默认处于未开始状态。
+  status    TodoStatus @default(OPEN)
+  /// 同一会议内的展示顺序。
+  sortOrder Int        @default(0) @map("sort_order")
+  /// 删除所属会议时级联删除此待办。
+  meeting   Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  /// 加速会议内排序查询和按状态筛选待办。
+  @@index([meetingId, sortOrder])
+  @@index([status])
+  @@map("meeting_todos")
+}

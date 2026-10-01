@@ -1,0 +1,22 @@
+services:
+  # 本地开发数据库；数据通过命名卷保留在容器重启之后。
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meetmind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meetmind_local_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-meetmind}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - meetmind-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # 等数据库接受连接后再报告容器健康状态。
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  meetmind-postgres-data:
