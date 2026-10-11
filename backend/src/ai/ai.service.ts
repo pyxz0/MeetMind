@@ -10,9 +10,9 @@ export class AiService {
   private readonly client: OpenAI;
 
   constructor(
-  private readonly prisma: PrismaService,
-) {
-  this.client = new OpenAI({
+    private readonly prisma: PrismaService,
+  ) {
+    this.client = new OpenAI({
       apiKey: process.env.DEEPSEEK_API_KEY,
       baseURL: 'https://api.deepseek.com',
     });
@@ -23,14 +23,46 @@ export class AiService {
       throw new Error('会议内容不能为空');
     }
 
-    try {
-      const response = await this.client.chat.completions.create({
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-flash',
+    // 保存当前会议 ID。
+    // 即使后面的 AI 调用失败，也可以把这条会议标记为 FAILED。
+    let meetingId: number | null = null;
 
-        messages: [
-          {
-            role: 'system',
-            content: `
+    try {
+      /**
+       * 第一步：
+       * 先保存会议原文。
+       *
+       * 此时 AI 还没有生成结果，所以状态设置为 PROCESSING。
+       */
+      const processingMeeting = await this.prisma.meeting.create({
+        data: {
+          title: 'AI生成会议纪要',
+          content,
+          summary: null,
+          status: 'PROCESSING',
+        },
+      });
+
+      meetingId = processingMeeting.id;
+
+      console.log(
+        `会议 ${meetingId} 已保存，开始调用 DeepSeek...`,
+      );
+
+      /**
+       * 第二步：
+       * 调用 DeepSeek。
+       */
+      const response =
+        await this.client.chat.completions.create({
+          model:
+            process.env.DEEPSEEK_MODEL ||
+            'deepseek-flash',
+
+          messages: [
+            {
+              role: 'system',
+              content: `
 你是一个专业的智能会议纪要助手。
 
 请分析用户提供的会议内容，并提取以下信息。
@@ -81,83 +113,373 @@ deadline：截止时间
 10. 必须输出 JSON。
 11. 不要输出 Markdown。
 `,
+            },
+            {
+              role: 'user',
+              content: content,
+            },
+          ],
+
+          response_format: {
+            type: 'json_object',
           },
-          {
-            role: 'user',
-            content: content,
-          },
-        ],
 
-        response_format: {
-          type: 'json_object',
-        },
+          stream: false,
+        });
 
-        stream: false,
-      });
-
+      /**
+       * 第三步：
+       * 获取 AI 返回结果并解析 JSON。
+       */
       const result =
         response.choices[0]?.message?.content || '{}';
 
       const data = JSON.parse(result);
 
-      const meeting = await this.prisma.meeting.create({
-  data: {
-    title: 'AI生成会议纪要',
-    content,
-    summary: data.summary || '',
-    status: 'READY',
-
-    decisions: {
-      create: (data.decisions || []).map(
-        (decision: string, index: number) => ({
-          content: decision,
-          sortOrder: index,
-        }),
-      ),
-    },
-
-    todos: {
-      create: (data.todos || []).map(
-        (
-          todo: {
-            task: string;
-            assignee: string;
-            deadline: string;
+      /**
+       * 第四步：
+       * AI 成功后更新原来的 PROCESSING 记录。
+       *
+       * 同时创建决策和待办。
+       */
+      const meeting =
+        await this.prisma.meeting.update({
+          where: {
+            id: meetingId,
           },
-          index: number,
-        ) => ({
-          content: todo.task,
-          assignee: todo.assignee,
-          deadline: todo.deadline,
-          sortOrder: index,
-        }),
-      ),
-    },
-  },
 
-  include: {
-    decisions: true,
-    todos: true,
-  },
-});
+          data: {
+            summary: data.summary || '',
+            status: 'READY',
 
-return meeting;
-    } catch (error: any) {
-      console.error(
-        '================ AI API 调用失败 ================',
+            decisions: {
+              create: (
+                Array.isArray(data.decisions)
+                  ? data.decisions
+                  : []
+              ).map(
+                (
+                  decision: string,
+                  index: number,
+                ) => ({
+                  content: decision,
+                  sortOrder: index,
+                }),
+              ),
+            },
+
+            todos: {
+              create: (
+                Array.isArray(data.todos)
+                  ? data.todos
+                  : []
+              ).map(
+                (
+                  todo: {
+                    task: string;
+                    assignee: string;
+                    deadline: string;
+                  },
+                  index: number,
+                ) => ({
+                  content: todo.task,
+                  assignee:
+                    todo.assignee || '未指定',
+                  deadline:
+                    todo.deadline || '未指定',
+                  sortOrder: index,
+                }),
+              ),
+            },
+          },
+
+          include: {
+            decisions: true,
+            todos: true,
+          },
+        });
+
+      console.log(
+        `会议 ${meetingId} AI 纪要生成成功`,
       );
 
-      console.error('错误信息:', error?.message);
-      console.error('错误状态:', error?.status);
-      console.error('错误类型:', error?.type);
-      console.error('完整错误:', error);
+      return meeting;
+    } catch (error: any) {
+      console.error(
+        '================ AI 生成失败 ================',
+      );
 
       console.error(
-        '================================================',
+        '会议 ID:',
+        meetingId,
+      );
+
+      console.error(
+        '错误信息:',
+        error?.message,
+      );
+
+      console.error(
+        '错误状态:',
+        error?.status,
+      );
+
+      console.error(
+        '错误类型:',
+        error?.type,
+      );
+
+      console.error(
+        '完整错误:',
+        error,
+      );
+
+      /**
+       * AI 调用失败时：
+       * 保留会议原文，只把状态改成 FAILED。
+       */
+      if (meetingId !== null) {
+        try {
+          await this.prisma.meeting.update({
+            where: {
+              id: meetingId,
+            },
+
+            data: {
+              status: 'FAILED',
+            },
+          });
+
+          console.log(
+            `会议 ${meetingId} 已标记为 FAILED`,
+          );
+        } catch (statusError) {
+          console.error(
+            '更新会议 FAILED 状态失败:',
+            statusError,
+          );
+        }
+      }
+
+      console.error(
+        '=============================================',
       );
 
       throw new InternalServerErrorException(
-        error?.message || 'DeepSeek API 调用失败',
+        error?.message ||
+        'DeepSeek API 调用失败',
+      );
+    }
+  }
+  /**
+ * 重新生成已有会议的 AI 纪要。
+ *
+ * 不创建新的会议记录，保留原来的会议 ID 和会议原文。
+ */
+  async regenerateMeetingSummary(id: number) {
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id },
+      include: {
+        decisions: true,
+        todos: true,
+      },
+    });
+
+    if (!meeting) {
+      throw new Error('会议记录不存在');
+    }
+
+    if (!meeting.content?.trim()) {
+      throw new Error('会议原文为空，无法重新生成');
+    }
+
+    try {
+      /**
+       * 第一步：
+       * 将会议状态改为 PROCESSING。
+       */
+      await this.prisma.meeting.update({
+        where: { id },
+        data: {
+          status: 'PROCESSING',
+        },
+      });
+
+      /**
+       * 第二步：
+       * 删除之前可能存在的 AI 结果。
+       *
+       * 防止重新生成后出现重复的决策和待办。
+       */
+      await this.prisma.decision.deleteMany({
+        where: {
+          meetingId: id,
+        },
+      });
+
+      await this.prisma.todo.deleteMany({
+        where: {
+          meetingId: id,
+        },
+      });
+
+      /**
+       * 第三步：
+       * 调用 DeepSeek。
+       */
+      const response =
+        await this.client.chat.completions.create({
+          model:
+            process.env.DEEPSEEK_MODEL ||
+            'deepseek-flash',
+
+          messages: [
+            {
+              role: 'system',
+              content: `
+你是一个专业的智能会议纪要助手。
+
+请分析用户提供的会议内容，并提取以下信息。
+
+必须返回合法的 JSON。
+
+JSON 必须包含以下三个字段：
+
+summary：会议内容摘要，字符串类型。
+
+decisions：会议中已经确定的决策，字符串数组。
+
+todos：会议中的待办事项，对象数组。
+
+todos 中每个对象必须包含：
+
+task：任务名称
+assignee：负责人
+deadline：截止时间
+
+规则：
+
+1. summary 必须是字符串。
+2. decisions 必须是字符串数组。
+3. todos 必须是对象数组。
+4. task、assignee、deadline 都必须是字符串。
+5. 如果没有明确决策，decisions 返回空数组。
+6. 如果没有明确负责人，assignee 填写“未指定”。
+7. 如果没有明确截止时间，deadline 填写“未指定”。
+8. 只能根据会议原文提取信息。
+9. 不允许编造会议中不存在的信息。
+10. 必须输出 JSON。
+11. 不要输出 Markdown。
+`,
+            },
+            {
+              role: 'user',
+              content: meeting.content,
+            },
+          ],
+
+          response_format: {
+            type: 'json_object',
+          },
+
+          stream: false,
+        });
+
+      /**
+       * 第四步：
+       * 解析 AI 结果。
+       */
+      const result =
+        response.choices[0]?.message?.content || '{}';
+
+      const data = JSON.parse(result);
+
+      /**
+       * 第五步：
+       * 更新原会议记录。
+       */
+      const updatedMeeting =
+        await this.prisma.meeting.update({
+          where: {
+            id,
+          },
+
+          data: {
+            summary: data.summary || '',
+            status: 'READY',
+
+            decisions: {
+              create: (
+                Array.isArray(data.decisions)
+                  ? data.decisions
+                  : []
+              ).map(
+                (
+                  decision: string,
+                  index: number,
+                ) => ({
+                  content: decision,
+                  sortOrder: index,
+                }),
+              ),
+            },
+
+            todos: {
+              create: (
+                Array.isArray(data.todos)
+                  ? data.todos
+                  : []
+              ).map(
+                (
+                  todo: {
+                    task: string;
+                    assignee: string;
+                    deadline: string;
+                  },
+                  index: number,
+                ) => ({
+                  content: todo.task,
+                  assignee:
+                    todo.assignee || '未指定',
+                  deadline:
+                    todo.deadline || '未指定',
+                  sortOrder: index,
+                }),
+              ),
+            },
+          },
+
+          include: {
+            decisions: true,
+            todos: true,
+          },
+        });
+
+      console.log(
+        `会议 ${id} 重新生成成功`,
+      );
+
+      return updatedMeeting;
+    } catch (error: any) {
+      console.error(
+        `会议 ${id} 重新生成失败:`,
+        error,
+      );
+
+      /**
+       * 保留会议原文，只将状态恢复为 FAILED。
+       */
+      await this.prisma.meeting.update({
+        where: { id },
+
+        data: {
+          status: 'FAILED',
+        },
+      });
+
+      throw new InternalServerErrorException(
+        error?.message ||
+        '重新生成会议纪要失败',
       );
     }
   }

@@ -31,13 +31,13 @@ defineProps<{
         class="decision-list"
       >
         <el-tag
-          v-for="item in result.decisions"
-          :key="item.id || item.content"
-          class="tag"
-          type="success"
-        >
-          {{ item.content }}
-        </el-tag>
+  v-for="(item, index) in result.decisions"
+  :key="index"
+  class="tag"
+  type="success"
+>
+  {{ typeof item === 'string' ? item : (item as any).content }}
+</el-tag>
       </div>
 
       <el-empty

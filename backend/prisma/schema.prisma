@@ -16,6 +16,13 @@ enum MeetingStatus {
   FAILED
 }
 
+enum MeetingCompletionStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
 /// 行动项的跟踪状态，供后续待办管理功能使用。
 enum TodoStatus {
   OPEN
@@ -43,6 +50,8 @@ model Meeting {
   /// 该会议提取出的行动项，删除会议时一并删除。
   todos     Todo[]
 
+  completionStatus MeetingCompletionStatus @default(NOT_STARTED)
+
   /// 常用历史列表按时间排序；状态筛选列表按状态和时间排序。
   @@index([createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
@@ -51,15 +60,15 @@ model Meeting {
 
 /// AI 从会议内容中提取的决策条目。
 model Decision {
-  id        Int      @id @default(autoincrement())
+  id        Int     @id @default(autoincrement())
   /// 所属会议的外键。
-  meetingId Int      @map("meeting_id")
+  meetingId Int     @map("meeting_id")
   /// 决策的原文描述。
-  content   String   @db.Text
+  content   String  @db.Text
   /// 同一会议内的展示顺序。
-  sortOrder Int      @default(0) @map("sort_order")
+  sortOrder Int     @default(0) @map("sort_order")
   /// 删除所属会议时级联删除此决策。
-  meeting   Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  meeting   Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
 
   /// 按会议读取并按录入顺序展示决策。
   @@index([meetingId, sortOrder])

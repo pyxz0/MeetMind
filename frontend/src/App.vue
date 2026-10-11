@@ -1,6 +1,17 @@
+<script setup lang="ts">
+import { onMounted } from 'vue'
+import { provideDraftStore } from './composables/draftStore'
+
+const draftStore = provideDraftStore()
+
+onMounted(async () => {
+  await draftStore.refresh()
+})
+</script>
+
 <template>
   <div class="app">
-    <!-- 全局导航负责在纪要生成页和历史记录页之间切换。 -->
+    <!-- 全局导航负责在纪要生成页、数据看板、历史记录和草稿箱之间切换。 -->
     <header class="navbar">
       <div class="navbar-inner">
 
@@ -21,17 +32,41 @@
           </router-link>
 
           <router-link
+            to="/dashboard"
+            class="nav-item"
+          >
+            数据看板
+          </router-link>
+
+          <router-link
             to="/history"
             class="nav-item"
           >
             历史会议
+          </router-link>
+
+          <router-link
+            to="/drafts"
+            class="nav-item draft-nav-item"
+          >
+            <span>草稿箱</span>
+
+            <span
+              v-if="draftStore.count > 0"
+              class="draft-count"
+            >
+              {{
+                draftStore.count > 99
+                  ? '99+'
+                  : draftStore.count
+              }}
+            </span>
           </router-link>
         </nav>
 
       </div>
     </header>
 
-    <!-- 当前路由页面渲染在这里，导航栏在页面切换时保持不变。 -->
     <main>
       <router-view />
     </main>
@@ -124,6 +159,30 @@ a {
 
 .nav-item.router-link-active {
   color: #409eff;
+  font-weight: 600;
+}
+
+.draft-nav-item {
+  position: relative;
+  gap: 6px;
+}
+
+.draft-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 10px;
+
+  background: #f56c6c;
+  color: #ffffff;
+
+  font-size: 11px;
+  line-height: 18px;
   font-weight: 600;
 }
 </style>

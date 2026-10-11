@@ -1,0 +1,35 @@
+### 测试：将待办标记为已完成
+PATCH http://localhost:3000/api/meetings/todos/1/status
+Content-Type: application/json
+
+{
+  "status": "COMPLETED"
+}
+### 新增会议待办
+POST http://localhost:3000/api/meetings/1/todos
+Content-Type: application/json
+
+{
+  "content": "完成会议纪要页面优化",
+  "assignee": "张三",
+  "deadline": "下周一"
+}
+### 删除指定待办
+DELETE http://localhost:3000/api/meetings/todos/9
+### 编辑待办事项
+PATCH http://localhost:3000/api/meetings/todos/1
+Content-Type: application/json
+
+{
+  "content": "完成会议纪要页面优化（已修改）",
+  "assignee": "张三",
+  "deadline": "2026-10-05"
+}
+### 修改会议标题
+PATCH http://localhost:3000/api/meetings/2
+Content-Type: application/json
+
+{
+  "title": "MeetMind 产品需求评审会议"
+}
+POST http://localhost:3000/api/ai/regenerate/2
