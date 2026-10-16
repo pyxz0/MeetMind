@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowDown } from '@element-plus/icons-vue'
 
 import {
   getDraftMeetings,
@@ -18,6 +19,28 @@ const draftStore = useDraftStore()
 const drafts = ref<MeetingRecord[]>([])
 const loading = ref(false)
 const regeneratingId = ref<number | null>(null)
+
+/**
+ * 已被用户手动折叠的草稿 ID 集合。
+ *
+ * 与历史会议页一致：记录「折叠项」，因此草稿默认展开，
+ * 用户手动折叠后以用户操作为准。
+ */
+const collapsedIds = ref<Set<number>>(new Set())
+
+const isExpanded = (id: number) => !collapsedIds.value.has(id)
+
+const toggleExpanded = (id: number) => {
+  const next = new Set(collapsedIds.value)
+
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
+
+  collapsedIds.value = next
+}
 
 /** 加载草稿箱 */
 const loadDrafts = async () => {
@@ -200,23 +223,41 @@ onMounted(loadDrafts)
 
         <!-- 草稿列表 -->
         <div v-else class="draft-list">
-          <el-card v-for="meeting in drafts" :key="meeting.id" class="draft-card" shadow="hover">
-            <div class="draft-header">
+          <el-card v-for="meeting in drafts" :key="meeting.id"
+            :class="['draft-card', { collapsed: !isExpanded(meeting.id) }]" shadow="hover">
+            <!-- 卡片头部即折叠开关；折叠后仅保留标题 -->
+            <div class="draft-header" @click="toggleExpanded(meeting.id)">
               <div class="draft-main">
                 <h2>
-                  {{ meeting.title || `会议 #${meeting.id}` }}
+                  <router-link :to="`/history/${meeting.id}`" class="draft-title-link" @click.stop>
+                    {{ meeting.title || `会议 #${meeting.id}` }}
+                  </router-link>
                 </h2>
 
-                <span class="draft-time">
+                <span v-if="isExpanded(meeting.id)" class="draft-time">
                   {{ formatDate(meeting.createdAt) }}
                 </span>
               </div>
 
-              <el-tag type="warning">
-                草稿
-              </el-tag>
+              <div class="draft-head-tags">
+                <el-tag type="warning">
+                  草稿
+                </el-tag>
+
+                <!-- 只显示箭头，不显示「展开/收起」文字 -->
+                <span
+                  class="collapse-toggle"
+                  :title="isExpanded(meeting.id) ? '收起' : '展开'"
+                  :aria-label="isExpanded(meeting.id) ? '收起' : '展开'"
+                >
+                  <el-icon :class="{ rotated: isExpanded(meeting.id) }">
+                    <ArrowDown />
+                  </el-icon>
+                </span>
+              </div>
             </div>
 
+            <div v-show="isExpanded(meeting.id)" class="draft-body">
             <div class="draft-content">
               <div class="label">
                 📝 会议原文
@@ -250,6 +291,7 @@ onMounted(loadDrafts)
                 删除
               </el-button>
             </div>
+            </div>
           </el-card>
         </div>
 
@@ -260,7 +302,7 @@ onMounted(loadDrafts)
 
 <style scoped>
 .draft-page {
-  min-height: calc(100vh - 64px);
+  min-height: 100%;
   background: #f5f7fa;
   padding: 40px 20px 60px;
 }
@@ -312,16 +354,72 @@ onMounted(loadDrafts)
   gap: 16px;
   padding-bottom: 18px;
   border-bottom: 1px solid #ebeef5;
+  cursor: pointer;
+}
+
+/* 折叠态没有内容区，头部不需要下边框与内边距 */
+.draft-card.collapsed .draft-header {
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 .draft-main {
   min-width: 0;
+  flex: 1;
 }
 
 .draft-main h2 {
   margin: 0 0 6px;
   font-size: 18px;
   color: #303133;
+}
+
+/* 折叠时标题没有下方时间，去掉多余留白 */
+.draft-card.collapsed .draft-main h2 {
+  margin-bottom: 0;
+}
+
+/* 标题可直接点进详情，不需要先展开 */
+.draft-title-link {
+  color: #303133;
+  transition: color 0.2s;
+}
+
+.draft-title-link:hover {
+  color: #409eff;
+}
+
+.draft-head-tags {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #909399;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.collapse-toggle:hover {
+  color: #409eff;
+  background: #f0f2f5;
+}
+
+.collapse-toggle .el-icon {
+  transition: transform 0.2s;
+}
+
+.collapse-toggle .el-icon.rotated {
+  transform: rotate(180deg);
 }
 
 .draft-time {

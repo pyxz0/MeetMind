@@ -15,6 +15,84 @@ const loading = ref(false)
 
 const router = useRouter()
 
+/**
+ * 「待办完成情况」卡片的展示维度。
+ *
+ * todos   —— 待办视角：待办整体完成率（环形图）
+ * meeting —— 会议视角：正式会议按完成状态的分布（堆叠条形图）
+ */
+const completionMode = ref<'todos' | 'meeting'>('todos')
+
+/** 正式会议总数（后端统计已排除草稿与 AI 失败记录） */
+const meetingCompletionTotal = computed(() => {
+    const s = stats.value
+
+    if (!s) {
+        return 0
+    }
+
+    return (
+        s.notStartedMeetings +
+        s.inProgressMeetings +
+        s.completedMeetings +
+        s.cancelledMeetings
+    )
+})
+
+/**
+ * 会议完成情况的四个分段。
+ *
+ * 颜色与历史会议页的状态色保持一致，便于跨页面对照。
+ */
+const meetingCompletionSegments = computed(() => {
+    const s = stats.value
+
+    if (!s) {
+        return []
+    }
+
+    return [
+        { key: 'NOT_STARTED', label: '未开始', count: s.notStartedMeetings, color: '#909399' },
+        { key: 'IN_PROGRESS', label: '进行中', count: s.inProgressMeetings, color: '#e6a23c' },
+        { key: 'COMPLETED', label: '已完成', count: s.completedMeetings, color: '#67c23a' },
+        { key: 'CANCELLED', label: '已取消', count: s.cancelledMeetings, color: '#f56c6c' },
+    ]
+})
+
+/**
+ * 条形图只渲染数量大于 0 的分段。
+ *
+ * 若把 0 值分段也渲染成 0 宽度元素，:first-child/:last-child 的圆角
+ * 会落在看不见的元素上，导致可见的首尾分段没有圆角。
+ */
+const barSegments = computed(() =>
+    meetingCompletionSegments.value.filter(segment => segment.count > 0)
+)
+
+/** 某个分段占全部会议的宽度百分比 */
+const segmentWidth = (count: number) => {
+    if (meetingCompletionTotal.value === 0 || count === 0) {
+        return '0%'
+    }
+
+    return `${(count / meetingCompletionTotal.value) * 100}%`
+}
+
+/** 会议完成率（不把已取消计入分母，否则取消会议会拉低完成率，口径失真） */
+const meetingCompletionRate = computed(() => {
+    const s = stats.value
+
+    if (!s) {
+        return 0
+    }
+
+    const effective = meetingCompletionTotal.value - s.cancelledMeetings
+
+    return effective > 0
+        ? Math.round((s.completedMeetings / effective) * 100)
+        : 0
+})
+
 /** 待办完成率 */
 const todoCompletionRate = computed(() => {
     if (!stats.value || stats.value.totalTodos === 0) {
@@ -234,20 +312,92 @@ onMounted(loadStats)
 
                     <el-card class="overview-card" shadow="never">
                         <template #header>
-                            <span>待办完成情况</span>
+                            <div class="overview-header">
+                                <span>完成情况</span>
+
+                                <!-- 切换统计维度：待办完成情况 / 会议完成情况 -->
+                                <el-segmented
+                                    v-model="completionMode"
+                                    size="small"
+                                    :options="[
+                                        { label: '待办完成情况', value: 'todos' },
+                                        { label: '会议完成情况', value: 'meeting' }
+                                    ]"
+                                />
+                            </div>
                         </template>
 
-                        <div class="todo-progress">
-                            <el-progress type="dashboard" :percentage="todoCompletionRate" />
-                        </div>
+                        <!-- 待办完成情况 -->
+                        <template v-if="completionMode === 'todos'">
+                            <div class="todo-progress">
+                                <el-progress type="dashboard" :percentage="todoCompletionRate" />
+                            </div>
 
-                        <div class="progress-text">
-                            已完成
-                            {{ stats.completedTodos }}
-                            /
-                            {{ stats.totalTodos }}
-                            项
-                        </div>
+                            <div class="progress-text">
+                                已完成
+                                {{ stats.completedTodos }}
+                                /
+                                {{ stats.totalTodos }}
+                                项
+                            </div>
+                        </template>
+
+                        <!-- 会议完成情况 -->
+                        <template v-else>
+                            <el-empty
+                                v-if="meetingCompletionTotal === 0"
+                                description="暂无可统计的会议"
+                            />
+
+                            <template v-else>
+                                <div class="completion-chart">
+                                    <div
+                                        class="completion-bar"
+                                        role="img"
+                                        :aria-label="`会议完成情况：共 ${meetingCompletionTotal} 场`"
+                                    >
+                                        <div
+                                            v-for="segment in barSegments"
+                                            :key="segment.key"
+                                            class="completion-segment"
+                                            :style="{
+                                                width: segmentWidth(segment.count),
+                                                background: segment.color
+                                            }"
+                                            :title="`${segment.label} ${segment.count} 场`"
+                                        />
+                                    </div>
+
+                                    <div class="completion-legend">
+                                        <div
+                                            v-for="segment in meetingCompletionSegments"
+                                            :key="segment.key"
+                                            class="legend-item"
+                                        >
+                                            <span
+                                                class="legend-dot"
+                                                :style="{ background: segment.color }"
+                                            />
+
+                                            <span class="legend-label">
+                                                {{ segment.label }}
+                                            </span>
+
+                                            <strong class="legend-value">
+                                                {{ segment.count }}
+                                            </strong>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="progress-text">
+                                    共 {{ meetingCompletionTotal }} 场正式会议
+                                    <span class="completion-rate">
+                                        （完成率 {{ meetingCompletionRate }}%）
+                                    </span>
+                                </div>
+                            </template>
+                        </template>
                     </el-card>
 
                 </div>
@@ -415,7 +565,7 @@ onMounted(loadStats)
 }
 
 .dashboard-page {
-    min-height: calc(100vh - 64px);
+    min-height: 100%;
     background: #f5f7fa;
     padding: 40px 20px 60px;
 }
@@ -516,6 +666,77 @@ onMounted(loadStats)
     text-align: center;
     color: #606266;
     font-size: 14px;
+}
+
+/* 卡片标题行：标题 + 维度切换 */
+.overview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.completion-chart {
+    padding-top: 6px;
+}
+
+/* 堆叠条形图：用各状态占比表达会议完成情况 */
+.completion-bar {
+    display: flex;
+    width: 100%;
+    height: 26px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f0f2f5;
+}
+
+.completion-segment {
+    height: 100%;
+    transition: width 0.3s;
+}
+
+/* 没有数据的状态不占位，但仍保留圆角收口 */
+.completion-segment:first-child {
+    border-radius: 6px 0 0 6px;
+}
+
+.completion-segment:last-child {
+    border-radius: 0 6px 6px 0;
+}
+
+.completion-legend {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+    margin-top: 16px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #606266;
+}
+
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.legend-label {
+    flex: 1;
+}
+
+.legend-value {
+    color: #303133;
+    font-size: 14px;
+}
+
+.completion-rate {
+    color: #909399;
 }
 
 .info-card {

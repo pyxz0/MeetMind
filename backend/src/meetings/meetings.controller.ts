@@ -137,6 +137,19 @@ export class MeetingsController {
     );
   }
 
+  /** 置顶 / 取消置顶会议 */
+  @Patch(':id/pin')
+  updatePinned(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { pinned: boolean },
+  ) {
+    if (!body || typeof body.pinned !== 'boolean') {
+      throw new BadRequestException('pinned 必须是布尔值');
+    }
+
+    return this.meetingsService.updatePinned(id, body.pinned);
+  }
+
   /** 修改会议标题 */
   @Patch(':id')
   updateMeeting(

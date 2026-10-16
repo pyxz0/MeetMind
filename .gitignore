@@ -1,0 +1,52 @@
+# MeetMind 仓库根忽略规则
+#
+# 说明：三个子项目（backend / frontend / ai-service）各自已有 .gitignore，
+# 这里只补充仓库级别需要统一排除的内容。
+
+# ---------- 依赖与构建产物 ----------
+node_modules/
+dist/
+dist-ssr/
+build/
+coverage/
+*.tsbuildinfo
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---------- 环境变量与密钥 ----------
+# 绝不允许提交：这些文件含数据库口令与模型 API Key
+.env
+.env.bak
+.env.*.bak
+.env.local
+.env.*.local
+!.env.example
+
+# ---------- 运行时用户数据 ----------
+# 会议录音是运行时产生的数据，不入库
+uploads/
+
+# ---------- 编辑器与系统文件 ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ---------- 日志与临时文件 ----------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.temp
+.tmp

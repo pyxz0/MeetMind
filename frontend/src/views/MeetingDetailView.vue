@@ -13,6 +13,7 @@ import {
   updateMeetingCompletionStatus,
   type MeetingRecord
 } from '../api/meeting'
+import MeetingAudioPlayer from '../components/MeetingAudioPlayer.vue'
 const route = useRoute()
 const router = useRouter()
 
@@ -111,6 +112,29 @@ const formatDate = (date?: string) => {
   })
 }
 
+/**
+ * 待办状态变化后，后端会按“全部完成 → 会议已完成”的规则同步会议状态。
+ * 这里把同步结果立即写回本地，避免表头状态与待办列表不一致。
+ */
+const applyMeetingCompletionStatus = (
+  status?: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'
+) => {
+  if (!meeting.value || !status) {
+    return
+  }
+
+  if (meeting.value.completionStatus === status) {
+    return
+  }
+
+  meeting.value.completionStatus = status
+
+  // 只在“自动变成已完成”时额外提示，避免每次操作都弹消息
+  if (status === 'COMPLETED') {
+    ElMessage.success('全部待办已完成，会议状态已自动置为「已完成」')
+  }
+}
+
 /** 更新待办状态并保存到数据库 */
 const handleTodoStatusChange = async (
   todo: any,
@@ -124,9 +148,11 @@ const handleTodoStatusChange = async (
   const previousStatus = todo.status
 
   try {
-    await updateTodoStatus(todo.id, status)
+    const result = await updateTodoStatus(todo.id, status)
 
     todo.status = status
+
+    applyMeetingCompletionStatus(result?.meetingCompletionStatus)
 
     ElMessage.success('待办状态更新成功')
   } catch (error) {
@@ -398,6 +424,12 @@ onMounted(loadMeeting)
           {{ meeting.content || '暂无会议原文' }}
         </div>
       </el-card>
+
+      <!-- 录音放在原文旁边，方便边听边核对转写是否准确 -->
+      <MeetingAudioPlayer
+        :audio-url="meeting.audioUrl"
+        :duration-sec="meeting.audioDurationSec"
+      />
 
       <el-card class="section-card">
         <template #header>

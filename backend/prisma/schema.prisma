@@ -41,6 +41,14 @@ model Meeting {
   content   String        @db.Text
   /// AI 生成的摘要，可为空以兼容尚未生成摘要的草稿。
   summary   String?       @db.Text
+  /// 会议录音的站内相对路径，例如 uploads/xxx.webm。
+  /// 为空表示这场会议没有留存录音（例如纯文字输入）。
+  audioUrl  String?      @map("audio_url") @db.VarChar(255)
+  /// 录音时长（秒），与转写计时一致；暂停期间不计入。
+  audioDurationSec Int?  @map("audio_duration_sec")
+  /// 置顶时间；为空表示未置顶。
+  /// 用时间戳而非布尔值，多条置顶之间才能按“最近置顶优先”稳定排序。
+  pinnedAt  DateTime?    @map("pinned_at") @db.Timestamptz(3)
   /// 主记录状态，用于区分草稿、处理中、完成和失败。
   status    MeetingStatus @default(READY)
   /// 带时区的创建时间，映射为数据库的 snake_case 字段名。
@@ -55,6 +63,8 @@ model Meeting {
   /// 常用历史列表按时间排序；状态筛选列表按状态和时间排序。
   @@index([createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
+  /// 历史列表需要把已置顶的会议排在最前，并按置顶时间倒序。
+  @@index([pinnedAt(sort: Desc)])
   @@map("meetings")
 }
 
