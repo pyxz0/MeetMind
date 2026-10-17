@@ -5,11 +5,30 @@ import HistoryView from '../views/HistoryView.vue'
 import MeetingDetailView from '../views/MeetingDetailView.vue'
 import DraftsView from '../views/DraftsView.vue'
 import DashboardView from '../views/DashboardView.vue'
+import LoginView from '../views/LoginView.vue'
+import UsersView from '../views/UsersView.vue'
+import { authStore, type Permission } from '../stores/auth'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    /** 是否需要登录，默认 true */
+    requiresAuth?: boolean
+    /** 访问该页面所需的权限（满足任意一个即可） */
+    permissions?: Permission[]
+  }
+}
 
 const router = createRouter({
   history: createWebHistory(),
 
   routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: LoginView,
+      meta: { requiresAuth: false },
+    },
+
     {
       path: '/',
       name: 'home',
@@ -40,7 +59,55 @@ const router = createRouter({
       component: MeetingDetailView,
       props: true,
     },
+
+    {
+      path: '/users',
+      name: 'users',
+      component: UsersView,
+      meta: { permissions: ['user:read'] },
+    },
+
+    {
+      // 未匹配到的路径回首页，避免白屏
+      path: '/:pathMatch(.*)*',
+      redirect: '/',
+    },
   ],
+})
+
+/**
+ * 全局路由守卫。
+ *
+ * 前端守卫只负责体验（避免闪一下未授权页面），
+ * 真正的权限判定始终在后端 —— 前端隐藏按钮不等于安全。
+ */
+router.beforeEach((to) => {
+  const requiresAuth = to.meta.requiresAuth !== false
+
+  if (!requiresAuth) {
+    // 已登录还去登录页就直接回首页
+    if (to.name === 'login' && authStore.isAuthenticated.value) {
+      return { path: '/' }
+    }
+
+    return true
+  }
+
+  if (!authStore.isAuthenticated.value) {
+    return {
+      path: '/login',
+      query: { redirect: to.fullPath },
+    }
+  }
+
+  const required = to.meta.permissions
+
+  if (required?.length && !authStore.canAny(required)) {
+    // 无权访问时回首页；后端同样会拒绝，这里只是避免看到空页面
+    return { path: '/' }
+  }
+
+  return true
 })
 
 export default router

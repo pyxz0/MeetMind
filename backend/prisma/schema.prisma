@@ -31,6 +31,67 @@ enum TodoStatus {
   CANCELLED
 }
 
+/// 用户角色，三级分级。
+/// SUPER_ADMIN 管理管理员与系统；ADMIN 管理普通用户与全部会议；USER 只能管理自己的数据。
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+/// 会议共享权限：只读 / 可编辑。
+enum SharePermission {
+  READ
+  EDIT
+}
+
+/// 系统用户。密码只保存 bcrypt 哈希，永不落库明文。
+model User {
+  id           Int       @id @default(autoincrement())
+  /// 登录邮箱，全局唯一。
+  email        String    @unique @db.VarChar(160)
+  /// bcrypt 哈希；接口返回时永远剔除该字段。
+  passwordHash String    @map("password_hash") @db.VarChar(120)
+  /// 展示名称。
+  name         String    @db.VarChar(80)
+  role         Role      @default(USER)
+  /// 停用后无法登录，用于回收权限而不删除数据。
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  /// 自己创建的会议。
+  meetings     Meeting[]       @relation("MeetingOwner")
+  /// 别人共享给该用户的会议。
+  sharedWithMe MeetingShare[]  @relation("ShareRecipient")
+  /// 该用户做过的共享操作（用于追溯是谁授的权）。
+  sharesGiven  MeetingShare[]  @relation("ShareGrantor")
+
+  @@index([role])
+  @@map("users")
+}
+
+/// 会议共享关系：把某场会议授权给某个用户。
+/// 会议的所有者不写在这张表里，避免与 ownerId 双写产生不一致。
+model MeetingShare {
+  id         Int             @id @default(autoincrement())
+  meetingId  Int             @map("meeting_id")
+  userId     Int             @map("user_id")
+  permission SharePermission @default(READ)
+  /// 是谁授予的，便于审计。
+  grantedById Int            @map("granted_by_id")
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  meeting   Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user      User    @relation("ShareRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User    @relation("ShareGrantor", fields: [grantedById], references: [id], onDelete: Cascade)
+
+  /// 同一场会议对同一个用户只保留一条授权（重复分享等于更新权限）。
+  @@unique([meetingId, userId])
+  @@index([userId])
+  @@map("meeting_shares")
+}
+
 /// 会议主记录：保存原始文本、生成纪要和创建时间。
 model Meeting {
   /// 数据库自增主键，也是前端详情和删除接口使用的 ID。
@@ -60,11 +121,21 @@ model Meeting {
 
   completionStatus MeetingCompletionStatus @default(NOT_STARTED)
 
+  /// 会议归属者。所有数据隔离都以该字段为准：
+  /// 用户只能看到自己拥有的、或被共享给自己的会议。
+  ownerId Int  @map("owner_id")
+  owner   User @relation("MeetingOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  /// 该会议对其他用户的共享授权。
+  shares MeetingShare[]
+
   /// 常用历史列表按时间排序；状态筛选列表按状态和时间排序。
   @@index([createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
   /// 历史列表需要把已置顶的会议排在最前，并按置顶时间倒序。
   @@index([pinnedAt(sort: Desc)])
+  /// 数据隔离的核心查询：按归属者过滤列表。
+  @@index([ownerId, createdAt(sort: Desc)])
   @@map("meetings")
 }
 

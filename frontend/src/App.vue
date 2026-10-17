@@ -1,16 +1,55 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessageBox } from 'element-plus'
 import { provideDraftStore } from './composables/draftStore'
+import { authStore } from './stores/auth'
 
 const draftStore = provideDraftStore()
+const route = useRoute()
+const router = useRouter()
+
+/**
+ * 登录页不渲染侧边栏与内容框架。
+ *
+ * 用 route.meta.requiresAuth === false 判断，
+ * 后续再加公开页面时无需改这里。
+ */
+const isPublicPage = computed(() => route.meta.requiresAuth === false)
+
+const currentUser = computed(() => authStore.user)
+
+/** 只有具备 user:read 的角色才看到「用户管理」入口 */
+const canManageUsers = computed(() => authStore.can('user:read'))
+
+const handleLogout = async () => {
+  try {
+    await ElMessageBox.confirm('确定要退出登录吗？', '退出登录', {
+      confirmButtonText: '退出',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+
+  authStore.clear()
+  await router.replace('/login')
+}
 
 onMounted(async () => {
-  await draftStore.refresh()
+  // 未登录时（登录页）不拉草稿数量，避免无谓的 401
+  if (authStore.isAuthenticated.value) {
+    await draftStore.refresh()
+  }
 })
 </script>
 
 <template>
-  <div class="app">
+  <!-- 登录页：整页渲染，不带侧边栏 -->
+  <router-view v-if="isPublicPage" />
+
+  <div v-else class="app">
     <!-- 竖向侧边导航：在纪要生成页、数据看板、历史记录和草稿箱之间切换。 -->
     <aside class="sidebar">
       <router-link
@@ -64,7 +103,39 @@ onMounted(async () => {
             }}
           </span>
         </router-link>
+
+        <router-link
+          v-if="canManageUsers"
+          to="/users"
+          class="nav-item"
+        >
+          <span class="nav-icon">👥</span>
+          <span class="nav-label">用户管理</span>
+        </router-link>
       </nav>
+
+      <!-- 当前登录用户与退出入口，固定在侧边栏底部 -->
+      <div v-if="currentUser" class="user-panel">
+        <div class="user-main">
+          <span class="user-avatar">
+            {{ currentUser.name.slice(0, 1) }}
+          </span>
+
+          <div class="user-meta">
+            <div class="user-name" :title="currentUser.name">
+              {{ currentUser.name }}
+            </div>
+
+            <div class="user-role">
+              {{ currentUser.roleLabel }}
+            </div>
+          </div>
+        </div>
+
+        <el-button link type="danger" @click="handleLogout">
+          退出登录
+        </el-button>
+      </div>
     </aside>
 
     <main class="main">
@@ -223,6 +294,60 @@ a {
   font-size: 11px;
   line-height: 18px;
   font-weight: 600;
+}
+
+/* 侧边栏底部的当前用户区 */
+.user-panel {
+  margin-top: auto;
+  padding: 14px 16px 16px;
+  border-top: 1px solid #f2f3f5;
+
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.user-avatar {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 50%;
+  background: #ecf5ff;
+  color: #409eff;
+
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.user-meta {
+  min-width: 0;
+}
+
+.user-name {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-role {
+  color: #909399;
+  font-size: 12px;
 }
 
 /**

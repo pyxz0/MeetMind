@@ -6,6 +6,25 @@ MeetMind 是一个面向会议内容整理场景的全栈 AI 应用。用户输�
 
 ## ✨ 核心功能
 
+### 登录与权限分级
+
+采用 JWT 认证 + 三级 RBAC + 资源级共享授权两层模型。
+
+| 能力 | 用户 USER | 管理员 ADMIN | 超级管理员 SUPER_ADMIN |
+|---|:---:|:---:|:---:|
+| 会议读写 | 仅自己的 | 全部 | 全部 |
+| 共享自己的会议 | ✅ | ✅ | ✅ |
+| 删除任意会议 | ❌ | ✅ | ✅ |
+| 查看用户列表 | ❌ | ✅ | ✅ |
+| 创建/停用普通用户 | ❌ | ✅ | ✅ |
+| 管理管理员账号 | ❌ | ❌ | ✅ |
+| 提升他人为超管 | ❌ | ❌ | ✅ |
+
+- **数据隔离**：每场会议有唯一归属者，普通用户只能看到自己的与被共享给自己的会议
+- **共享授权**：会议拥有者可把会议共享给其他人，并选择「只读」或「可编辑」
+- **权限即时生效**：守卫每次请求都回库校验用户状态，停用账号或降级角色后旧 token 立刻失效
+- **防越权设计**：无权访问返回 404 而非 403，避免通过状态码差异探测会议是否存在；管理员看不到也管不到超管账号
+
 ### AI 会议纪要生成
 
 - 输入会议原始内容
@@ -219,9 +238,30 @@ DATABASE_URL="postgresql://postgres:你的数据库密码@localhost:5432/meetmin
 
 DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 DEEPSEEK_MODEL="deepseek-flash"
+
+# JWT 签名密钥，必填，否则服务启动失败
+# 生成：python -c "import secrets; print(secrets.token_urlsafe(48))"
+JWT_SECRET="随机生成的强密钥"
 ```
 
 > `.env` 只用于本地开发，**不要提交到 GitHub**。
+
+### 初始账号
+
+首次迁移会创建种子超级管理员（迁移 SQL 内固定 id=1）：
+
+```text
+邮箱：admin@meetmind.local
+密码：kd64yyTNH62iix7G!
+```
+
+> ⚠️ **这是演示用的种子账号，密码写在迁移与本文档里，属于公开信息。**
+> 任何能看到本仓库的人都能用它登录，所以：
+>
+> 1. **部署到公网前必须改掉密码**（登录后在「用户管理」页修改，或调 `PATCH /api/users/1`）
+> 2. 生产环境建议删除种子账号，改用一次性初始化流程创建首个超管
+>
+> 数据库只保存 bcrypt 哈希（cost=12），忘记密码需直接改库。
 
 ---
 
@@ -292,17 +332,46 @@ http://localhost:5173/
 
 ## 🔌 主要 API
 
+> 除 `/api`（健康检查）、`/api/auth/login`、`/api/auth/register` 外，
+> **所有接口都需要 `Authorization: Bearer <token>`**。
+
+### 认证
+
+| Method | Endpoint | 说明 |
+|---|---|---|
+| POST | `/api/auth/login` | 登录，返回 JWT 与权限位（公开） |
+| POST | `/api/auth/register` | 自助注册，固定为 USER 角色（公开） |
+| GET | `/api/auth/me` | 当前登录用户信息与权限 |
+
+### 用户管理（管理员及以上）
+
+| Method | Endpoint | 说明 |
+|---|---|---|
+| GET | `/api/users` | 用户列表（管理员看不到超管） |
+| POST | `/api/users` | 新建账号，不能创建高于自己的角色 |
+| PATCH | `/api/users/:id` | 改资料 / 角色 / 启用状态 |
+| DELETE | `/api/users/:id` | 删除账号 |
+
+### 会议共享
+
+| Method | Endpoint | 说明 |
+|---|---|---|
+| GET | `/api/meetings/:id/shares` | 共享名单（仅归属者 / 管理员） |
+| POST | `/api/meetings/:id/shares` | 共享给某人 `{userId, permission}` |
+| PATCH | `/api/meetings/:id/shares/:userId` | 修改共享权限 |
+| DELETE | `/api/meetings/:id/shares/:userId` | 撤销共享 |
+
 ### 会议
 
 | Method | Endpoint | 说明 |
 |---|---|---|
 | POST | `/api/meetings` | 创建会议 / 生成 AI 纪要 |
-| GET | `/api/meetings` | 获取历史会议 |
+| GET | `/api/meetings` | 获取历史会议（按数据隔离过滤） |
 | GET | `/api/meetings/:id` | 获取会议详情 |
 | PATCH | `/api/meetings/:id` | 编辑会议标题 |
 | PATCH | `/api/meetings/:id/pin` | 置顶 / 取消置顶（`{"pinned": true}`） |
 | PATCH | `/api/meetings/:id/completion-status` | 修改会议完成状态 |
-| DELETE | `/api/meetings/:id` | 删除会议 |
+| DELETE | `/api/meetings/:id` | 删除会议（仅归属者 / 管理员） |
 
 ### 待办事项
 

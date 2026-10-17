@@ -4,6 +4,8 @@ import {
 } from '@nestjs/common';
 import OpenAI from 'openai';
 import { PrismaService } from '../common/prisma.service';
+import type { AuthenticatedUser } from '../auth/auth.decorators';
+import { assertCanWrite } from '../meetings/meetings.access';
 
 @Injectable()
 export class AiService {
@@ -18,7 +20,10 @@ export class AiService {
     });
   }
 
-  async generateMeetingSummary(content: string) {
+  async generateMeetingSummary(
+    content: string,
+    user: AuthenticatedUser,
+  ) {
     if (!content || !content.trim()) {
       throw new Error('会议内容不能为空');
     }
@@ -40,6 +45,8 @@ export class AiService {
           content,
           summary: null,
           status: 'PROCESSING',
+          // 归属发起该请求的用户，保证生成结果不会跨用户可见
+          ownerId: user.id,
         },
       });
 
@@ -276,7 +283,13 @@ deadline：截止时间
  *
  * 不创建新的会议记录，保留原来的会议 ID 和会议原文。
  */
-  async regenerateMeetingSummary(id: number) {
+  async regenerateMeetingSummary(
+    id: number,
+    user: AuthenticatedUser,
+  ) {
+    // 重新生成会覆盖摘要与待办，属于写操作，需要该会议的写权限
+    await assertCanWrite(this.prisma, user, id);
+
     const meeting = await this.prisma.meeting.findUnique({
       where: { id },
       include: {

@@ -1,14 +1,4 @@
-import axios from 'axios'
-
-const api = axios.create({
-  baseURL:
-    import.meta.env.VITE_API_BASE_URL ||
-    'http://127.0.0.1:3000/api',
-  timeout: 60000,
-  headers: {
-    'Content-Type': 'application/json'
-  }
-})
+import api from './http'
 
 export interface GenerateMeetingRequest {
   content: string
@@ -43,6 +33,18 @@ export interface MeetingResult {
   audioDurationSec?: number | null
   /** 置顶时间；为空表示未置顶。多条置顶按此时间倒序排列。 */
   pinnedAt?: string | null
+
+  // ---- 权限相关（由后端按归属与共享关系计算）----
+  /** 归属者用户 ID */
+  ownerId?: number
+  /** 是否是自己创建的 */
+  isOwner?: boolean
+  /** 当前用户对该会议的实际访问级别 */
+  access?: 'owner' | 'edit' | 'read'
+  /** 是否有写权限（owner 或 edit） */
+  canEdit?: boolean
+  /** 是否能管理共享（Owner 或管理员） */
+  canShare?: boolean
 }
 
 export interface MeetingRecord extends MeetingResult {
@@ -89,6 +91,11 @@ const normalizeMeeting = (data: any): MeetingRecord => {
     audioUrl: data.audioUrl ?? null,
     audioDurationSec: data.audioDurationSec ?? null,
     pinnedAt: data.pinnedAt ?? null,
+    ownerId: data.ownerId,
+    isOwner: data.isOwner ?? false,
+    access: data.access ?? 'read',
+    canEdit: data.canEdit ?? false,
+    canShare: data.canShare ?? false,
     createdAt: data.created_at || data.createdAt
   }
 }

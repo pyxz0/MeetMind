@@ -1,0 +1,145 @@
+import api from './http'
+import type { CurrentUser, Role } from '../stores/auth'
+
+export interface LoginResult {
+  token: string
+  user: CurrentUser
+}
+
+/** 登录 */
+export const login = async (
+  email: string,
+  password: string
+): Promise<LoginResult> => {
+  const response = await api.post<LoginResult>('/auth/login', {
+    email,
+    password
+  })
+
+  return response.data
+}
+
+/** 自助注册（只会得到 USER 角色） */
+export const register = async (data: {
+  email: string
+  password: string
+  name: string
+}): Promise<LoginResult> => {
+  const response = await api.post<LoginResult>('/auth/register', data)
+
+  return response.data
+}
+
+/** 拉取当前登录用户（刷新页面后恢复权限） */
+export const fetchMe = async (): Promise<CurrentUser> => {
+  const response = await api.get<CurrentUser>('/auth/me')
+
+  return response.data
+}
+
+/** ───────────── 用户管理（管理员及以上） ───────────── */
+
+export interface ManagedUser {
+  id: number
+  email: string
+  name: string
+  role: Role
+  isActive: boolean
+  createdAt: string
+}
+
+/** 用户列表，可供分享时挑选接收人 */
+export const listUsers = async (params?: {
+  keyword?: string
+  role?: string
+}): Promise<ManagedUser[]> => {
+  const response = await api.get<ManagedUser[]>('/users', { params })
+
+  return response.data
+}
+
+/** 新建账号 */
+export const createUser = async (data: {
+  email: string
+  password: string
+  name: string
+  role?: Role
+}): Promise<ManagedUser> => {
+  const response = await api.post<ManagedUser>('/users', data)
+
+  return response.data
+}
+
+/** 修改资料 / 角色 / 启用状态 */
+export const updateUser = async (
+  id: number,
+  data: {
+    name?: string
+    role?: Role
+    isActive?: boolean
+    password?: string
+  }
+): Promise<ManagedUser> => {
+  const response = await api.patch<ManagedUser>(`/users/${id}`, data)
+
+  return response.data
+}
+
+/** 删除账号 */
+export const deleteUser = async (id: number) => {
+  const response = await api.delete(`/users/${id}`)
+
+  return response.data
+}
+
+/** ───────────── 会议共享 ───────────── */
+
+export type SharePermission = 'READ' | 'EDIT'
+
+export interface MeetingShare {
+  id: number
+  userId: number
+  email: string
+  name: string
+  role?: Role
+  permission: SharePermission
+  grantedBy?: string
+  createdAt: string
+}
+
+/** 查看某场会议的共享名单 */
+export const listShares = async (
+  meetingId: number
+): Promise<MeetingShare[]> => {
+  const response = await api.get<MeetingShare[]>(
+    `/meetings/${meetingId}/shares`
+  )
+
+  return response.data
+}
+
+/** 共享会议给某人（重复调用即更新权限） */
+export const shareMeeting = async (
+  meetingId: number,
+  userId: number,
+  permission: SharePermission
+): Promise<MeetingShare> => {
+  const response = await api.post<MeetingShare>(
+    `/meetings/${meetingId}/shares`,
+    { userId, permission }
+  )
+
+  return response.data
+}
+
+/** 撤销某人的共享 */
+export const revokeShare = async (
+  meetingId: number,
+  userId: number
+) => {
+  const response = await api.delete(
+    `/meetings/${meetingId}/shares/${userId}`
+  )
+
+  return response.data
+}

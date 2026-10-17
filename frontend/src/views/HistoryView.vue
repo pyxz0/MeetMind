@@ -465,8 +465,21 @@ onMounted(() => {
                   压到 12px，而下拉选项固定 14px，会出现“显示值比选项小一号”的不一致。
                   显示值颜色与选项状态色同步，见 completionStatusStyle。
                 -->
+                <!-- 只读共享者只看到状态文字，不可修改 -->
+                <el-tag
+                  v-if="isExpanded(meeting.id) && !meeting.canEdit"
+                  :style="{ color: completionStatusColors[meeting.completionStatus as MeetingCompletionStatusValue] ?? completionStatusColors.NOT_STARTED }"
+                  size="small"
+                  @click.stop
+                >
+                  {{
+                    completionStatusOptions.find(o => o.value === meeting.completionStatus)?.label
+                    ?? '未开始'
+                  }}
+                </el-tag>
+
                 <el-select
-                  v-if="isExpanded(meeting.id)"
+                  v-else-if="isExpanded(meeting.id)"
                   :model-value="meeting.completionStatus || 'NOT_STARTED'"
                   :loading="completionUpdatingId === meeting.id"
                   class="status-select"
@@ -541,7 +554,9 @@ onMounted(() => {
                   查看详情
                 </el-button>
 
+                <!-- 置顶属于写操作，只读共享者不可用 -->
                 <el-button
+                  v-if="meeting.canEdit"
                   :type="meeting.pinnedAt ? 'warning' : 'default'"
                   :plain="!meeting.pinnedAt"
                   :loading="pinningId === meeting.id"
@@ -550,9 +565,18 @@ onMounted(() => {
                   {{ meeting.pinnedAt ? '取消置顶' : '置顶' }}
                 </el-button>
 
-                <el-button type="danger" plain @click="handleDelete(meeting.id)">
+                <!-- 删除只对拥有者开放（共享者即使可编辑也不能删） -->
+                <el-button v-if="meeting.isOwner" type="danger" plain @click="handleDelete(meeting.id)">
                   删除
                 </el-button>
+
+                <el-tag v-if="meeting.access === 'read'" size="small" type="info">
+                  只读共享
+                </el-tag>
+
+                <el-tag v-else-if="meeting.access === 'edit'" size="small" type="warning">
+                  可编辑共享
+                </el-tag>
               </div>
             </div>
           </el-card>

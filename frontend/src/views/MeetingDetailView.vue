@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -14,10 +14,26 @@ import {
   type MeetingRecord
 } from '../api/meeting'
 import MeetingAudioPlayer from '../components/MeetingAudioPlayer.vue'
+import MeetingShareDialog from '../components/MeetingShareDialog.vue'
 const route = useRoute()
 const router = useRouter()
 
 const meeting = ref<MeetingRecord | null>(null)
+
+/** 分享弹窗状态 */
+const shareDialogVisible = ref(false)
+
+/**
+ * 权限判断集中在这里，模板只读这些计算属性。
+ *
+ * 后端已强制校验，前端隐藏按钮只为避免用户点了才收到 403。
+ */
+const canEdit = computed(() => meeting.value?.canEdit === true)
+const canShare = computed(() => meeting.value?.canShare === true)
+const isReadOnly = computed(
+  () => !!meeting.value && meeting.value.canEdit === false
+)
+
 const todoDialogVisible = ref(false)
 const todoSubmitting = ref(false)
 const editTodoDialogVisible = ref(false)
@@ -368,14 +384,22 @@ onMounted(loadMeeting)
     </div>
 
     <template v-if="meeting">
+      <!-- 只读共享者会看到这条提示，避免误以为是页面故障 -->
+      <el-alert v-if="isReadOnly" type="info" :closable="false" show-icon class="readonly-tip"
+        title="你对该会议只有只读权限" description="由会议拥有者共享给你。如需修改，请联系拥有者调整权限。" />
+
       <el-card class="meeting-card">
         <template #header>
           <div class="meeting-header">
             <div class="title-actions">
               <h3>{{ meeting.title || `会议 #${meeting.id}` }}</h3>
 
-              <el-button type="primary" link @click="openEditTitle">
+              <el-button v-if="canEdit" type="primary" link @click="openEditTitle">
                 编辑标题
+              </el-button>
+
+              <el-button v-if="canShare" type="primary" link @click="shareDialogVisible = true">
+                共享
               </el-button>
             </div>
 
@@ -384,7 +408,20 @@ onMounted(loadMeeting)
                 会议状态
               </span>
 
-              <el-select :model-value="meeting.completionStatus || 'NOT_STARTED'
+              <!-- 只读用户只看不可改，用只读标签呈现 -->
+              <el-tag v-if="!canEdit" size="small">
+                {{
+                  meeting.completionStatus === 'COMPLETED'
+                    ? '已完成'
+                    : meeting.completionStatus === 'IN_PROGRESS'
+                      ? '进行中'
+                      : meeting.completionStatus === 'CANCELLED'
+                        ? '已取消'
+                        : '未开始'
+                }}
+              </el-tag>
+
+              <el-select v-else :model-value="meeting.completionStatus || 'NOT_STARTED'
                 " :loading="completionStatusUpdating" size="small" style="width: 130px" @change="
       (status:
         | 'NOT_STARTED'
@@ -402,7 +439,8 @@ onMounted(loadMeeting)
                 <el-option label="已取消" value="CANCELLED" />
               </el-select>
 
-              <el-button v-if="meeting.isDraft" type="warning" :loading="regenerating" @click="handleRegenerate">
+              <el-button v-if="meeting.isDraft && canEdit" type="warning" :loading="regenerating"
+                @click="handleRegenerate">
                 重新生成纪要
               </el-button>
             </div>
@@ -412,8 +450,14 @@ onMounted(loadMeeting)
         <div class="meta">
           <span>会议编号：{{ meeting.id }}</span>
           <span>创建时间：{{ formatDate(meeting.createdAt) }}</span>
+          <span v-if="!meeting.isOwner" class="shared-tag">
+            他人共享
+          </span>
         </div>
       </el-card>
+
+      <MeetingShareDialog v-if="meeting" v-model="shareDialogVisible" :meeting-id="meeting.id"
+        :meeting-title="meeting.title || `会议 #${meeting.id}`" />
 
       <el-card class="section-card">
         <template #header>
@@ -462,7 +506,7 @@ onMounted(loadMeeting)
         <div class="todo-header">
           <h3>待办事项</h3>
 
-          <el-button type="primary" @click="todoDialogVisible = true">
+          <el-button v-if="canEdit" type="primary" @click="todoDialogVisible = true">
             新增待办
           </el-button>
         </div>
@@ -486,7 +530,20 @@ onMounted(loadMeeting)
 
           <el-table-column prop="status" label="任务状态" width="160">
             <template #default="{ row }">
-              <el-select :model-value="row.status || 'OPEN'" size="small" style="width: 130px" @change="(status: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED') =>
+              <!-- 只读共享者看到状态文字，不能改 -->
+              <el-tag v-if="!canEdit" size="small">
+                {{
+                  row.status === 'COMPLETED'
+                    ? '已完成'
+                    : row.status === 'IN_PROGRESS'
+                      ? '进行中'
+                      : row.status === 'CANCELLED'
+                        ? '已取消'
+                        : '待处理'
+                }}
+              </el-tag>
+
+              <el-select v-else :model-value="row.status || 'OPEN'" size="small" style="width: 130px" @change="(status: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED') =>
                 handleTodoStatusChange(row, status)">
                 <el-option label="待处理" value="OPEN" />
                 <el-option label="进行中" value="IN_PROGRESS" />
@@ -496,7 +553,7 @@ onMounted(loadMeeting)
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="150" align="center">
+          <el-table-column v-if="canEdit" label="操作" width="150" align="center">
             <template #default="{ row }">
               <el-button type="primary" link @click="handleEditTodo(row)">
                 编辑
@@ -649,6 +706,16 @@ onMounted(loadMeeting)
   white-space: pre-wrap;
   color: #606266;
   font-size: 14px;
+}
+
+/* 只读提示与「他人共享」标记 */
+.readonly-tip {
+  margin-bottom: 16px;
+  border-radius: 10px;
+}
+
+.shared-tag {
+  color: #e6a23c;
 }
 
 .decision-list {

@@ -10,6 +10,12 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MeetingAudioService } from './meeting-audio.service';
+import {
+  CurrentUser,
+  type AuthenticatedUser,
+} from '../auth/auth.decorators';
+import { assertCanWrite } from './meetings.access';
+import { PrismaService } from '../common/prisma.service';
 
 /** 浏览器录音容器，Chrome/Edge 为 webm，Safari 为 mp4。 */
 const AUDIO_MIME_PATTERN = /^audio\/|^video\/webm$|^application\/ogg$/;
@@ -32,6 +38,7 @@ interface UploadedAudioFile {
 export class MeetingAudioController {
   constructor(
     private readonly audioService: MeetingAudioService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
@@ -47,7 +54,10 @@ export class MeetingAudioController {
     @Param('id', ParseIntPipe) id: number,
     @UploadedFile() file: UploadedAudioFile | undefined,
     @Body() body: { durationSec?: string | number },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
+    // 录音是会议内容的延伸，只有可写者才能上传
+    await assertCanWrite(this.prisma, user, id);
     if (!file) {
       throw new BadRequestException(
         '未接收到录音文件，请使用 multipart 字段 audio 上传',

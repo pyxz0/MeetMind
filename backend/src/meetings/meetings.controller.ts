@@ -12,6 +12,12 @@ import {
 } from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
 import type { CreateMeetingInput } from './meetings.service';
+import {
+  CurrentUser,
+  RequirePermissions,
+  type AuthenticatedUser,
+} from '../auth/auth.decorators';
+import { PERMISSIONS } from '../auth/permissions';
 
 @Controller('meetings')
 export class MeetingsController {
@@ -19,7 +25,8 @@ export class MeetingsController {
 
   /** 校验前端传入的纪要结构，再交给业务服务进行关联保存。 */
   @Post()
-  create(@Body() body: CreateMeetingInput) {
+  @RequirePermissions(PERMISSIONS.MEETING_CREATE)
+  create(@Body() body: CreateMeetingInput, @CurrentUser() user: AuthenticatedUser) {
     if (!body || typeof body.content !== 'string' || !body.content.trim()) {
       throw new BadRequestException('content 不能为空');
     }
@@ -47,17 +54,19 @@ export class MeetingsController {
       throw new BadRequestException('todos 格式无效');
     }
 
-    return this.meetingsService.create(body);
+    return this.meetingsService.create(body, user);
   }
 
   /** 手动将会议内容保存到草稿箱 */
   @Post('drafts')
+  @RequirePermissions(PERMISSIONS.MEETING_CREATE)
   createDraft(
     @Body()
     body: {
       title?: string;
       content: string;
     },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     if (
       !body ||
@@ -74,7 +83,7 @@ export class MeetingsController {
       throw new BadRequestException('title 必须是字符串');
     }
 
-    return this.meetingsService.createDraft(body);
+    return this.meetingsService.createDraft(body, user);
   }
 
   /** 为指定会议新增待办事项 */
@@ -87,12 +96,13 @@ export class MeetingsController {
       assignee?: string;
       deadline?: string;
     },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     if (!body || typeof body.content !== 'string' || !body.content.trim()) {
       throw new BadRequestException('待办内容不能为空');
     }
 
-    return this.meetingsService.createTodo(id, body);
+    return this.meetingsService.createTodo(id, body, user);
   }
 
   /** 编辑待办事项 */
@@ -103,9 +113,10 @@ export class MeetingsController {
       content?: string
       assignee?: string
       deadline?: string
-    }
+    },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.updateTodo(id, body)
+    return this.meetingsService.updateTodo(id, body, user)
   }
 
   /** 手动修改会议完成状态 */
@@ -113,6 +124,7 @@ export class MeetingsController {
   updateMeetingCompletionStatus(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: { completionStatus: string },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const allowedStatuses = [
       'NOT_STARTED',
@@ -134,6 +146,7 @@ export class MeetingsController {
     return this.meetingsService.updateMeetingCompletionStatus(
       id,
       body.completionStatus as import('@prisma/client').MeetingCompletionStatus,
+      user,
     );
   }
 
@@ -142,12 +155,13 @@ export class MeetingsController {
   updatePinned(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: { pinned: boolean },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     if (!body || typeof body.pinned !== 'boolean') {
       throw new BadRequestException('pinned 必须是布尔值');
     }
 
-    return this.meetingsService.updatePinned(id, body.pinned);
+    return this.meetingsService.updatePinned(id, body.pinned, user);
   }
 
   /** 修改会议标题 */
@@ -155,6 +169,7 @@ export class MeetingsController {
   updateMeeting(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: { title: string },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     if (!body || typeof body.title !== 'string' || !body.title.trim()) {
       throw new BadRequestException('会议标题不能为空');
@@ -164,38 +179,44 @@ export class MeetingsController {
       throw new BadRequestException('会议标题不能超过200个字符');
     }
 
-    return this.meetingsService.updateMeeting(id, body);
+    return this.meetingsService.updateMeeting(id, body, user);
   }
 
   /** 获取所有历史会议，顺序和输出格式由业务服务统一处理。 */
   @Get()
-  findAll() {
-    return this.meetingsService.findAll();
+  findAll(@CurrentUser() user: AuthenticatedUser) {
+    return this.meetingsService.findAll(user);
   }
 
   /** 获取草稿箱中的会议 */
   @Get('drafts')
-  findDrafts() {
-    return this.meetingsService.findDrafts();
+  findDrafts(@CurrentUser() user: AuthenticatedUser) {
+    return this.meetingsService.findDrafts(user);
   }
 
   /** 获取会议统计数据 */
   @Get('stats')
-  getStats() {
-    return this.meetingsService.getStats();
+  getStats(@CurrentUser() user: AuthenticatedUser) {
+    return this.meetingsService.getStats(user);
   }
 
   /** 通过整数 ID 查询单条会议；ParseIntPipe 会拦截非数字路径参数。 */
   @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.meetingsService.findOne(id);
+  findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.findOne(id, user);
   }
 
   /** 删除会议及其关联内容，并返回无响应体的 204 状态。 */
   @Delete(':id')
   @HttpCode(204)
-  async remove(@Param('id', ParseIntPipe) id: number) {
-    await this.meetingsService.remove(id);
+  async remove(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    await this.meetingsService.remove(id, user);
   }
 
   /** 更新指定待办事项的处理状态。 */
@@ -203,6 +224,7 @@ export class MeetingsController {
   updateTodoStatus(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: { status: string },
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const allowedStatuses = [
       'OPEN',
@@ -222,12 +244,16 @@ export class MeetingsController {
     return this.meetingsService.updateTodoStatus(
       id,
       body.status as import('@prisma/client').TodoStatus,
+      user,
     );
   }
 
   /** 删除单条待办事项 */
   @Delete('todos/:id')
-  removeTodo(@Param('id', ParseIntPipe) id: number) {
-    return this.meetingsService.removeTodo(id);
+  removeTodo(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.removeTodo(id, user);
   }
 }

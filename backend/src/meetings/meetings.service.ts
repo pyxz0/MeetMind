@@ -11,6 +11,20 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { MeetingAudioService } from './meeting-audio.service';
+import type { AuthenticatedUser } from '../auth/auth.decorators';
+import { PERMISSIONS, roleHasPermission } from '../auth/permissions';
+import {
+  assertCanOwn,
+  assertCanRead,
+  assertCanWrite,
+  hasGlobalMeetingAccess,
+  resolveMeetingAccess,
+  type MeetingAccess,
+} from './meetings.access';
+
+/** 是否具备「编辑任意会议」的全局权限 */
+const roleHasUpdateAll = (role: AuthenticatedUser['role']) =>
+  roleHasPermission(role, PERMISSIONS.MEETING_UPDATE_ALL);
 
 /** 前端保存纪要时允许提交的字段；标题、决策和待办均可省略。 */
 export interface CreateMeetingInput {
@@ -31,6 +45,20 @@ const meetingInclude = {
   todos: { orderBy: { sortOrder: 'asc' as const } },
 };
 
+/**
+ * 生成「只包含当前用户本人共享记录」的 include。
+ *
+ * 不能统一 include 全部 shares：那会把别人的授权也查出来，
+ * 既浪费又容易误判当前用户的权限级别。
+ */
+const meetingIncludeFor = (userId: number) => ({
+  ...meetingInclude,
+  shares: {
+    where: { userId },
+    select: { permission: true },
+  },
+});
+
 @Injectable()
 export class MeetingsService {
   constructor(
@@ -39,13 +67,15 @@ export class MeetingsService {
   ) { }
 
   /** 创建会议并通过嵌套写入原文、摘要、决策和待办，保证一次提交完成。 */
-  async create(input: CreateMeetingInput) {
+  async create(input: CreateMeetingInput, user: AuthenticatedUser) {
     const meeting = await this.prisma.meeting.create({
       data: {
         title: input.title?.trim() || '未命名会议',
         content: input.content,
         summary: input.summary ?? null,
         status: 'READY',
+        // 归属者为当前登录用户，是数据隔离的依据
+        ownerId: user.id,
         decisions: {
           create: (input.decisions ?? []).map((content, sortOrder) => ({
             content,
@@ -86,7 +116,10 @@ export class MeetingsService {
   }
 
   /** 手动将会议内容保存到草稿箱 */
-  async createDraft(input: { title?: string; content: string }) {
+  async createDraft(
+    input: { title?: string; content: string },
+    user: AuthenticatedUser,
+  ) {
     if (!input.content?.trim()) {
       throw new BadRequestException('会议内容不能为空');
     }
@@ -98,6 +131,8 @@ export class MeetingsService {
         summary: null,
         status: 'DRAFT',
         completionStatus: 'NOT_STARTED',
+        // 草稿同样有归属者，否则草稿箱会跨用户可见
+        ownerId: user.id,
       },
       include: meetingInclude,
     });
@@ -107,6 +142,7 @@ export class MeetingsService {
   async updateMeetingCompletionStatus(
     id: number,
     completionStatus: MeetingCompletionStatus,
+    user: AuthenticatedUser,
   ) {
     const allowedStatuses: MeetingCompletionStatus[] = [
       'NOT_STARTED',
@@ -119,13 +155,7 @@ export class MeetingsService {
       throw new BadRequestException('无效的会议完成状态');
     }
 
-    const meeting = await this.prisma.meeting.findUnique({
-      where: { id },
-    });
-
-    if (!meeting) {
-      throw new NotFoundException('会议记录不存在');
-    }
+    await assertCanWrite(this.prisma, user, id);
 
     return this.prisma.meeting.update({
       where: { id },
@@ -145,15 +175,10 @@ export class MeetingsService {
     id: number,
     data: {
       title: string;
-    }
+    },
+    user: AuthenticatedUser,
   ) {
-    const meeting = await this.prisma.meeting.findUnique({
-      where: { id }
-    });
-
-    if (!meeting) {
-      throw new NotFoundException('会议记录不存在');
-    }
+    await assertCanWrite(this.prisma, user, id);
 
     const title = data.title?.trim();
 
@@ -177,9 +202,12 @@ export class MeetingsService {
    * pinned 为 true 时记录置顶时间（多条置顶按“最近置顶优先”排序），
    * 为 false 时清空该时间。
    */
-  async updatePinned(id: number, pinned: boolean) {
+  async updatePinned(id: number, pinned: boolean, user: AuthenticatedUser) {
+    await assertCanWrite(this.prisma, user, id);
+
     const meeting = await this.prisma.meeting.findUnique({
       where: { id },
+      select: { id: true, pinnedAt: true },
     });
 
     if (!meeting) {
@@ -225,7 +253,8 @@ export class MeetingsService {
       content?: string
       assignee?: string
       deadline?: string
-    }
+    },
+    user: AuthenticatedUser,
   ) {
     const todo = await this.prisma.todo.findUnique({
       where: { id }
@@ -234,6 +263,9 @@ export class MeetingsService {
     if (!todo) {
       throw new NotFoundException('待办事项不存在')
     }
+
+    // 待办本身没有归属字段，权限跟着所属会议走
+    await assertCanWrite(this.prisma, user, todo.meetingId);
 
     return this.prisma.todo.update({
       where: { id },
@@ -252,7 +284,27 @@ export class MeetingsService {
   }
 
   /** 获取正式会议和草稿箱统计 */
-  async getStats() {
+  async getStats(user: AuthenticatedUser) {
+    // 统计同样受数据隔离约束：只看自己可见范围内的数据
+    const visible = this.visibleMeetingWhere(user);
+
+    const formalMeeting: Prisma.MeetingWhereInput = {
+      AND: [visible, { status: { notIn: ['DRAFT', 'FAILED'] } }],
+    };
+
+    const draftMeeting: Prisma.MeetingWhereInput = {
+      AND: [visible, { status: { in: ['DRAFT', 'FAILED'] } }],
+    };
+
+    // 待办/决策没有归属字段，通过所属会议间接过滤
+    const visibleTodo: Prisma.TodoWhereInput = {
+      meeting: { is: visible },
+    };
+
+    const visibleDecision: Prisma.DecisionWhereInput = {
+      meeting: { is: visible },
+    };
+
     const [
       totalMeetings,
       draftMeetings,
@@ -265,69 +317,35 @@ export class MeetingsService {
       totalDecisions,
     ] = await Promise.all([
       // 正式会议总数：排除手动草稿和 AI 生成失败记录
-      this.prisma.meeting.count({
-        where: {
-          status: {
-            notIn: ['DRAFT', 'FAILED'],
-          },
-        },
-      }),
+      this.prisma.meeting.count({ where: formalMeeting }),
 
       // 草稿箱数量：手动草稿 + AI 生成失败
-      this.prisma.meeting.count({
-        where: {
-          status: {
-            in: ['DRAFT', 'FAILED'],
-          },
-        },
-      }),
+      this.prisma.meeting.count({ where: draftMeeting }),
 
       // 以下会议完成状态统计，都只统计正式会议
       this.prisma.meeting.count({
-        where: {
-          status: {
-            notIn: ['DRAFT', 'FAILED'],
-          },
-          completionStatus: 'NOT_STARTED',
-        },
+        where: { AND: [formalMeeting, { completionStatus: 'NOT_STARTED' }] },
       }),
 
       this.prisma.meeting.count({
-        where: {
-          status: {
-            notIn: ['DRAFT', 'FAILED'],
-          },
-          completionStatus: 'IN_PROGRESS',
-        },
+        where: { AND: [formalMeeting, { completionStatus: 'IN_PROGRESS' }] },
       }),
 
       this.prisma.meeting.count({
-        where: {
-          status: {
-            notIn: ['DRAFT', 'FAILED'],
-          },
-          completionStatus: 'COMPLETED',
-        },
+        where: { AND: [formalMeeting, { completionStatus: 'COMPLETED' }] },
       }),
 
       this.prisma.meeting.count({
-        where: {
-          status: {
-            notIn: ['DRAFT', 'FAILED'],
-          },
-          completionStatus: 'CANCELLED',
-        },
+        where: { AND: [formalMeeting, { completionStatus: 'CANCELLED' }] },
       }),
 
-      this.prisma.todo.count(),
+      this.prisma.todo.count({ where: visibleTodo }),
 
       this.prisma.todo.count({
-        where: {
-          status: 'COMPLETED',
-        },
+        where: { AND: [visibleTodo, { status: 'COMPLETED' }] },
       }),
 
-      this.prisma.decision.count(),
+      this.prisma.decision.count({ where: visibleDecision }),
     ])
 
     return {
@@ -343,13 +361,35 @@ export class MeetingsService {
     }
   }
 
+  /**
+   * 构造「当前用户可见会议」的查询条件。
+   *
+   * 普通用户：自己拥有的 ∪ 别人共享给自己的
+   * 管理员及以上：全部会议
+   *
+   * 所有列表查询都走这里，避免某条查询漏掉数据隔离。
+   */
+  private visibleMeetingWhere(user: AuthenticatedUser): Prisma.MeetingWhereInput {
+    if (hasGlobalMeetingAccess(user)) {
+      return {};
+    }
+
+    return {
+      OR: [
+        { ownerId: user.id },
+        { shares: { some: { userId: user.id } } },
+      ],
+    };
+  }
+
   /** 查询正常历史会议，不显示草稿箱中的 AI 失败记录。 */
-  async findAll() {
+  async findAll(user: AuthenticatedUser) {
     const meetings = await this.prisma.meeting.findMany({
       where: {
-        status: {
-          notIn: ['FAILED', 'DRAFT'],
-        },
+        AND: [
+          this.visibleMeetingWhere(user),
+          { status: { notIn: ['FAILED', 'DRAFT'] } },
+        ],
       },
       // 已置顶的排在最前（按置顶时间倒序），其余按创建时间倒序。
       // nulls: 'last' 让未置顶记录排在置顶记录之后。
@@ -357,41 +397,50 @@ export class MeetingsService {
         { pinnedAt: { sort: 'desc', nulls: 'last' } },
         { createdAt: 'desc' },
       ],
-      include: meetingInclude,
+      include: meetingIncludeFor(user.id),
     });
 
-    return meetings.map((meeting) => this.toApiRecord(meeting));
+    return this.toApiRecordList(meetings, user);
   }
 
   /** 查询草稿箱会议；AI 生成失败的会议会保留在这里。 */
-  async findDrafts() {
+  async findDrafts(user: AuthenticatedUser) {
     const meetings = await this.prisma.meeting.findMany({
       where: {
-        status: {
-          in: ['FAILED', 'DRAFT'],
-        },
+        AND: [
+          this.visibleMeetingWhere(user),
+          { status: { in: ['FAILED', 'DRAFT'] } },
+        ],
       },
       orderBy: { createdAt: 'desc' },
-      include: meetingInclude,
+      include: meetingIncludeFor(user.id),
     });
 
-    return meetings.map((meeting) => this.toApiRecord(meeting));
+    return this.toApiRecordList(meetings, user);
   }
 
-  /** 查询单条会议详情；不存在时返回 404，而不是空值。 */
-  async findOne(id: number) {
+  /** 查询单条会议详情；无权访问时同样返回 404，避免探测会议是否存在。 */
+  async findOne(id: number, user: AuthenticatedUser) {
+    const { access } = await assertCanRead(this.prisma, user, id);
+
     const meeting = await this.prisma.meeting.findUnique({
       where: { id },
-      include: meetingInclude,
+      include: meetingIncludeFor(user.id),
     });
+
     if (!meeting) throw new NotFoundException('会议记录不存在');
-    return this.toApiRecord(meeting);
+
+    return this.toApiRecord(meeting, access, user);
   }
 
-  /** 先检查记录是否存在，再删除；外键会级联清理决策和待办。 */
-  async remove(id: number) {
-    const meeting = await this.prisma.meeting.findUnique({ where: { id } });
-    if (!meeting) throw new NotFoundException('会议记录不存在');
+  /**
+   * 删除会议；外键会级联清理决策、待办与共享记录。
+   *
+   * 只有归属者或具备全局删除权限的管理员可删除，
+   * 「被共享者」不能删别人的会议。
+   */
+  async remove(id: number, user: AuthenticatedUser) {
+    await assertCanOwn(this.prisma, user, id);
 
     // 录音是磁盘文件，不参与外键级联，必须在删除记录前单独清理。
     await this.audioService.removeAudioByMeetingId(id);
@@ -399,7 +448,11 @@ export class MeetingsService {
     await this.prisma.meeting.delete({ where: { id } });
   }
   /** 更新待办事项状态。 */
-  async updateTodoStatus(id: number, status: TodoStatus) {
+  async updateTodoStatus(
+    id: number,
+    status: TodoStatus,
+    user: AuthenticatedUser,
+  ) {
     const allowedStatuses: TodoStatus[] = [
       'OPEN',
       'IN_PROGRESS',
@@ -418,6 +471,8 @@ export class MeetingsService {
     if (!todo) {
       throw new NotFoundException('待办事项不存在');
     }
+
+    await assertCanWrite(this.prisma, user, todo.meetingId);
 
     // 待办状态与会议状态必须一起变，否则会出现
     // “待办全完成但会议仍显示进行中”的不一致状态。
@@ -530,14 +585,9 @@ export class MeetingsService {
       assignee?: string;
       deadline?: string;
     },
+    user: AuthenticatedUser,
   ) {
-    const meeting = await this.prisma.meeting.findUnique({
-      where: { id: meetingId },
-    });
-
-    if (!meeting) {
-      throw new NotFoundException('会议记录不存在');
-    }
+    await assertCanWrite(this.prisma, user, meetingId);
 
     // 新增的待办一定是未完成状态，因此会议不再是“全部完成”。
     const [todo, completionStatus] = await this.prisma.$transaction(
@@ -571,7 +621,7 @@ export class MeetingsService {
     };
   }
   /** 删除单条待办事项 */
-  async removeTodo(id: number) {
+  async removeTodo(id: number, user: AuthenticatedUser) {
     const todo = await this.prisma.todo.findUnique({
       where: { id },
     });
@@ -579,6 +629,8 @@ export class MeetingsService {
     if (!todo) {
       throw new NotFoundException('待办事项不存在');
     }
+
+    await assertCanWrite(this.prisma, user, todo.meetingId);
 
     // 删掉的若是最后一项未完成待办，会议同样应变为已完成。
     const completionStatus = await this.prisma.$transaction(
@@ -599,19 +651,40 @@ export class MeetingsService {
     };
   }
 
+  /**
+   * 批量转换列表：根据归属关系计算每条的访问级别。
+   *
+   * shares 已在查询时按当前用户过滤（meetingIncludeFor），
+   * 因此只需看本人的那条授权即可判定 edit / read。
+   */
+  private toApiRecordList(
+    meetings: Array<MeetingWithRelations>,
+    user: AuthenticatedUser,
+  ) {
+    return meetings.map((meeting) => {
+      let access: MeetingAccess;
+
+      if (meeting.ownerId === user.id) {
+        access = 'owner';
+      } else if (meeting.shares?.some((s) => s.permission === 'EDIT')) {
+        // 共享明确给了编辑权
+        access = 'edit';
+      } else if (hasGlobalMeetingAccess(user)) {
+        // 管理员及以上，无显式共享时仍可按全局权限编辑
+        access = roleHasUpdateAll(user.role) ? 'edit' : 'read';
+      } else {
+        access = 'read';
+      }
+
+      return this.toApiRecord(meeting, access, user);
+    });
+  }
+
   /** 转换 Prisma 字段名及关联数据，维持现有 Vue 页面所需的 API 结构。 */
   private toApiRecord(
-    meeting: Meeting & {
-      decisions: Array<{ content: string; sortOrder: number }>;
-      todos: Array<{
-        id: number;
-        content: string;
-        assignee: string | null;
-        deadline: string | null;
-        status: TodoStatus;
-        sortOrder: number;
-      }>;
-    },
+    meeting: MeetingWithRelations,
+    access: MeetingAccess = 'owner',
+    user?: AuthenticatedUser,
   ) {
     return {
       id: meeting.id,
@@ -627,6 +700,19 @@ export class MeetingsService {
       isDraft:
         meeting.status === 'FAILED' ||
         meeting.status === 'DRAFT',
+
+      // ---- 权限相关字段，前端据此决定按钮是否可点 ----
+      /** 归属者 ID，用于判断“是我的会议” */
+      ownerId: meeting.ownerId,
+      /** 是否是当前用户创建的 */
+      isOwner: user ? meeting.ownerId === user.id : true,
+      /** 当前用户的实际访问级别 */
+      access,
+      /** 是否可写（owner 或 edit） */
+      canEdit: access === 'owner' || access === 'edit',
+      /** 是否可管理共享（仅归属者与管理员） */
+      canShare: access === 'owner' || (user ? hasGlobalMeetingAccess(user) : true),
+
       decisions: meeting.decisions.map((decision) => decision.content),
       todos: meeting.todos.map((todo) => ({
         id: todo.id,
@@ -639,3 +725,17 @@ export class MeetingsService {
     };
   }
 }
+
+/** 列表/详情查询统一带回的基础关联与归属字段 */
+type MeetingWithRelations = Meeting & {
+  decisions: Array<{ content: string; sortOrder: number }>;
+  todos: Array<{
+    id: number;
+    content: string;
+    assignee: string | null;
+    deadline: string | null;
+    status: TodoStatus;
+    sortOrder: number;
+  }>;
+  shares?: Array<{ permission: 'READ' | 'EDIT' }>;
+};
