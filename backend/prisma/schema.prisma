@@ -46,6 +46,14 @@ enum SharePermission {
 }
 
 /// 系统用户。密码只保存 bcrypt 哈希，永不落库明文。
+///
+/// 超级管理员唯一性（重要）：
+/// 全局只允许一个 SUPER_ADMIN。应用层在 UsersService 中限制
+/// 创建/提升/降级/停用/删除，数据库层由迁移
+/// 20261018010107_single_super_admin 建立的部分唯一索引
+/// `users_single_super_admin_key` 兜底。
+/// 该索引带 WHERE 条件，Prisma schema 无法表达，因此不在这里声明 ——
+/// 但请勿手动删除它，否则唯一性只剩应用层保证。
 model User {
   id           Int       @id @default(autoincrement())
   /// 登录邮箱，全局唯一。

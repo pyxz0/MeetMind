@@ -28,6 +28,21 @@ const publicUserSelect = {
   createdAt: true,
 } as const;
 
+/**
+ * 系统唯一的超级管理员角色。
+ *
+ * 业务规则：全局只能有一个超级管理员。
+ * 三层保障，缺一不可：
+ *   1. 本服务：禁止创建/提升出第二个，也禁止把唯一超管降级或删除
+ *   2. 数据库：users 表上有部分唯一索引，从存储层面兜底
+ *   3. 前端：角色下拉里不提供「超级管理员」选项
+ *
+ * 只做前端限制是不够的，直接调接口就能绕过；
+ * 只做应用层也不够，代码写错一处就会出现两个超管。
+ */
+const SINGLE_SUPER_ADMIN_MESSAGE =
+  '系统只允许存在一个超级管理员，该角色不可新建、提升或移除';
+
 @Injectable()
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
@@ -108,6 +123,11 @@ export class UsersService {
       throw new ForbiddenException('不能创建权限高于自己的账号');
     }
 
+    // 超级管理员只能有一个：连超管本人也不允许再建第二个
+    if (role === 'SUPER_ADMIN') {
+      throw new BadRequestException(SINGLE_SUPER_ADMIN_MESSAGE);
+    }
+
     const email = (input.email ?? '').trim().toLowerCase();
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -166,9 +186,66 @@ export class UsersService {
       throw new NotFoundException('用户不存在');
     }
 
-    this.assertCanManage(operator, target.role as AppRole);
+    const targetRole = target.role as AppRole;
+    const isSelf = targetId === operator.id;
+
+    /**
+     * 谁能改谁：
+     * - 自己：可以改姓名和密码，但不能改自己的角色或启停状态
+     *   （否则一个管理员可以把自己升成超管，或把自己停用导致自锁）
+     * - 别人：必须严格高于对方才能管理
+     *
+     * 这里必须先区分「自己」再判断级别，否则 ROLE_RANK 的 >= 判断
+     * 会连自己改自己的密码都拦掉。
+     */
+    if (isSelf) {
+      if (input.role !== undefined && input.role.toUpperCase() !== targetRole) {
+        throw new BadRequestException('不能修改自己的角色');
+      }
+
+      if (input.isActive !== undefined && input.isActive !== target.isActive) {
+        throw new BadRequestException('不能修改自己的启用状态');
+      }
+    } else if (targetRole === 'SUPER_ADMIN') {
+      /**
+       * 唯一超管只能自己管自己（走上面的 isSelf 分支）。
+       * 其他人一律不能修改，包括同级别的管理员。
+       */
+      throw new ForbiddenException('超级管理员账号不可被他人修改');
+    } else {
+      this.assertCanManage(operator, targetRole);
+    }
 
     const data: Record<string, unknown> = {};
+
+    /**
+     * 超级管理员唯一性：
+     * - 任何人不允许把某个账号提升为超级管理员
+     * - 唯一的超级管理员也不允许被降级或停用，
+     *   否则系统会变成「零超管」，再没人能管理管理员账号
+     *
+     * 代价：超管角色无法通过接口转移，需要换人时只能直接改库。
+     * 这是「只能有一个」这条规则的直接后果，属于有意为之的取舍。
+     */
+    if (input.role !== undefined) {
+      const nextRole = input.role.toUpperCase() as AppRole;
+
+      if (nextRole === 'SUPER_ADMIN' && targetRole !== 'SUPER_ADMIN') {
+        throw new BadRequestException(SINGLE_SUPER_ADMIN_MESSAGE);
+      }
+
+      if (targetRole === 'SUPER_ADMIN' && nextRole !== 'SUPER_ADMIN') {
+        throw new BadRequestException(
+          '唯一的超级管理员不能被降级，否则系统将失去管理员管理能力',
+        );
+      }
+    }
+
+    if (input.isActive === false && targetRole === 'SUPER_ADMIN') {
+      throw new BadRequestException(
+        '唯一的超级管理员不能被停用，否则系统将无人可管理账号',
+      );
+    }
 
     if (input.name !== undefined) {
       const name = input.name.trim();
@@ -239,6 +316,13 @@ export class UsersService {
 
     if (!target) {
       throw new NotFoundException('用户不存在');
+    }
+
+    // 唯一的超级管理员不能被删除
+    if (target.role === 'SUPER_ADMIN') {
+      throw new BadRequestException(
+        '唯一的超级管理员不能被删除，否则系统将无人可管理账号',
+      );
     }
 
     this.assertCanManage(operator, target.role as AppRole);

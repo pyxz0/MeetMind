@@ -26,14 +26,26 @@ const ROLE_RANK: Record<Role, number> = {
 const canManage = (user: ManagedUser) =>
   ROLE_RANK[currentUser.value?.role ?? 'USER'] > ROLE_RANK[user.role]
 
-/** 可授予的角色：不能高于自己 */
+/**
+ * 可授予的角色。
+ *
+ * 超级管理员全局唯一，因此这个下拉永远不提供 SUPER_ADMIN ——
+ * 连超管本人也不能再授予第二个人。后端同样会拒绝，这里只是
+ * 不让用户点到注定失败的选项。
+ */
 const grantableRoles = computed<Role[]>(() => {
   const role = currentUser.value?.role ?? 'USER'
 
-  if (role === 'SUPER_ADMIN') return ['USER', 'ADMIN', 'SUPER_ADMIN']
+  if (role === 'SUPER_ADMIN') return ['USER', 'ADMIN']
   if (role === 'ADMIN') return ['USER', 'ADMIN']
   return []
 })
+
+/** 超管账号的角色不可被下拉修改，单独提示原因 */
+const isSoleSuperAdmin = (user: ManagedUser) => user.role === 'SUPER_ADMIN'
+
+/** 是否是当前登录账号自己 */
+const isSelf = (user: ManagedUser) => user.id === currentUser.value?.id
 
 const ROLE_LABEL: Record<Role, string> = {
   USER: '用户',
@@ -178,6 +190,51 @@ const handleDelete = async (user: ManagedUser) => {
   }
 }
 
+/** ───── 修改自己的密码 ───── */
+const passwordDialogVisible = ref(false)
+const passwordSubmitting = ref(false)
+
+const passwordForm = reactive({
+  password: '',
+  confirm: ''
+})
+
+const openPasswordDialog = () => {
+  passwordForm.password = ''
+  passwordForm.confirm = ''
+  passwordDialogVisible.value = true
+}
+
+const submitPassword = async () => {
+  if (!currentUser.value) return
+
+  if (passwordForm.password.length < 8) {
+    ElMessage.warning('密码至少 8 位')
+    return
+  }
+
+  if (passwordForm.password !== passwordForm.confirm) {
+    ElMessage.warning('两次输入的密码不一致')
+    return
+  }
+
+  passwordSubmitting.value = true
+
+  try {
+    await updateUser(currentUser.value.id, {
+      password: passwordForm.password
+    })
+
+    ElMessage.success('密码已修改，请用新密码重新登录')
+    passwordDialogVisible.value = false
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '密码修改失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    passwordSubmitting.value = false
+  }
+}
+
 onMounted(loadUsers)
 </script>
 
@@ -187,7 +244,7 @@ onMounted(loadUsers)
       <div class="page-header">
         <div>
           <h1>用户管理</h1>
-          <p>管理账号与角色分级，权限收回会立即生效</p>
+          <p>管理账号与角色分级；超级管理员全局唯一，不可新建、提升或移除</p>
         </div>
 
         <div class="header-actions">
@@ -212,8 +269,15 @@ onMounted(loadUsers)
 
           <el-table-column label="角色" width="170">
             <template #default="{ row }">
-              <el-select v-if="canManage(row)" :model-value="row.role" size="small" :loading="changingRoleId === row.id"
-                @change="(role: Role) => changeRole(row, role)">
+              <!-- 唯一超管：角色固定，不提供修改入口 -->
+              <el-tooltip v-if="isSoleSuperAdmin(row)" content="超级管理员全局唯一，角色不可修改" placement="top">
+                <el-tag :type="ROLE_TAG[row.role as Role]">
+                  {{ ROLE_LABEL[row.role as Role] }}
+                </el-tag>
+              </el-tooltip>
+
+              <el-select v-else-if="canManage(row)" :model-value="row.role" size="small"
+                :loading="changingRoleId === row.id" @change="(role: Role) => changeRole(row, role)">
                 <el-option v-for="role in grantableRoles" :key="role" :label="ROLE_LABEL[role]" :value="role" />
               </el-select>
 
@@ -233,7 +297,18 @@ onMounted(loadUsers)
 
           <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
-              <template v-if="canManage(row)">
+              <!-- 自己：只能改密码 -->
+              <span v-if="isSelf(row)" class="self-actions">
+                <el-button link type="primary" @click="openPasswordDialog">
+                  修改密码
+                </el-button>
+
+                <span class="no-permission">当前账号</span>
+              </span>
+
+              <span v-else-if="isSoleSuperAdmin(row)" class="no-permission">系统唯一超管</span>
+
+              <template v-else-if="canManage(row)">
                 <el-button link type="primary" :loading="togglingId === row.id" @click="toggleActive(row)">
                   {{ row.isActive ? '停用' : '启用' }}
                 </el-button>
@@ -278,6 +353,28 @@ onMounted(loadUsers)
           <el-button @click="dialogVisible = false">取消</el-button>
           <el-button type="primary" :loading="submitting" @click="submitCreate">
             创建
+          </el-button>
+        </template>
+      </el-dialog>
+
+      <!-- 修改自己的密码 -->
+      <el-dialog v-model="passwordDialogVisible" title="修改密码" width="400px">
+        <el-form label-width="90px">
+          <el-form-item label="新密码">
+            <el-input v-model="passwordForm.password" type="password" show-password maxlength="72"
+              placeholder="至少 8 位，需含字母和数字" />
+          </el-form-item>
+
+          <el-form-item label="确认密码">
+            <el-input v-model="passwordForm.confirm" type="password" show-password maxlength="72"
+              placeholder="再次输入新密码" />
+          </el-form-item>
+        </el-form>
+
+        <template #footer>
+          <el-button @click="passwordDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="passwordSubmitting" @click="submitPassword">
+            确认修改
           </el-button>
         </template>
       </el-dialog>
@@ -332,5 +429,11 @@ onMounted(loadUsers)
 .no-permission {
   color: #c0c4cc;
   font-size: 13px;
+}
+
+.self-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>
