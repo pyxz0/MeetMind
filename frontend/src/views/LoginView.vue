@@ -13,20 +13,33 @@ const mode = ref<'login' | 'register'>('login')
 const loading = ref(false)
 
 const form = reactive({
-  email: '',
+  phone: '',
   password: '',
   name: ''
 })
+
+/** 中国大陆手机号：1 开头、第二位 3-9、共 11 位 */
+const PHONE_PATTERN = /^1[3-9]\d{9}$/
+
+/** 去掉空格、短横线等分隔符，后端也会做一次同样的归一化 */
+const normalizePhone = (value: string) =>
+  value.replace(/[\s\-()]/g, '').replace(/^\+?86/, '')
 
 const switchMode = () => {
   mode.value = mode.value === 'login' ? 'register' : 'login'
 }
 
 const submit = async () => {
-  const email = form.email.trim()
+  const phone = normalizePhone(form.phone)
 
-  if (!email || !form.password) {
-    ElMessage.warning('请填写邮箱和密码')
+  if (!phone || !form.password) {
+    ElMessage.warning('请填写手机号和密码')
+    return
+  }
+
+  // 前端先校验一次，避免明显错误的号码白跑一趟请求
+  if (!PHONE_PATTERN.test(phone)) {
+    ElMessage.warning('手机号格式不正确，请填写 11 位中国大陆手机号')
     return
   }
 
@@ -40,9 +53,9 @@ const submit = async () => {
   try {
     const result =
       mode.value === 'login'
-        ? await login(email, form.password)
+        ? await login(phone, form.password)
         : await register({
-          email,
+          phone,
           password: form.password,
           name: form.name.trim()
         })
@@ -87,8 +100,8 @@ const submit = async () => {
         </el-form-item>
 
         <el-form-item>
-          <el-input v-model="form.email" size="large" placeholder="邮箱" type="email" autocomplete="username"
-            maxlength="160" @keyup.enter="submit" />
+          <el-input v-model="form.phone" size="large" placeholder="手机号" type="tel" inputmode="numeric"
+            autocomplete="tel" maxlength="20" @keyup.enter="submit" />
         </el-form-item>
 
         <el-form-item>

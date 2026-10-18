@@ -172,7 +172,7 @@ const handleRevoke = async (share: MeetingShare) => {
     <!-- 新增共享 -->
     <div v-if="canPickUsers" class="share-form">
       <el-select v-model="selectedUserId" placeholder="选择用户" filterable style="flex: 1" :disabled="submitting">
-        <el-option v-for="user in candidates" :key="user.id" :label="`${user.name}（${user.email}）`"
+        <el-option v-for="user in candidates" :key="user.id" :label="`${user.name}（${user.phone}）`"
           :value="user.id" />
       </el-select>
 
@@ -199,7 +199,7 @@ const handleRevoke = async (share: MeetingShare) => {
 
           <div class="share-user-meta">
             <div class="share-user-name">{{ share.name }}</div>
-            <div class="share-user-email">{{ share.email }}</div>
+            <div class="share-user-phone">{{ share.phone }}</div>
           </div>
         </div>
 
@@ -303,7 +303,7 @@ const handleRevoke = async (share: MeetingShare) => {
   font-weight: 600;
 }
 
-.share-user-email {
+.share-user-phone {
   color: #909399;
   font-size: 12px;
 

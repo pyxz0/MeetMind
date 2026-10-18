@@ -56,8 +56,9 @@ enum SharePermission {
 /// 但请勿手动删除它，否则唯一性只剩应用层保证。
 model User {
   id           Int       @id @default(autoincrement())
-  /// 登录邮箱，全局唯一。
-  email        String    @unique @db.VarChar(160)
+  /// 手机号，唯一登录标识。
+  /// 存 11 位中国大陆手机号（不带 +86 前缀），入库前统一去空格与分隔符。
+  phone        String    @unique @db.VarChar(20)
   /// bcrypt 哈希；接口返回时永远剔除该字段。
   passwordHash String    @map("password_hash") @db.VarChar(120)
   /// 展示名称。

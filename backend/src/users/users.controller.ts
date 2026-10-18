@@ -39,21 +39,21 @@ export class UsersController {
     @CurrentUser() user: AuthenticatedUser,
     @Body()
     body: {
-      email?: string;
+      phone?: string;
       password?: string;
       name?: string;
       role?: string;
     },
   ) {
     return this.usersService.create(user, {
-      email: body?.email ?? '',
+      phone: body?.phone ?? '',
       password: body?.password ?? '',
       name: body?.name ?? '',
       role: body?.role,
     });
   }
 
-  /** 修改资料、角色或启用状态 */
+  /** 修改资料、手机号、角色或启用状态 */
   @Patch(':id')
   @RequirePermissions(PERMISSIONS.USER_MANAGE)
   update(
@@ -61,6 +61,7 @@ export class UsersController {
     @Param('id', ParseIntPipe) id: number,
     @Body()
     body: {
+      phone?: string;
       name?: string;
       role?: string;
       isActive?: boolean;

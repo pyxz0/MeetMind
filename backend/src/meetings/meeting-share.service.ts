@@ -26,7 +26,7 @@ export class MeetingShareService {
     const shares = await this.prisma.meetingShare.findMany({
       where: { meetingId },
       include: {
-        user: { select: { id: true, email: true, name: true, role: true } },
+        user: { select: { id: true, phone: true, name: true, role: true } },
         grantedBy: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'asc' },
@@ -35,7 +35,7 @@ export class MeetingShareService {
     return shares.map((share) => ({
       id: share.id,
       userId: share.user.id,
-      email: share.user.email,
+      phone: share.user.phone,
       name: share.user.name,
       role: share.user.role,
       permission: share.permission,
@@ -64,7 +64,7 @@ export class MeetingShareService {
 
     const target = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, name: true, email: true, isActive: true },
+      select: { id: true, name: true, phone: true, isActive: true },
     });
 
     if (!target) {
@@ -104,7 +104,7 @@ export class MeetingShareService {
         grantedById: user.id,
       },
       include: {
-        user: { select: { id: true, name: true, email: true } },
+        user: { select: { id: true, name: true, phone: true } },
       },
     });
 
@@ -112,7 +112,7 @@ export class MeetingShareService {
       id: share.id,
       userId: share.user.id,
       name: share.user.name,
-      email: share.user.email,
+      phone: share.user.phone,
       permission: share.permission,
       createdAt: share.createdAt.toISOString(),
     };

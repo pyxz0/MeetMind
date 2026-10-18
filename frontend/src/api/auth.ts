@@ -8,11 +8,11 @@ export interface LoginResult {
 
 /** 登录 */
 export const login = async (
-  email: string,
+  phone: string,
   password: string
 ): Promise<LoginResult> => {
   const response = await api.post<LoginResult>('/auth/login', {
-    email,
+    phone,
     password
   })
 
@@ -21,7 +21,7 @@ export const login = async (
 
 /** 自助注册（只会得到 USER 角色） */
 export const register = async (data: {
-  email: string
+  phone: string
   password: string
   name: string
 }): Promise<LoginResult> => {
@@ -41,7 +41,7 @@ export const fetchMe = async (): Promise<CurrentUser> => {
 
 export interface ManagedUser {
   id: number
-  email: string
+  phone: string
   name: string
   role: Role
   isActive: boolean
@@ -60,7 +60,7 @@ export const listUsers = async (params?: {
 
 /** 新建账号 */
 export const createUser = async (data: {
-  email: string
+  phone: string
   password: string
   name: string
   role?: Role
@@ -70,10 +70,11 @@ export const createUser = async (data: {
   return response.data
 }
 
-/** 修改资料 / 角色 / 启用状态 */
+/** 修改资料 / 手机号 / 角色 / 启用状态 */
 export const updateUser = async (
   id: number,
   data: {
+    phone?: string
     name?: string
     role?: Role
     isActive?: boolean
@@ -99,7 +100,7 @@ export type SharePermission = 'READ' | 'EDIT'
 export interface MeetingShare {
   id: number
   userId: number
-  email: string
+  phone: string
   name: string
   role?: Role
   permission: SharePermission

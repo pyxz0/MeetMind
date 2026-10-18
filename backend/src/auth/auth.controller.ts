@@ -6,21 +6,21 @@ import { CurrentUser, Public, type AuthenticatedUser } from './auth.decorators';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  /** 登录：邮箱 + 密码换取 JWT */
+  /** 登录：手机号 + 密码换取 JWT */
   @Public()
   @Post('login')
-  login(@Body() body: { email?: string; password?: string }) {
-    return this.authService.login(body?.email ?? '', body?.password ?? '');
+  login(@Body() body: { phone?: string; password?: string }) {
+    return this.authService.login(body?.phone ?? '', body?.password ?? '');
   }
 
   /** 自助注册，固定为普通用户 */
   @Public()
   @Post('register')
   register(
-    @Body() body: { email?: string; password?: string; name?: string },
+    @Body() body: { phone?: string; password?: string; name?: string },
   ) {
     return this.authService.register({
-      email: body?.email ?? '',
+      phone: body?.phone ?? '',
       password: body?.password ?? '',
       name: body?.name ?? '',
     });

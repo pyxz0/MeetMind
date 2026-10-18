@@ -20,7 +20,8 @@ export type Role = 'SUPER_ADMIN' | 'ADMIN' | 'USER'
 
 export interface CurrentUser {
   id: number
-  email: string
+  /** 手机号，唯一登录标识 */
+  phone: string
   name: string
   role: Role
   roleLabel: string

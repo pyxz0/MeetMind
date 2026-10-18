@@ -80,14 +80,14 @@ const dialogVisible = ref(false)
 const submitting = ref(false)
 
 const form = reactive({
-  email: '',
+  phone: '',
   password: '',
   name: '',
   role: 'USER' as Role
 })
 
 const openCreate = () => {
-  form.email = ''
+  form.phone = ''
   form.password = ''
   form.name = ''
   form.role = 'USER'
@@ -95,8 +95,13 @@ const openCreate = () => {
 }
 
 const submitCreate = async () => {
-  if (!form.email.trim() || !form.password || !form.name.trim()) {
+  if (!form.phone.trim() || !form.password || !form.name.trim()) {
     ElMessage.warning('请填写完整信息')
+    return
+  }
+
+  if (!/^1[3-9]\d{9}$/.test(form.phone.trim())) {
+    ElMessage.warning('手机号格式不正确，请填写 11 位中国大陆手机号')
     return
   }
 
@@ -104,7 +109,7 @@ const submitCreate = async () => {
 
   try {
     await createUser({
-      email: form.email.trim(),
+      phone: form.phone.trim(),
       password: form.password,
       name: form.name.trim(),
       role: form.role
@@ -168,7 +173,7 @@ const changeRole = async (user: ManagedUser, role: Role) => {
 const handleDelete = async (user: ManagedUser) => {
   try {
     await ElMessageBox.confirm(
-      `确定删除账号「${user.name}（${user.email}）」吗？该用户名下的会议也会一并删除，且无法恢复。`,
+      `确定删除账号「${user.name}（${user.phone}）」吗？该用户名下的会议也会一并删除，且无法恢复。`,
       '删除账号',
       {
         confirmButtonText: '确定删除',
@@ -248,7 +253,7 @@ onMounted(loadUsers)
         </div>
 
         <div class="header-actions">
-          <el-input v-model="keyword" placeholder="搜索邮箱或姓名" clearable style="width: 200px"
+          <el-input v-model="keyword" placeholder="搜索手机号或姓名" clearable style="width: 200px"
             @keyup.enter="loadUsers" @clear="loadUsers" />
 
           <el-button :loading="loading" @click="loadUsers">
@@ -265,7 +270,7 @@ onMounted(loadUsers)
         <el-table v-loading="loading" :data="users" style="width: 100%">
           <el-table-column prop="name" label="姓名" min-width="120" />
 
-          <el-table-column prop="email" label="邮箱" min-width="200" />
+          <el-table-column prop="phone" label="手机号" min-width="150" />
 
           <el-table-column label="角色" width="170">
             <template #default="{ row }">
@@ -333,8 +338,8 @@ onMounted(loadUsers)
             <el-input v-model="form.name" maxlength="80" />
           </el-form-item>
 
-          <el-form-item label="邮箱">
-            <el-input v-model="form.email" maxlength="160" />
+          <el-form-item label="手机号">
+            <el-input v-model="form.phone" maxlength="20" placeholder="11 位中国大陆手机号" />
           </el-form-item>
 
           <el-form-item label="密码">

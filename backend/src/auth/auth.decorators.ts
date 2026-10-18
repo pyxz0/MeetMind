@@ -22,7 +22,7 @@ export const RequireRoles = (...roles: AppRole[]) =>
 /** 已通过 JWT 校验并加载的用户信息，挂在 request.user 上 */
 export interface AuthenticatedUser {
   id: number;
-  email: string;
+  phone: string;
   name: string;
   role: AppRole;
   isActive: boolean;

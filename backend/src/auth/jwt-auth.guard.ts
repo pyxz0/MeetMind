@@ -75,7 +75,7 @@ export class JwtAuthGuard implements CanActivate {
       where: { id: userId },
       select: {
         id: true,
-        email: true,
+        phone: true,
         name: true,
         role: true,
         isActive: true,
@@ -88,7 +88,7 @@ export class JwtAuthGuard implements CanActivate {
 
     const currentUser: AuthenticatedUser = {
       id: user.id,
-      email: user.email,
+      phone: user.phone,
       name: user.name,
       role: user.role as AppRole,
       isActive: user.isActive,

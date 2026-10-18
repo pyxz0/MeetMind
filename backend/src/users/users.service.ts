@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../common/prisma.service';
+import { AuthService } from '../auth/auth.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import type { AppRole } from '../auth/permissions';
 
@@ -21,7 +22,7 @@ const ROLE_RANK: Record<AppRole, number> = {
 /** 对外暴露的用户视图字段（永不含密码哈希） */
 const publicUserSelect = {
   id: true,
-  email: true,
+  phone: true,
   name: true,
   role: true,
   isActive: true,
@@ -45,7 +46,10 @@ const SINGLE_SUPER_ADMIN_MESSAGE =
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly authService: AuthService,
+  ) {}
 
   /**
    * 用户列表，支持关键字与角色筛选。
@@ -80,8 +84,9 @@ export class UsersService {
     }
 
     if (keyword) {
+      // 手机号是精确匹配场景，用 contains 支持按尾号搜索
       where.OR = [
-        { email: { contains: keyword, mode: 'insensitive' } },
+        { phone: { contains: keyword } },
         { name: { contains: keyword, mode: 'insensitive' } },
       ];
     }
@@ -94,7 +99,7 @@ export class UsersService {
 
     return users.map((user) => ({
       id: user.id,
-      email: user.email,
+      phone: user.phone,
       name: user.name,
       role: user.role,
       isActive: user.isActive,
@@ -106,7 +111,7 @@ export class UsersService {
   async create(
     operator: AuthenticatedUser,
     input: {
-      email: string;
+      phone: string;
       password: string;
       name: string;
       role?: string;
@@ -128,11 +133,8 @@ export class UsersService {
       throw new BadRequestException(SINGLE_SUPER_ADMIN_MESSAGE);
     }
 
-    const email = (input.email ?? '').trim().toLowerCase();
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw new BadRequestException('邮箱格式不正确');
-    }
+    // 复用 AuthService 的归一化与格式校验，保证与自助注册完全一致
+    const phone = this.authService.normalizePhone(input.phone ?? '');
 
     const name = input.name?.trim();
 
@@ -143,19 +145,19 @@ export class UsersService {
     this.assertPassword(input.password);
 
     const existing = await this.prisma.user.findUnique({
-      where: { email },
+      where: { phone },
       select: { id: true },
     });
 
     if (existing) {
-      throw new BadRequestException('该邮箱已被注册');
+      throw new BadRequestException('该手机号已被注册');
     }
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
 
     const user = await this.prisma.user.create({
       data: {
-        email,
+        phone,
         passwordHash,
         name: name.slice(0, 80),
         role,
@@ -171,6 +173,7 @@ export class UsersService {
     operator: AuthenticatedUser,
     targetId: number,
     input: {
+      phone?: string;
       name?: string;
       role?: string;
       isActive?: boolean;
@@ -205,6 +208,16 @@ export class UsersService {
 
       if (input.isActive !== undefined && input.isActive !== target.isActive) {
         throw new BadRequestException('不能修改自己的启用状态');
+      }
+
+      /**
+       * 手机号是登录标识，改错会直接把自己锁在系统外，
+       * 因此不允许自助修改，必须由上级账号在用户管理中调整。
+       */
+      if (input.phone !== undefined) {
+        throw new BadRequestException(
+          '不能修改自己的手机号，请联系管理员（或超级管理员）调整',
+        );
       }
     } else if (targetRole === 'SUPER_ADMIN') {
       /**
@@ -245,6 +258,22 @@ export class UsersService {
       throw new BadRequestException(
         '唯一的超级管理员不能被停用，否则系统将无人可管理账号',
       );
+    }
+
+    if (input.phone !== undefined) {
+      const phone = this.authService.normalizePhone(input.phone);
+
+      // 改成已被占用的号码会撞唯一索引，提前给出可读的错误
+      const occupied = await this.prisma.user.findFirst({
+        where: { phone, id: { not: targetId } },
+        select: { id: true },
+      });
+
+      if (occupied) {
+        throw new BadRequestException('该手机号已被其他账号使用');
+      }
+
+      data.phone = phone;
     }
 
     if (input.name !== undefined) {

@@ -12,10 +12,18 @@ import { ROLE_PERMISSIONS, ROLE_LABELS } from './permissions';
 /** bcrypt 代价因子。12 约 250ms/次，兼顾安全与登录体验。 */
 const BCRYPT_ROUNDS = 12;
 
+/**
+ * 中国大陆手机号：1 开头、第二位 3-9、共 11 位。
+ *
+ * 只做格式校验，不做真实号段/归属地校验 —— 那需要运营商数据，
+ * 对当前场景没有意义（真正有效性靠登录时的密码校验）。
+ */
+const PHONE_PATTERN = /^1[3-9]\d{9}$/;
+
 /** 对外返回的用户视图，绝不包含 passwordHash */
 export interface PublicUser {
   id: number;
-  email: string;
+  phone: string;
   name: string;
   role: AppRole;
   roleLabel: string;
@@ -31,26 +39,26 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
-  /** 登录：校验邮箱密码，签发 JWT */
-  async login(email: string, password: string) {
-    const normalizedEmail = this.normalizeEmail(email);
+  /** 登录：校验手机号与密码，签发 JWT */
+  async login(phone: string, password: string) {
+    const normalizedPhone = this.normalizePhone(phone);
 
     const user = await this.prisma.user.findUnique({
-      where: { email: normalizedEmail },
+      where: { phone: normalizedPhone },
     });
 
     /**
-     * 邮箱不存在与密码错误返回同一句话，
-     * 避免通过错误信息枚举出系统里存在哪些邮箱。
+     * 手机号不存在与密码错误返回同一句话，
+     * 避免通过错误信息枚举出系统里注册了哪些手机号。
      */
     if (!user) {
-      throw new UnauthorizedException('邮箱或密码不正确');
+      throw new UnauthorizedException('手机号或密码不正确');
     }
 
     const matched = await bcrypt.compare(password, user.passwordHash);
 
     if (!matched) {
-      throw new UnauthorizedException('邮箱或密码不正确');
+      throw new UnauthorizedException('手机号或密码不正确');
     }
 
     if (!user.isActive) {
@@ -58,7 +66,7 @@ export class AuthService {
     }
 
     return {
-      token: await this.signToken(user.id, user.role as AppRole, user.email),
+      token: await this.signToken(user.id, user.role as AppRole, user.phone),
       user: this.toPublicUser(user),
     };
   }
@@ -70,11 +78,11 @@ export class AuthService {
    * 否则任何人注册后就能看到全站数据。
    */
   async register(input: {
-    email: string;
+    phone: string;
     password: string;
     name: string;
   }) {
-    const email = this.normalizeEmail(input.email);
+    const phone = this.normalizePhone(input.phone);
     this.assertPasswordStrength(input.password);
 
     const name = input.name?.trim();
@@ -84,19 +92,19 @@ export class AuthService {
     }
 
     const existing = await this.prisma.user.findUnique({
-      where: { email },
+      where: { phone },
       select: { id: true },
     });
 
     if (existing) {
-      throw new BadRequestException('该邮箱已被注册');
+      throw new BadRequestException('该手机号已被注册');
     }
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
 
     const user = await this.prisma.user.create({
       data: {
-        email,
+        phone,
         passwordHash,
         name: name.slice(0, 80),
         role: 'USER',
@@ -104,7 +112,7 @@ export class AuthService {
     });
 
     return {
-      token: await this.signToken(user.id, user.role as AppRole, user.email),
+      token: await this.signToken(user.id, user.role as AppRole, user.phone),
       user: this.toPublicUser(user),
     };
   }
@@ -123,7 +131,7 @@ export class AuthService {
   /** 供其他模块复用：把数据库用户转为不含敏感字段的视图 */
   toPublicUser(user: {
     id: number;
-    email: string;
+    phone: string;
     name: string;
     role: string;
     isActive: boolean;
@@ -133,7 +141,7 @@ export class AuthService {
 
     return {
       id: user.id,
-      email: user.email,
+      phone: user.phone,
       name: user.name,
       role,
       roleLabel: ROLE_LABELS[role] ?? role,
@@ -159,23 +167,31 @@ export class AuthService {
     }
   }
 
-  /** 邮箱统一小写去空格，避免 A@x.com 与 a@x.com 注册出两个账号 */
-  normalizeEmail(email: string) {
-    const normalized = (email ?? '').trim().toLowerCase();
+  /**
+   * 手机号归一化。
+   *
+   * 用户很可能会输入带空格、短横线或 +86 前缀的号码
+   * （例如「+86 138-0013-8000」），统一去掉这些干扰字符再校验，
+   * 否则同一个号码会被当成多个不同账号注册。
+   */
+  normalizePhone(phone: string) {
+    const digits = (phone ?? '')
+      .trim()
+      .replace(/[\s\-()]/g, '')
+      .replace(/^\+?86/, '');
 
-    // 只做基础格式校验，不追求完整 RFC 5322
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-      throw new BadRequestException('邮箱格式不正确');
+    if (!PHONE_PATTERN.test(digits)) {
+      throw new BadRequestException('手机号格式不正确（需为 11 位中国大陆手机号）');
     }
 
-    return normalized;
+    return digits;
   }
 
-  private signToken(userId: number, role: AppRole, email: string) {
+  private signToken(userId: number, role: AppRole, phone: string) {
     return this.jwtService.signAsync({
       sub: userId,
       role,
-      email,
+      phone,
     });
   }
 }
