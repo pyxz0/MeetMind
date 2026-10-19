@@ -3,9 +3,11 @@ import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { provideDraftStore } from './composables/draftStore'
+import { useInboxStore } from './composables/inboxStore'
 import { authStore } from './stores/auth'
 
 const draftStore = provideDraftStore()
+const inboxStore = useInboxStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -33,9 +35,12 @@ const backToMyAccount = async () => {
 }
 
 onMounted(async () => {
-  // 未登录时（登录页）不拉草稿数量，避免无谓的 401
+  // 未登录时（登录页）不拉草稿数量与角标，避免无谓的 401
   if (authStore.isAuthenticated.value) {
-    await draftStore.refresh()
+    await Promise.all([
+      draftStore.refresh(),
+      inboxStore.refresh(),
+    ])
   }
 })
 </script>
@@ -99,6 +104,25 @@ onMounted(async () => {
               draftStore.count > 99
                 ? '99+'
                 : draftStore.count
+            }}
+          </span>
+        </router-link>
+
+        <router-link
+          to="/inbox"
+          class="nav-item"
+        >
+          <span class="nav-icon">📬</span>
+          <span class="nav-label">收件箱</span>
+
+          <span
+            v-if="inboxStore.unreadCount.value > 0"
+            class="draft-count"
+          >
+            {{
+              inboxStore.unreadCount.value > 99
+                ? '99+'
+                : inboxStore.unreadCount.value
             }}
           </span>
         </router-link>

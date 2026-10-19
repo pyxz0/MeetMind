@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import HomeView from '../views/HomeView.vue'
 import MeetMindView from '../views/MeetMindView.vue'
+import InboxView from '../views/InboxView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import MeetingDetailView from '../views/MeetingDetailView.vue'
 import DraftsView from '../views/DraftsView.vue'
@@ -60,6 +61,13 @@ const router = createRouter({
       path: '/drafts',
       name: 'drafts',
       component: DraftsView,
+    },
+
+    {
+      /** 收件箱：会议通知与待办提醒 */
+      path: '/inbox',
+      name: 'inbox',
+      component: InboxView,
     },
 
     {

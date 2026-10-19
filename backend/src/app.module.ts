@@ -9,6 +9,7 @@ import { MeetingsModule } from './meetings/meetings.module'
 import { PrismaModule } from './common/prisma.module'
 import { AuthModule } from './auth/auth.module'
 import { UsersModule } from './users/users.module'
+import { InboxModule } from './inbox/inbox.module'
 import { JwtAuthGuard } from './auth/jwt-auth.guard'
 
 @Module({
@@ -20,6 +21,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard'
     // AuthModule 为 @Global，JwtModule / AuthService / 守卫在全局可用
     AuthModule,
     UsersModule,
+    InboxModule,
     AiModule,
     MeetingsModule,
   ],
