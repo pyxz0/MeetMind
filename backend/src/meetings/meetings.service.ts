@@ -207,6 +207,227 @@ export class MeetingsService {
     );
   }
 
+  /**
+   * 修改未开始会议的预约信息（标题、开会时间、负责人、成员）。
+   *
+   * 允许改全部内容的前提是「会议还没开始」：
+   * 一旦到了开会时间，人员与时间再变会误导参会者，因此禁止。
+   *
+   * 修改成功后给「受影响的人 + 当前全部参会人员」发变更消息，
+   * 被移出会议的人也会收到一条单独的告知。
+   */
+  async updateScheduled(
+    id: number,
+    input: {
+      title?: string;
+      scheduledAt?: string;
+      leaderIds?: number[];
+      memberIds?: number[];
+    },
+    user: AuthenticatedUser,
+  ) {
+    await assertCanWrite(this.prisma, user, id);
+
+    const current = await this.prisma.meeting.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        title: true,
+        scheduledAt: true,
+        leaders: { select: { userId: true } },
+        members: { select: { userId: true } },
+      },
+    });
+
+    if (!current) {
+      throw new NotFoundException('会议记录不存在');
+    }
+
+    if (!current.scheduledAt) {
+      throw new BadRequestException('只有预约的正式会议可以修改预约信息');
+    }
+
+    if (current.scheduledAt.getTime() <= Date.now()) {
+      throw new BadRequestException('会议已开始，不能再修改预约信息');
+    }
+
+    const data: Prisma.MeetingUpdateInput = {};
+
+    if (input.title !== undefined) {
+      const title = input.title.trim();
+
+      if (!title) {
+        throw new BadRequestException('会议标题不能为空');
+      }
+
+      if (title.length > 200) {
+        throw new BadRequestException('会议标题不能超过200个字符');
+      }
+
+      data.title = title;
+    }
+
+    if (input.scheduledAt !== undefined) {
+      const when = new Date(input.scheduledAt);
+
+      if (Number.isNaN(when.getTime())) {
+        throw new BadRequestException('开会时间格式不正确');
+      }
+
+      if (when.getTime() < Date.now() - 60_000) {
+        throw new BadRequestException('开会时间不能早于当前时间');
+      }
+
+      data.scheduledAt = when;
+    }
+
+    const nextLeaderIds =
+      input.leaderIds !== undefined
+        ? this.normalizeIds(input.leaderIds)
+        : current.leaders.map((l) => l.userId);
+
+    const nextMemberIds =
+      input.memberIds !== undefined
+        ? this.normalizeIds(input.memberIds)
+        : current.members.map((m) => m.userId);
+
+    // 每场会议至少要有一位负责人
+    if (!nextLeaderIds.length) {
+      throw new BadRequestException('至少需要一位负责人');
+    }
+
+    await this.assertUsersUsable([...nextLeaderIds, ...nextMemberIds]);
+
+    // ---- 变更摘要，用于消息正文 ----
+    const changes: string[] = [];
+
+    if (data.title && data.title !== current.title) {
+      changes.push(`名称改为「${data.title as string}」`);
+    }
+
+    if (data.scheduledAt) {
+      const when = data.scheduledAt as Date;
+
+      if (when.getTime() !== current.scheduledAt.getTime()) {
+        changes.push(`开会时间改为 ${this.formatDateTime(when)}`);
+      }
+    }
+
+    const beforeLeaderIds = current.leaders.map((l) => l.userId);
+    const beforeMemberIds = current.members.map((m) => m.userId);
+
+    const leadersChanged = !this.sameIdSet(beforeLeaderIds, nextLeaderIds);
+    const membersChanged = !this.sameIdSet(beforeMemberIds, nextMemberIds);
+
+    if (leadersChanged || membersChanged) {
+      const names = await this.userNames([
+        ...nextLeaderIds,
+        ...nextMemberIds,
+      ]);
+
+      if (leadersChanged) {
+        changes.push(
+          `负责人：${nextLeaderIds.map((x) => names.get(x) ?? `#${x}`).join('、')}`,
+        );
+      }
+
+      if (membersChanged) {
+        const memberText = nextMemberIds.length
+          ? nextMemberIds.map((x) => names.get(x) ?? `#${x}`).join('、')
+          : '暂无';
+
+        changes.push(`参会成员：${memberText}`);
+      }
+    }
+
+    if (!changes.length) {
+      throw new BadRequestException('没有需要修改的内容');
+    }
+
+    // ---- 保存 ----
+    await this.prisma.$transaction(async (tx) => {
+      await tx.meeting.update({ where: { id }, data });
+
+      if (input.leaderIds !== undefined) {
+        await tx.meetingLeader.deleteMany({ where: { meetingId: id } });
+        await tx.meetingLeader.createMany({
+          data: nextLeaderIds.map((userId) => ({ meetingId: id, userId })),
+          skipDuplicates: true,
+        });
+      }
+
+      if (input.memberIds !== undefined) {
+        await tx.meetingMember.deleteMany({ where: { meetingId: id } });
+        await tx.meetingMember.createMany({
+          data: nextMemberIds.map((userId) => ({ meetingId: id, userId })),
+          skipDuplicates: true,
+        });
+      }
+    });
+
+    // ---- 发消息 ----
+    const finalTitle =
+      (data.title as string | undefined) ?? current.title;
+
+    const recipients = new Set<number>([
+      ...beforeLeaderIds,
+      ...beforeMemberIds,
+      ...nextLeaderIds,
+      ...nextMemberIds,
+    ]);
+
+    // 自己改的自己不用再收一次消息
+    recipients.delete(user.id);
+
+    const stillParticipating = new Set<number>([
+      ...nextLeaderIds,
+      ...nextMemberIds,
+    ]);
+
+    const summary = changes.join('；');
+
+    await this.prisma.meetingNotice.createMany({
+      data: [...recipients].map((userId) => ({
+        userId,
+        meetingId: id,
+        content: stillParticipating.has(userId)
+          ? `会议「${finalTitle}」信息已更新：${summary}`
+          : `你已被移出会议「${finalTitle}」`,
+      })),
+    });
+
+    return this.findOne(id, user);
+  }
+
+  /** 两组 id 是否完全一致（顺序无关） */
+  private sameIdSet(a: number[], b: number[]) {
+    const sa = [...new Set(a)].sort((x, y) => x - y);
+    const sb = [...new Set(b)].sort((x, y) => x - y);
+
+    return sa.length === sb.length && sa.every((v, i) => v === sb[i]);
+  }
+
+  /** 批量取用户姓名，供消息正文使用 */
+  private async userNames(ids: number[]) {
+    if (!ids.length) return new Map<number, string>();
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: [...new Set(ids)] } },
+      select: { id: true, name: true },
+    });
+
+    return new Map(users.map((u) => [u.id, u.name]));
+  }
+
+  /** 消息里用的时间格式：10/21 09:00 */
+  private formatDateTime(date: Date) {
+    const pad = (n: number) => String(n).padStart(2, '0');
+
+    return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(
+      date.getHours(),
+    )}:${pad(date.getMinutes())}`;
+  }
+
   /** 去重并过滤非法 id */
   private normalizeIds(ids?: number[]) {
     if (!Array.isArray(ids)) return [];

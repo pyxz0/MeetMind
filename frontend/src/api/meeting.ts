@@ -445,6 +445,25 @@ export const createScheduledMeeting = async (data: {
   return normalizeMeeting(response.data)
 }
 
+/**
+ * 修改未开始会议的预约信息（标题 / 开会时间 / 负责人 / 成员）。
+ *
+ * 后端会校验会议尚未开始，并在成功后给参会人员发送变更消息。
+ */
+export const updateScheduledMeeting = async (
+  id: number,
+  data: {
+    title?: string
+    scheduledAt?: string
+    leaderIds?: number[]
+    memberIds?: number[]
+  }
+): Promise<MeetingRecord> => {
+  const response = await api.patch(`/meetings/${id}/schedule`, data)
+
+  return normalizeMeeting(response.data)
+}
+
 /* ───────────── 负责人 / 成员 / 录音开放 ───────────── */
 
 /** 追加负责人（可多位），返回最新负责人列表 */

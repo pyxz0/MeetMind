@@ -210,6 +210,22 @@ export class MeetingsController {
     return this.meetingsService.updateMeeting(id, body, user);
   }
 
+  /** 修改未开始会议的预约信息（标题 / 时间 / 负责人 / 成员） */
+  @Patch(':id/schedule')
+  updateScheduled(
+    @Param('id', ParseIntPipe) id: number,
+    @Body()
+    body: {
+      title?: string;
+      scheduledAt?: string;
+      leaderIds?: number[];
+      memberIds?: number[];
+    },
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.updateScheduled(id, body ?? {}, user);
+  }
+
   /** 追加负责人（可多位） */
   @Post(':id/leaders')
   addLeader(

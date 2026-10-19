@@ -79,6 +79,8 @@ model User {
   meetingMemberships MeetingMember[] @relation("MeetingMemberUser")
   /// 收件箱已读记录。
   inboxReads   InboxRead[]
+  /// 收到的会议变更消息。
+  notices      MeetingNotice[] @relation("NoticeRecipient")
   /// 别人共享给该用户的会议。
   sharedWithMe MeetingShare[]  @relation("ShareRecipient")
   /// 该用户做过的共享操作（用于追溯是谁授的权）。
@@ -86,6 +88,26 @@ model User {
 
   @@index([role])
   @@map("users")
+}
+
+/// 会议变更消息。
+///
+/// 负责人/成员/共享这类「关系」可以派生通知，但「会议时间改了」是一次性事件，
+/// 无法从当前状态反推，所以需要落库。
+/// 收件箱会把这类消息与派生通知合并展示。
+model MeetingNotice {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  meetingId Int      @map("meeting_id")
+  /// 消息正文，已按收件人视角写好（如「你已被移出会议」）
+  content   String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user    User    @relation("NoticeRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("meeting_notices")
 }
 
 /// 收件箱单条已读记录。
@@ -212,6 +234,9 @@ model Meeting {
 
   /// 会议成员（参会人）。
   members MeetingMember[]
+
+  /// 该会议发出的变更消息。
+  notices MeetingNotice[]
 
   /// 该会议对其他用户的共享授权。
   shares MeetingShare[]

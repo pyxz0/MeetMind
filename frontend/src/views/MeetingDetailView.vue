@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -18,6 +18,7 @@ import {
   removeMeetingMember,
   updateMeetingAudioOpen,
   updateMeetingPinned,
+  updateScheduledMeeting,
   type MeetingRecord,
   type MemberBrief
 } from '../api/meeting'
@@ -82,6 +83,102 @@ const todoForm = ref({
 const loading = ref(false)
 const completionStatusUpdating = ref(false)
 const regenerating = ref(false)
+
+/* =========================
+   预约信息编辑（仅未开始的正式会议）
+   ========================= */
+
+/** 是否还没到开会时间 */
+const isUpcoming = computed(() => {
+  if (!meeting.value?.scheduledAt) return false
+
+  return new Date(meeting.value.scheduledAt).getTime() > Date.now()
+})
+
+/** 只有未开始的正式会议才允许改预约信息 */
+const canEditSchedule = computed(() => isUpcoming.value && canEdit.value)
+
+const scheduleDialogVisible = ref(false)
+const scheduleSubmitting = ref(false)
+
+const scheduleForm = reactive({
+  title: '',
+  scheduledAt: '' as string | number | Date | '',
+  leaderIds: [] as number[],
+  memberIds: [] as number[]
+})
+
+const openScheduleDialog = async () => {
+  if (!meeting.value) return
+
+  scheduleForm.title = meeting.value.title || ''
+  scheduleForm.scheduledAt = meeting.value.scheduledAt
+    ? new Date(meeting.value.scheduledAt)
+    : ''
+  scheduleForm.leaderIds = (meeting.value.leaders ?? []).map((l) => l.id)
+  scheduleForm.memberIds = (meeting.value.members ?? []).map((m) => m.id)
+
+  scheduleDialogVisible.value = true
+
+  await loadContacts()
+}
+
+const submitSchedule = async () => {
+  if (!meeting.value) return
+
+  if (!scheduleForm.scheduledAt) {
+    ElMessage.warning('请选择开会时间')
+    return
+  }
+
+  if (!scheduleForm.leaderIds.length) {
+    ElMessage.warning('至少需要一位负责人')
+    return
+  }
+
+  const when = new Date(scheduleForm.scheduledAt)
+
+  if (Number.isNaN(when.getTime())) {
+    ElMessage.warning('开会时间格式不正确')
+    return
+  }
+
+  scheduleSubmitting.value = true
+
+  try {
+    const updated = await updateScheduledMeeting(meeting.value.id, {
+      title: scheduleForm.title.trim(),
+      scheduledAt: when.toISOString(),
+      leaderIds: scheduleForm.leaderIds,
+      memberIds: scheduleForm.memberIds
+    })
+
+    meeting.value = updated
+    scheduleDialogVisible.value = false
+
+    ElMessage.success('预约信息已更新，已通知参会人员')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '修改失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    scheduleSubmitting.value = false
+  }
+}
+
+const formatScheduledAt = (value?: string | null) => {
+  if (!value) return ''
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) return ''
+
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
 
 /* =========================
    置顶
@@ -625,6 +722,11 @@ onMounted(async () => {
                 编辑标题
               </el-button>
 
+              <!-- 未开始的正式会议可以改全部预约信息（时间、人员、标题） -->
+              <el-button v-if="canEditSchedule" type="primary" link @click="openScheduleDialog">
+                编辑预约信息
+              </el-button>
+
               <el-button v-if="canShare" type="primary" link @click="shareDialogVisible = true">
                 共享
               </el-button>
@@ -687,6 +789,12 @@ onMounted(async () => {
         <div class="meta">
           <span>会议编号：{{ meeting.id }}</span>
           <span>创建时间：{{ formatDate(meeting.createdAt) }}</span>
+          <!-- 正式会议显示开会时间与「未开始」提示 -->
+          <span v-if="meeting.scheduledAt" class="scheduled-meta">
+            开会时间：{{ formatScheduledAt(meeting.scheduledAt) }}
+            <el-tag v-if="isUpcoming" type="primary" size="small" effect="plain">未开始</el-tag>
+            <el-tag v-else type="info" size="small" effect="plain">已到时间</el-tag>
+          </span>
           <span v-if="!meeting.isOwner" class="shared-tag">
             他人共享
           </span>
@@ -904,6 +1012,43 @@ onMounted(async () => {
       </el-button>
     </el-empty>
   </div>
+  <el-dialog v-model="scheduleDialogVisible" title="编辑预约信息" width="520px">
+    <el-alert class="schedule-tip" type="info" :closable="false" show-icon
+      title="保存后会立即通知全部参会人员" description="会议一旦到达开会时间，将无法再修改时间与人员。" />
+
+    <el-form label-width="96px">
+      <el-form-item label="会议标题">
+        <el-input v-model="scheduleForm.title" maxlength="200" placeholder="会议标题" />
+      </el-form-item>
+
+      <el-form-item label="开会时间">
+        <el-date-picker v-model="scheduleForm.scheduledAt" type="datetime" placeholder="选择开会时间"
+          format="YYYY-MM-DD HH:mm" style="width: 100%" />
+      </el-form-item>
+
+      <el-form-item label="负责人">
+        <el-select v-model="scheduleForm.leaderIds" multiple filterable placeholder="选择负责人"
+          :loading="contactsLoading" style="width: 100%">
+          <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+        </el-select>
+      </el-form-item>
+
+      <el-form-item label="参会成员">
+        <el-select v-model="scheduleForm.memberIds" multiple filterable placeholder="选择参会成员"
+          :loading="contactsLoading" style="width: 100%">
+          <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+        </el-select>
+      </el-form-item>
+    </el-form>
+
+    <template #footer>
+      <el-button @click="scheduleDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="scheduleSubmitting" @click="submitSchedule">
+        保存并通知
+      </el-button>
+    </template>
+  </el-dialog>
+
   <el-dialog v-model="todoDialogVisible" title="新增待办事项" width="500px">
     <el-form :model="todoForm" label-width="80px">
       <el-form-item label="待办内容">
@@ -1066,6 +1211,18 @@ onMounted(async () => {
 
 .shared-tag {
   color: #e6a23c;
+}
+
+.scheduled-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #409eff;
+}
+
+.schedule-tip {
+  margin-bottom: 16px;
+  border-radius: 8px;
 }
 
 /* ---- 负责人与成员 ---- */

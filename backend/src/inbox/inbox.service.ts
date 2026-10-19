@@ -4,8 +4,13 @@ import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 
-/** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 会议即将开始 */
-export type InboxNotificationType = 'leader' | 'member' | 'share' | 'reminder';
+/** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 会议即将开始 / 会议信息有更新 */
+export type InboxNotificationType =
+  | 'leader'
+  | 'member'
+  | 'share'
+  | 'reminder'
+  | 'notice';
 
 export interface InboxNotification {
   /** 同类记录的稳定标识，供前端做 key */
@@ -19,6 +24,8 @@ export interface InboxNotification {
   permission: 'READ' | 'EDIT' | null;
   /** 会议开始时间，仅 reminder 类型有值 */
   scheduledAt: string | null;
+  /** 消息正文，仅 notice 类型有值 */
+  content: string | null;
   createdAt: string;
   read: boolean;
 }
@@ -48,8 +55,16 @@ export class InboxService {
    * 不额外建通知表 —— 关系本身就是事实，避免双写不一致。
    */
   async getInbox(user: AuthenticatedUser) {
-    const [leaders, members, shares, reminders, todoItems, seenAt, readRows] =
-      await Promise.all([
+    const [
+      leaders,
+      members,
+      shares,
+      reminders,
+      todoItems,
+      seenAt,
+      readRows,
+      notices,
+    ] = await Promise.all([
         this.prisma.meetingLeader.findMany({
           where: { userId: user.id },
           select: {
@@ -89,6 +104,17 @@ export class InboxService {
           where: { userId: user.id },
           select: { itemKey: true },
         }),
+        this.prisma.meetingNotice.findMany({
+          where: { userId: user.id },
+          select: {
+            id: true,
+            content: true,
+            createdAt: true,
+            meeting: { select: { id: true, title: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
       ]);
 
     const seenAtDate = seenAt?.inboxSeenAt ?? null
@@ -100,6 +126,18 @@ export class InboxService {
       !!seenAtDate && createdAt.getTime() <= seenAtDate.getTime();
 
     const notifications: InboxNotification[] = [
+      ...notices.map((row) => ({
+        key: `notice-${row.id}`,
+        type: 'notice' as const,
+        meetingId: row.meeting.id,
+        meetingTitle: row.meeting.title,
+        actorName: null,
+        permission: null,
+        scheduledAt: null,
+        content: row.content,
+        createdAt: row.createdAt.toISOString(),
+        read: false,
+      })),
       ...reminders,
       ...leaders.map((row, index) => ({
         key: `leader-${row.meeting.id}-${index}`,
@@ -109,6 +147,7 @@ export class InboxService {
         actorName: null,
         permission: null,
         scheduledAt: null,
+        content: null,
         createdAt: row.createdAt.toISOString(),
         read: isRead(row.createdAt),
       })),
@@ -120,6 +159,7 @@ export class InboxService {
         actorName: null,
         permission: null,
         scheduledAt: null,
+        content: null,
         createdAt: row.createdAt.toISOString(),
         read: isRead(row.createdAt),
       })),
@@ -131,6 +171,7 @@ export class InboxService {
         actorName: row.grantedBy?.name ?? null,
         permission: row.permission,
         scheduledAt: null,
+        content: null,
         createdAt: row.createdAt.toISOString(),
         read: isRead(row.createdAt),
       })),
@@ -308,6 +349,7 @@ export class InboxService {
         actorName: null,
         permission: null,
         scheduledAt: scheduledAt.toISOString(),
+        content: null,
         createdAt: remindAt.toISOString(),
         read: false,
       };
