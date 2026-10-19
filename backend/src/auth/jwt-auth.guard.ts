@@ -130,18 +130,49 @@ export class JwtAuthGuard implements CanActivate {
     return true;
   }
 
-  /** 从 Authorization: Bearer <token> 中取出令牌 */
+  /**
+   * 取出请求携带的令牌。
+   *
+   * 优先读 Authorization 头；音频流是唯一的例外 ——
+   * `<audio>` 标签无法自定义请求头，只能把 token 放在查询参数里。
+   * 因此仅在「GET + 会议音频流路径」这一种情况下接受 ?token=，
+   * 避免把 URL 传 token 变成通用能力（会被日志、历史记录泄露）。
+   */
   private extractToken(request: {
     headers?: Record<string, unknown>;
+    method?: string;
+    path?: string;
+    query?: Record<string, unknown>;
   }): string | null {
     const header = request.headers?.authorization;
 
-    if (typeof header !== 'string') {
-      return null;
+    if (typeof header === 'string') {
+      const [scheme, value] = header.split(' ');
+
+      if (scheme?.toLowerCase() === 'bearer' && value) {
+        return value;
+      }
     }
 
-    const [scheme, value] = header.split(' ');
+    /**
+     * 路径可能带全局前缀（本项目的接口前缀是 /api），
+     * 先去掉前缀再匹配，否则带前缀时永远匹配不上、query token 形同失效。
+     */
+    const rawPath = typeof request.path === 'string' ? request.path : '';
+    const path = rawPath.replace(/^\/api(?=\/)/, '');
 
-    return scheme?.toLowerCase() === 'bearer' && value ? value : null;
+    const isAudioStream =
+      request.method === 'GET' &&
+      /^\/meetings\/\d+\/audio$/.test(path);
+
+    if (isAudioStream) {
+      const queryToken = request.query?.token;
+
+      if (typeof queryToken === 'string' && queryToken) {
+        return queryToken;
+      }
+    }
+
+    return null;
   }
 }

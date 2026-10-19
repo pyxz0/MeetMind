@@ -14,12 +14,17 @@ import { MeetingAudioService } from './meeting-audio.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { PERMISSIONS, roleHasPermission } from '../auth/permissions';
 import {
+  assertCanEditTodos,
+  assertCanManageMembers,
   assertCanOwn,
   assertCanRead,
+  assertCanToggleAudio,
   assertCanWrite,
+  computeMeetingCapabilities,
   hasGlobalMeetingAccess,
   resolveMeetingAccess,
   type MeetingAccess,
+  type MeetingCapabilities,
 } from './meetings.access';
 
 /** 是否具备「编辑任意会议」的全局权限 */
@@ -43,6 +48,12 @@ export interface CreateMeetingInput {
 const meetingInclude = {
   decisions: { orderBy: { sortOrder: 'asc' as const } },
   todos: { orderBy: { sortOrder: 'asc' as const } },
+  // 负责人与成员随会议一起返回，列表与详情都要展示
+  leader: { select: { id: true, name: true, phone: true } },
+  members: {
+    select: { user: { select: { id: true, name: true, phone: true } } },
+    orderBy: { createdAt: 'asc' as const },
+  },
 };
 
 /**
@@ -76,6 +87,9 @@ export class MeetingsService {
         status: 'READY',
         // 归属者为当前登录用户，是数据隔离的依据
         ownerId: user.id,
+        // 「每场会议必须有负责人」：创建者默认担任负责人，之后可转交
+        leaderId: user.id,
+        audioOpen: true,
         decisions: {
           create: (input.decisions ?? []).map((content, sortOrder) => ({
             content,
@@ -104,15 +118,31 @@ export class MeetingsService {
       meeting.todos.map((todo) => todo.status),
     );
 
-    if (completionStatus === meeting.completionStatus) {
-      return meeting;
-    }
+    const finalMeeting =
+      completionStatus === meeting.completionStatus
+        ? meeting
+        : await this.prisma.meeting.update({
+          where: { id: meeting.id },
+          data: { completionStatus },
+          include: meetingInclude,
+        });
 
-    return this.prisma.meeting.update({
-      where: { id: meeting.id },
-      data: { completionStatus },
-      include: meetingInclude,
-    });
+    /**
+     * 统一走 toApiRecord：创建响应也要带能力位与负责人/成员字段，
+     * 否则前端拿到的是缺字段的裸记录，与其它接口不一致。
+     */
+    return this.toApiRecord(
+      finalMeeting,
+      'owner',
+      user,
+      computeMeetingCapabilities({
+        user,
+        access: 'owner',
+        ownerId: finalMeeting.ownerId,
+        leaderId: finalMeeting.leaderId,
+        audioOpen: finalMeeting.audioOpen,
+      }),
+    );
   }
 
   /** 手动将会议内容保存到草稿箱 */
@@ -124,7 +154,7 @@ export class MeetingsService {
       throw new BadRequestException('会议内容不能为空');
     }
 
-    return this.prisma.meeting.create({
+    const draft = await this.prisma.meeting.create({
       data: {
         title: input.title?.trim() || '会议草稿',
         content: input.content.trim(),
@@ -133,9 +163,24 @@ export class MeetingsService {
         completionStatus: 'NOT_STARTED',
         // 草稿同样有归属者，否则草稿箱会跨用户可见
         ownerId: user.id,
+        // 草稿也要满足「必须有负责人」
+        leaderId: user.id,
       },
       include: meetingInclude,
     });
+
+    return this.toApiRecord(
+      draft,
+      'owner',
+      user,
+      computeMeetingCapabilities({
+        user,
+        access: 'owner',
+        ownerId: draft.ownerId,
+        leaderId: draft.leaderId,
+        audioOpen: draft.audioOpen,
+      }),
+    );
   }
 
   /** 手动修改会议完成状态 */
@@ -364,7 +409,7 @@ export class MeetingsService {
   /**
    * 构造「当前用户可见会议」的查询条件。
    *
-   * 普通用户：自己拥有的 ∪ 别人共享给自己的
+   * 普通用户：自己拥有的 ∪ 自己负责的 ∪ 自己参与的 ∪ 别人共享给自己的
    * 管理员及以上：全部会议
    *
    * 所有列表查询都走这里，避免某条查询漏掉数据隔离。
@@ -377,6 +422,9 @@ export class MeetingsService {
     return {
       OR: [
         { ownerId: user.id },
+        // 负责人与成员都能在列表里看到与自己相关的会议
+        { leaderId: user.id },
+        { members: { some: { userId: user.id } } },
         { shares: { some: { userId: user.id } } },
       ],
     };
@@ -421,7 +469,11 @@ export class MeetingsService {
 
   /** 查询单条会议详情；无权访问时同样返回 404，避免探测会议是否存在。 */
   async findOne(id: number, user: AuthenticatedUser) {
-    const { access } = await assertCanRead(this.prisma, user, id);
+    const { access, capabilities } = await assertCanRead(
+      this.prisma,
+      user,
+      id,
+    );
 
     const meeting = await this.prisma.meeting.findUnique({
       where: { id },
@@ -430,14 +482,88 @@ export class MeetingsService {
 
     if (!meeting) throw new NotFoundException('会议记录不存在');
 
-    return this.toApiRecord(meeting, access, user);
+    return this.toApiRecord(meeting, access, user, capabilities);
   }
 
   /**
-   * 删除会议；外键会级联清理决策、待办与共享记录。
+   * 指定会议负责人。
+   *
+   * 负责人可以是任何未停用的账号，也可以同时是成员（不强制入组）。
+   */
+  async setLeader(id: number, leaderUserId: number, user: AuthenticatedUser) {
+    const access = await assertCanManageMembers(this.prisma, user, id);
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: leaderUserId },
+      select: { id: true, name: true, phone: true, isActive: true },
+    });
+
+    if (!target) {
+      throw new NotFoundException('指定为负责人的用户不存在');
+    }
+
+    if (!target.isActive) {
+      throw new BadRequestException('该账号已被停用，不能担任负责人');
+    }
+
+    /**
+     * 负责人转交后，原负责人若既不是创建者也不是成员，就会失去访问权。
+     * 这种情况直接拒绝，并提示先把自己加为成员，避免出现「操作完就看不到」的困惑。
+     */
+    if (
+      access.access === 'leader' &&
+      leaderUserId !== user.id
+    ) {
+      const selfMember = await this.prisma.meetingMember.findUnique({
+        where: { meetingId_userId: { meetingId: id, userId: user.id } },
+        select: { id: true },
+      });
+
+      if (!selfMember) {
+        throw new BadRequestException(
+          '转交负责人后你将失去该会议的访问权限，请先把自己加为成员再转交',
+        );
+      }
+    }
+
+    await this.prisma.meeting.update({
+      where: { id },
+      data: { leaderId: target.id },
+    });
+
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id },
+      include: meetingIncludeFor(user.id),
+    });
+
+    if (!meeting) throw new NotFoundException('会议记录不存在');
+
+    // 负责人变更可能改变当前用户的身份（如 leader -> member），重新解析
+    const fresh = await resolveMeetingAccess(this.prisma, user, id);
+
+    const capabilities =
+      fresh?.capabilities ??
+      computeMeetingCapabilities({
+        user,
+        access: access.access,
+        ownerId: access.ownerId,
+        leaderId: target.id,
+        audioOpen: access.audioOpen,
+      });
+
+    return this.toApiRecord(
+      meeting,
+      fresh?.access ?? access.access,
+      user,
+      capabilities,
+    );
+  }
+
+  /**
+   * 删除会议；外键会级联清理决策、待办、成员与共享记录。
    *
    * 只有归属者或具备全局删除权限的管理员可删除，
-   * 「被共享者」不能删别人的会议。
+   * 「被共享者」与成员不能删别人的会议。
    */
   async remove(id: number, user: AuthenticatedUser) {
     await assertCanOwn(this.prisma, user, id);
@@ -447,6 +573,103 @@ export class MeetingsService {
 
     await this.prisma.meeting.delete({ where: { id } });
   }
+
+  /**
+   * 添加会议成员。
+   *
+   * 负责人与创建者也可以被加为成员（需求明确允许），
+   * 不做互斥校验；重复添加按幂等处理。
+   */
+  async addMember(
+    id: number,
+    memberUserId: number,
+    user: AuthenticatedUser,
+  ) {
+    await assertCanManageMembers(this.prisma, user, id);
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: memberUserId },
+      select: { id: true, name: true, phone: true, isActive: true },
+    });
+
+    if (!target) {
+      throw new NotFoundException('要添加的用户不存在');
+    }
+
+    if (!target.isActive) {
+      throw new BadRequestException('该账号已被停用，不能加入会议');
+    }
+
+    await this.prisma.meetingMember.upsert({
+      where: {
+        meetingId_userId: { meetingId: id, userId: memberUserId },
+      },
+      create: { meetingId: id, userId: memberUserId },
+      update: {},
+    });
+
+    return this.listMembers(id);
+  }
+
+  /** 移除会议成员。移除负责人不影响其负责人身份。 */
+  async removeMember(
+    id: number,
+    memberUserId: number,
+    user: AuthenticatedUser,
+  ) {
+    await assertCanManageMembers(this.prisma, user, id);
+
+    await this.prisma.meetingMember.deleteMany({
+      where: { meetingId: id, userId: memberUserId },
+    });
+
+    return this.listMembers(id);
+  }
+
+  /** 会议成员列表 */
+  async listMembers(id: number) {
+    const members = await this.prisma.meetingMember.findMany({
+      where: { meetingId: id },
+      select: { user: { select: { id: true, name: true, phone: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return members.map((m) => m.user);
+  }
+
+  /** 带读取权限校验的成员列表查询（接口用） */
+  async findMembers(id: number, user: AuthenticatedUser) {
+    await assertCanRead(this.prisma, user, id);
+
+    return this.listMembers(id);
+  }
+
+  /**
+   * 控制会议录音是否对非负责人开放。
+   *
+   * 只有负责人、创建者或超级管理员可操作；
+   * 关闭后成员与共享者既看不到播放器，也无法通过音频接口取流。
+   */
+  async updateAudioOpen(
+    id: number,
+    audioOpen: boolean,
+    user: AuthenticatedUser,
+  ) {
+    await assertCanToggleAudio(this.prisma, user, id);
+
+    if (typeof audioOpen !== 'boolean') {
+      throw new BadRequestException('audioOpen 必须是布尔值');
+    }
+
+    const updated = await this.prisma.meeting.update({
+      where: { id },
+      data: { audioOpen },
+      select: { id: true, audioOpen: true },
+    });
+
+    return updated;
+  }
+
   /** 更新待办事项状态。 */
   async updateTodoStatus(
     id: number,
@@ -472,7 +695,8 @@ export class MeetingsService {
       throw new NotFoundException('待办事项不存在');
     }
 
-    await assertCanWrite(this.prisma, user, todo.meetingId);
+    // 成员允许勾选待办状态；修改待办内容仍走 assertCanWrite
+    await assertCanEditTodos(this.prisma, user, todo.meetingId);
 
     // 待办状态与会议状态必须一起变，否则会出现
     // “待办全完成但会议仍显示进行中”的不一致状态。
@@ -652,7 +876,7 @@ export class MeetingsService {
   }
 
   /**
-   * 批量转换列表：根据归属关系计算每条的访问级别。
+   * 批量转换列表：根据归属关系计算每条的访问级别与能力位。
    *
    * shares 已在查询时按当前用户过滤（meetingIncludeFor），
    * 因此只需看本人的那条授权即可判定 edit / read。
@@ -666,6 +890,10 @@ export class MeetingsService {
 
       if (meeting.ownerId === user.id) {
         access = 'owner';
+      } else if (meeting.leaderId === user.id) {
+        access = 'leader';
+      } else if (meeting.members?.some((m) => m.user.id === user.id)) {
+        access = 'member';
       } else if (meeting.shares?.some((s) => s.permission === 'EDIT')) {
         // 共享明确给了编辑权
         access = 'edit';
@@ -676,42 +904,73 @@ export class MeetingsService {
         access = 'read';
       }
 
-      return this.toApiRecord(meeting, access, user);
+      const capabilities = computeMeetingCapabilities({
+        user,
+        access,
+        ownerId: meeting.ownerId,
+        leaderId: meeting.leaderId,
+        audioOpen: meeting.audioOpen,
+      });
+
+      return this.toApiRecord(meeting, access, user, capabilities);
     });
   }
 
   /** 转换 Prisma 字段名及关联数据，维持现有 Vue 页面所需的 API 结构。 */
   private toApiRecord(
     meeting: MeetingWithRelations,
-    access: MeetingAccess = 'owner',
-    user?: AuthenticatedUser,
+    access: MeetingAccess,
+    user: AuthenticatedUser,
+    capabilities: MeetingCapabilities,
   ) {
+    const audioUrl = meeting.audioUrl ?? null;
+
     return {
       id: meeting.id,
       title: meeting.title,
       content: meeting.content,
       summary: meeting.summary ?? '',
       completionStatus: meeting.completionStatus,
-      // 录音的站内相对路径；为空表示这场会议没有留存录音。
-      audioUrl: meeting.audioUrl ?? null,
+      /**
+       * 录音地址。未开放且当前用户无权听时返回 null，
+       * 避免前端拿到地址后仍能直接播放。
+       * 真正播放走鉴权接口 /api/meetings/:id/audio。
+       */
+      audioUrl: capabilities.canListenAudio && audioUrl
+        ? `/api/meetings/${meeting.id}/audio`
+        : null,
       audioDurationSec: meeting.audioDurationSec ?? null,
+      /** 录音是否对非负责人开放（前端用于渲染开关状态） */
+      audioOpen: meeting.audioOpen,
+      /** 是否存在录音（与是否有权听无关，用于展示“有录音但未开放”） */
+      hasAudio: !!audioUrl,
       // 置顶时间；为空表示未置顶。前端据此把置顶会议排在最前。
       pinnedAt: meeting.pinnedAt?.toISOString() ?? null,
       isDraft:
         meeting.status === 'FAILED' ||
         meeting.status === 'DRAFT',
 
+      // ---- 负责人与成员 ----
+      leaderId: meeting.leaderId,
+      leader: meeting.leader
+        ? {
+          id: meeting.leader.id,
+          name: meeting.leader.name,
+          phone: meeting.leader.phone,
+        }
+        : null,
+      members: (meeting.members ?? []).map((m) => ({
+        id: m.user.id,
+        name: m.user.name,
+        phone: m.user.phone,
+      })),
+
       // ---- 权限相关字段，前端据此决定按钮是否可点 ----
       /** 归属者 ID，用于判断“是我的会议” */
       ownerId: meeting.ownerId,
-      /** 是否是当前用户创建的 */
-      isOwner: user ? meeting.ownerId === user.id : true,
       /** 当前用户的实际访问级别 */
       access,
-      /** 是否可写（owner 或 edit） */
-      canEdit: access === 'owner' || access === 'edit',
-      /** 是否可管理共享（仅归属者与管理员） */
-      canShare: access === 'owner' || (user ? hasGlobalMeetingAccess(user) : true),
+      ...capabilities,
 
       decisions: meeting.decisions.map((decision) => decision.content),
       todos: meeting.todos.map((todo) => ({
@@ -727,6 +986,8 @@ export class MeetingsService {
 }
 
 /** 列表/详情查询统一带回的基础关联与归属字段 */
+type UserBrief = { id: number; name: string; phone: string };
+
 type MeetingWithRelations = Meeting & {
   decisions: Array<{ content: string; sortOrder: number }>;
   todos: Array<{
@@ -737,5 +998,7 @@ type MeetingWithRelations = Meeting & {
     status: TodoStatus;
     sortOrder: number;
   }>;
+  leader?: UserBrief | null;
+  members?: Array<{ user: UserBrief }>;
   shares?: Array<{ permission: 'READ' | 'EDIT' }>;
 };

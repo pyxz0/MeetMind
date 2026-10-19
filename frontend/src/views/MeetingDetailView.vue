@@ -11,8 +11,14 @@ import {
   updateMeeting,
   regenerateMeeting,
   updateMeetingCompletionStatus,
-  type MeetingRecord
+  updateMeetingLeader,
+  addMeetingMember,
+  removeMeetingMember,
+  updateMeetingAudioOpen,
+  type MeetingRecord,
+  type MemberBrief
 } from '../api/meeting'
+import { listContacts, type Contact } from '../api/auth'
 import MeetingAudioPlayer from '../components/MeetingAudioPlayer.vue'
 import MeetingShareDialog from '../components/MeetingShareDialog.vue'
 const route = useRoute()
@@ -30,6 +36,20 @@ const shareDialogVisible = ref(false)
  */
 const canEdit = computed(() => meeting.value?.canEdit === true)
 const canShare = computed(() => meeting.value?.canShare === true)
+const canEditTodos = computed(() => meeting.value?.canEditTodos === true)
+const canManageMembers = computed(
+  () => meeting.value?.canManageMembers === true
+)
+const canToggleAudio = computed(
+  () => meeting.value?.canToggleAudio === true
+)
+const canListenAudio = computed(
+  () => meeting.value?.canListenAudio === true
+)
+/** 有录音但当前用户无权听 */
+const audioBlocked = computed(
+  () => !!meeting.value?.hasAudio && !canListenAudio.value
+)
 const isReadOnly = computed(
   () => !!meeting.value && meeting.value.canEdit === false
 )
@@ -59,6 +79,129 @@ const todoForm = ref({
 const loading = ref(false)
 const completionStatusUpdating = ref(false)
 const regenerating = ref(false)
+
+/* =========================
+   负责人 / 成员 / 录音开放
+   ========================= */
+
+/** 通讯录（用于选择负责人与成员） */
+const contacts = ref<Contact[]>([])
+const contactsLoading = ref(false)
+
+const loadContacts = async () => {
+  if (contacts.value.length) return
+
+  contactsLoading.value = true
+
+  try {
+    contacts.value = await listContacts()
+  } catch {
+    contacts.value = []
+  } finally {
+    contactsLoading.value = false
+  }
+}
+
+/** 负责人选择 */
+const leaderUpdating = ref(false)
+
+const handleLeaderChange = async (leaderId: number) => {
+  if (!meeting.value) return
+
+  leaderUpdating.value = true
+
+  try {
+    const updated = await updateMeetingLeader(meeting.value.id, leaderId)
+
+    meeting.value = updated
+
+    ElMessage.success('负责人已更新')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '负责人更新失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    leaderUpdating.value = false
+  }
+}
+
+/** 成员选择与增删 */
+const memberSelecting = ref(false)
+const selectedMemberId = ref<number | null>(null)
+
+const handleAddMember = async () => {
+  if (!meeting.value || !selectedMemberId.value) return
+
+  memberSelecting.value = true
+
+  try {
+    const members = await addMeetingMember(
+      meeting.value.id,
+      selectedMemberId.value
+    )
+
+    meeting.value.members = members
+    selectedMemberId.value = null
+
+    ElMessage.success('成员已添加')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '添加成员失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    memberSelecting.value = false
+  }
+}
+
+const handleRemoveMember = async (member: MemberBrief) => {
+  if (!meeting.value) return
+
+  try {
+    const members = await removeMeetingMember(meeting.value.id, member.id)
+
+    meeting.value.members = members
+
+    ElMessage.success('成员已移除')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '移除成员失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  }
+}
+
+/** 可添加为成员的人：排除已在成员里的 */
+const memberCandidates = computed(() => {
+  const existing = new Set((meeting.value?.members ?? []).map((m) => m.id))
+
+  return contacts.value.filter((c) => !existing.has(c.id))
+})
+
+/** 录音开放开关 */
+const audioOpenUpdating = ref(false)
+
+const handleAudioOpenChange = async (value: boolean) => {
+  if (!meeting.value) return
+
+  audioOpenUpdating.value = true
+
+  try {
+    const result = await updateMeetingAudioOpen(meeting.value.id, value)
+
+    /**
+     * 开关变化会直接影响当前用户能否收听：
+     * 非负责人关闭后自己也将听不到，需要用最新权限刷新页面数据。
+     */
+    const refreshed = await getMeeting(meeting.value.id)
+
+    meeting.value = refreshed
+
+    ElMessage.success(
+      result.audioOpen ? '录音已对成员开放' : '录音已设为不开放'
+    )
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '录音开关更新失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    audioOpenUpdating.value = false
+  }
+}
 
 // 打开编辑标题弹窗
 const openEditTitle = () => {
@@ -367,7 +510,14 @@ const goBack = () => {
   router.push('/history')
 }
 
-onMounted(loadMeeting)
+onMounted(async () => {
+  await loadMeeting()
+
+  // 只有能管理成员时才需要通讯录，避免无权用户多打一次接口
+  if (canManageMembers.value) {
+    await loadContacts()
+  }
+})
 </script>
 
 <template>
@@ -459,6 +609,66 @@ onMounted(loadMeeting)
       <MeetingShareDialog v-if="meeting" v-model="shareDialogVisible" :meeting-id="meeting.id"
         :meeting-title="meeting.title || `会议 #${meeting.id}`" />
 
+      <!-- 负责人与成员 -->
+      <el-card class="section-card members-card">
+        <template #header>
+          <div class="members-header">
+            <h3>负责人与成员</h3>
+
+            <span class="members-count">
+              {{ (meeting.members?.length ?? 0) }} 名成员
+            </span>
+          </div>
+        </template>
+
+        <div class="member-row">
+          <span class="member-label">负责人</span>
+
+          <!-- 创建者/负责人/管理员可更换负责人 -->
+          <el-select v-if="canManageMembers" :model-value="meeting.leaderId" size="small" style="width: 220px"
+            :loading="leaderUpdating" filterable @focus="loadContacts"
+            @change="(v: number) => handleLeaderChange(v)">
+            <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+          </el-select>
+
+          <div v-else class="member-chip member-chip--leader">
+            <span class="chip-avatar">{{ meeting.leader?.name?.slice(0, 1) ?? '?' }}</span>
+            <span>{{ meeting.leader?.name ?? '未指定' }}</span>
+            <span v-if="meeting.isLeader" class="chip-badge">我</span>
+          </div>
+        </div>
+
+        <div class="member-row member-row--list">
+          <span class="member-label">成员</span>
+
+          <div class="member-list">
+            <span v-if="!meeting.members?.length" class="member-empty">暂无成员</span>
+
+            <span v-for="m in meeting.members" :key="m.id" class="member-chip">
+              <span class="chip-avatar">{{ m.name.slice(0, 1) }}</span>
+              <span>{{ m.name }}</span>
+
+              <el-button v-if="canManageMembers" link type="danger" size="small" class="chip-remove"
+                @click="handleRemoveMember(m)">
+                ×
+              </el-button>
+            </span>
+          </div>
+        </div>
+
+        <div v-if="canManageMembers" class="member-add">
+          <el-select v-model="selectedMemberId" size="small" placeholder="选择要添加的成员" filterable clearable
+            style="width: 240px" :loading="contactsLoading" @focus="loadContacts">
+            <el-option v-for="c in memberCandidates" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+          </el-select>
+
+          <el-button type="primary" size="small" :loading="memberSelecting" :disabled="!selectedMemberId"
+            @click="handleAddMember">
+            添加成员
+          </el-button>
+        </div>
+      </el-card>
+
       <el-card class="section-card">
         <template #header>
           <h3>会议原始内容</h3>
@@ -469,11 +679,31 @@ onMounted(loadMeeting)
         </div>
       </el-card>
 
+      <!-- 录音开关：只有负责人/创建者/超管能改 -->
+      <el-card v-if="meeting.hasAudio || canToggleAudio" class="section-card audio-switch-card">
+        <div class="audio-switch-row">
+          <div class="audio-switch-main">
+            <div class="audio-switch-title">录音开放</div>
+            <div class="audio-switch-desc">
+              关闭后仅负责人、会议创建者与超级管理员可以收听，成员与共享者听不到
+            </div>
+          </div>
+
+          <el-switch v-if="canToggleAudio" :model-value="meeting.audioOpen" :loading="audioOpenUpdating"
+            active-text="开放" inactive-text="不开放" @change="(v: boolean) => handleAudioOpenChange(v)" />
+
+          <el-tag v-else :type="meeting.audioOpen ? 'success' : 'info'" size="small">
+            {{ meeting.audioOpen ? '已开放' : '未开放' }}
+          </el-tag>
+        </div>
+      </el-card>
+
       <!-- 录音放在原文旁边，方便边听边核对转写是否准确 -->
-      <MeetingAudioPlayer
-        :audio-url="meeting.audioUrl"
-        :duration-sec="meeting.audioDurationSec"
-      />
+      <el-alert v-if="audioBlocked" class="audio-blocked-tip" type="info" :closable="false" show-icon
+        title="该会议录音未对成员开放" description="如需收听，请联系会议负责人或创建者开启录音开放。" />
+
+      <MeetingAudioPlayer v-else-if="canListenAudio" :audio-url="meeting.audioUrl"
+        :duration-sec="meeting.audioDurationSec" />
 
       <el-card class="section-card">
         <template #header>
@@ -530,8 +760,8 @@ onMounted(loadMeeting)
 
           <el-table-column prop="status" label="任务状态" width="160">
             <template #default="{ row }">
-              <!-- 只读共享者看到状态文字，不能改 -->
-              <el-tag v-if="!canEdit" size="small">
+              <!-- 成员可以勾选状态；只读共享者只能看到文字 -->
+              <el-tag v-if="!canEditTodos" size="small">
                 {{
                   row.status === 'COMPLETED'
                     ? '已完成'
@@ -716,6 +946,132 @@ onMounted(loadMeeting)
 
 .shared-tag {
   color: #e6a23c;
+}
+
+/* ---- 负责人与成员 ---- */
+.members-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.members-count {
+  color: #909399;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.member-row--list {
+  align-items: flex-start;
+}
+
+.member-label {
+  flex-shrink: 0;
+  width: 56px;
+  color: #909399;
+  font-size: 13px;
+}
+
+.member-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.member-empty {
+  color: #c0c4cc;
+  font-size: 13px;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  padding: 3px 10px 3px 4px;
+  border-radius: 14px;
+  background: #f5f7fa;
+
+  color: #303133;
+  font-size: 13px;
+}
+
+.member-chip--leader {
+  background: #ecf5ff;
+}
+
+.chip-avatar {
+  width: 20px;
+  height: 20px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 50%;
+  background: #ffffff;
+  color: #409eff;
+
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chip-badge {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #409eff;
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.chip-remove {
+  margin-left: 2px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.member-add {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px dashed #ebeef5;
+}
+
+/* ---- 录音开放 ---- */
+.audio-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.audio-switch-title {
+  color: #303133;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.audio-switch-desc {
+  color: #909399;
+  font-size: 12px;
+}
+
+.audio-blocked-tip {
+  margin-bottom: 16px;
+  border-radius: 10px;
 }
 
 .decision-list {

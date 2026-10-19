@@ -22,6 +22,20 @@ import { UsersService } from './users.service';
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  /**
+   * 通讯录：只返回「姓名 + 手机号」的最小集合。
+   *
+   * 任何已登录用户都能调用，用于在会议里指定负责人与成员 ——
+   * 普通用户没有 user:read 权限，不能走完整用户列表接口。
+   * 只暴露姓名与手机号，不含角色、启用状态、创建时间等管理信息。
+   *
+   * 注意：必须声明在 `:id` 相关路由之前，避免被当成 id 参数解析。
+   */
+  @Get('contacts')
+  contacts() {
+    return this.usersService.listContacts();
+  }
+
   /** 用户列表，供分享时挑选接收人、以及管理员管人 */
   @Get()
   @RequirePermissions(PERMISSIONS.USER_READ)

@@ -47,6 +47,8 @@ export class AiService {
           status: 'PROCESSING',
           // 归属发起该请求的用户，保证生成结果不会跨用户可见
           ownerId: user.id,
+          // 每场会议必须有负责人，AI 生成的会议由发起者担任
+          leaderId: user.id,
         },
       });
 

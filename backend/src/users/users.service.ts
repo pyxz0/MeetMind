@@ -107,7 +107,25 @@ export class UsersService {
     }));
   }
 
-  /** 管理员创建账号，可指定角色（受操作者级别限制） */
+  /**
+   * 通讯录：任何登录用户可见的最简账号集合。
+   *
+   * 只给姓名与手机号，不含角色/启停等管理字段，
+   * 因为普通用户也需要在会议里指定负责人与成员。
+   */
+  async listContacts() {
+    const users = await this.prisma.user.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, phone: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return users;
+  }
+
+  /**
+   * 管理员创建账号，可指定角色（受操作者级别限制）
+   */
   async create(
     operator: AuthenticatedUser,
     input: {
@@ -413,6 +431,17 @@ export class UsersService {
     }
 
     this.assertCanManage(operator, target.role as AppRole);
+
+    /**
+     * 负责人外键是 ON DELETE RESTRICT：如果他人在其负责的会议里担任负责人，
+     * 直接删会失败。这里先把负责人转给会议创建者，保证「每场会议都有负责人」
+     * 且不会因为删账号牵连删掉别人的会议。
+     */
+    await this.prisma.$executeRaw`
+      UPDATE "meetings"
+      SET "leader_id" = "owner_id"
+      WHERE "leader_id" = ${targetId}
+    `;
 
     await this.prisma.user.delete({ where: { id: targetId } });
 

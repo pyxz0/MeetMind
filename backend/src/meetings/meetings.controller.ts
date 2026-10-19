@@ -182,6 +182,75 @@ export class MeetingsController {
     return this.meetingsService.updateMeeting(id, body, user);
   }
 
+  /** 指定会议负责人 */
+  @Patch(':id/leader')
+  setLeader(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { leaderId?: number },
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const leaderId = body?.leaderId;
+
+    if (
+      typeof leaderId !== 'number' ||
+      !Number.isInteger(leaderId) ||
+      leaderId <= 0
+    ) {
+      throw new BadRequestException('leaderId 必须是正整数');
+    }
+
+    return this.meetingsService.setLeader(id, leaderId, user);
+  }
+
+  /** 控制录音是否对非负责人开放 */
+  @Patch(':id/audio-open')
+  updateAudioOpen(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { audioOpen?: boolean },
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    if (typeof body?.audioOpen !== 'boolean') {
+      throw new BadRequestException('audioOpen 必须是布尔值');
+    }
+
+    return this.meetingsService.updateAudioOpen(id, body.audioOpen, user);
+  }
+
+  /** 会议成员列表 */
+  @Get(':id/members')
+  listMembers(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.findMembers(id, user);
+  }
+
+  /** 添加会议成员 */
+  @Post(':id/members')
+  addMember(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { userId?: number },
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const userId = body?.userId;
+
+    if (typeof userId !== 'number' || !Number.isInteger(userId) || userId <= 0) {
+      throw new BadRequestException('userId 必须是正整数');
+    }
+
+    return this.meetingsService.addMember(id, userId, user);
+  }
+
+  /** 移除会议成员 */
+  @Delete(':id/members/:userId')
+  removeMember(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('userId', ParseIntPipe) userId: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.removeMember(id, userId, user);
+  }
+
   /** 获取所有历史会议，顺序和输出格式由业务服务统一处理。 */
   @Get()
   findAll(@CurrentUser() user: AuthenticatedUser) {

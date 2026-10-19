@@ -75,6 +75,24 @@ export const listUsers = async (params?: {
   return response.data
 }
 
+/**
+ * 通讯录：只含姓名与手机号的最小集合。
+ *
+ * 任何已登录用户都能调用，用于在会议里指定负责人与成员 ——
+ * 普通用户没有 user:read 权限，无法使用完整用户列表。
+ */
+export interface Contact {
+  id: number
+  name: string
+  phone: string
+}
+
+export const listContacts = async (): Promise<Contact[]> => {
+  const response = await api.get<Contact[]>('/users/contacts')
+
+  return response.data
+}
+
 /** 新建账号 */
 export const createUser = async (data: {
   phone: string

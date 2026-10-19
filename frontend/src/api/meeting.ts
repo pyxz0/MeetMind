@@ -27,24 +27,56 @@ export interface MeetingResult {
   | 'CANCELLED'
   isDraft?: boolean
   createdAt?: string
-  /** 录音的站内相对路径，例如 uploads/xxx.webm；为空表示没有录音。 */
+  /**
+   * 录音的可播放地址。
+   *
+   * 现在由后端按权限给出：有权听时是鉴权接口 /api/meetings/:id/audio，
+   * 无权听（负责人关闭了录音）时为 null —— 前端拿不到地址就播不了。
+   */
   audioUrl?: string | null
   /** 录音时长（秒），与转写计时一致。 */
   audioDurationSec?: number | null
+  /** 录音是否对非负责人开放 */
+  audioOpen?: boolean
+  /** 是否存在录音（与是否有权听无关，用于展示「有录音但未开放」） */
+  hasAudio?: boolean
   /** 置顶时间；为空表示未置顶。多条置顶按此时间倒序排列。 */
   pinnedAt?: string | null
 
-  // ---- 权限相关（由后端按归属与共享关系计算）----
+  // ---- 负责人与成员 ----
+  leaderId?: number
+  leader?: MemberBrief | null
+  members?: MemberBrief[]
+
+  // ---- 权限相关（由后端按归属、共享、成员关系计算）----
   /** 归属者用户 ID */
   ownerId?: number
-  /** 是否是自己创建的 */
-  isOwner?: boolean
   /** 当前用户对该会议的实际访问级别 */
-  access?: 'owner' | 'edit' | 'read'
-  /** 是否有写权限（owner 或 edit） */
+  access?: 'owner' | 'leader' | 'member' | 'edit' | 'read'
+  canRead?: boolean
+  /** 改标题 / 改完成状态 / 重新生成 */
   canEdit?: boolean
+  /** 勾选与增删改待办 */
+  canEditTodos?: boolean
+  /** 指定负责人与增删成员 */
+  canManageMembers?: boolean
+  /** 控制录音是否开放 */
+  canToggleAudio?: boolean
+  /** 能否收听录音 */
+  canListenAudio?: boolean
+  canDelete?: boolean
   /** 是否能管理共享（Owner 或管理员） */
   canShare?: boolean
+  isOwner?: boolean
+  isLeader?: boolean
+  isMember?: boolean
+}
+
+/** 负责人 / 成员的简要信息 */
+export interface MemberBrief {
+  id: number
+  name: string
+  phone: string
 }
 
 export interface MeetingRecord extends MeetingResult {
@@ -53,6 +85,12 @@ export interface MeetingRecord extends MeetingResult {
 }
 
 /** 后端返回的相对路径转成可直接给 <audio> 使用的完整地址。 */
+/**
+ * 把后端给出的录音地址转成 <audio> 可直接使用的完整地址。
+ *
+ * 关键点：音频流接口需要鉴权，而 <audio> 标签无法自定义请求头，
+ * 因此把 token 作为查询参数附在 URL 上（后端只对「GET 会议音频流」接受该方式）。
+ */
 export const resolveAudioUrl = (
   audioUrl?: string | null
 ): string => {
@@ -62,13 +100,24 @@ export const resolveAudioUrl = (
 
   // 已经是完整地址时直接返回，避免重复拼接。
   if (/^https?:\/\//i.test(audioUrl)) {
-    return audioUrl
+    return appendToken(audioUrl)
   }
 
   // api 的 baseURL 形如 http://127.0.0.1:3000/api，去掉结尾的 /api 即服务根地址。
   const serverRoot = api.defaults.baseURL?.replace(/\/api\/?$/, '') || ''
 
-  return `${serverRoot}/${audioUrl.replace(/^\//, '')}`
+  return appendToken(`${serverRoot}/${audioUrl.replace(/^\//, '')}`)
+}
+
+/** 给音频地址附上登录 token */
+const appendToken = (url: string) => {
+  const token = localStorage.getItem('meetmind.token')
+
+  if (!token) {
+    return url
+  }
+
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
 }
 
 /**
@@ -90,12 +139,25 @@ const normalizeMeeting = (data: any): MeetingRecord => {
     isDraft: data.isDraft ?? false,
     audioUrl: data.audioUrl ?? null,
     audioDurationSec: data.audioDurationSec ?? null,
+    audioOpen: data.audioOpen ?? true,
+    hasAudio: data.hasAudio ?? false,
     pinnedAt: data.pinnedAt ?? null,
+    leaderId: data.leaderId,
+    leader: data.leader ?? null,
+    members: Array.isArray(data.members) ? data.members : [],
     ownerId: data.ownerId,
-    isOwner: data.isOwner ?? false,
     access: data.access ?? 'read',
+    canRead: data.canRead ?? false,
     canEdit: data.canEdit ?? false,
+    canEditTodos: data.canEditTodos ?? false,
+    canManageMembers: data.canManageMembers ?? false,
+    canToggleAudio: data.canToggleAudio ?? false,
+    canListenAudio: data.canListenAudio ?? false,
+    canDelete: data.canDelete ?? false,
     canShare: data.canShare ?? false,
+    isOwner: data.isOwner ?? false,
+    isLeader: data.isLeader ?? false,
+    isMember: data.isMember ?? false,
     createdAt: data.created_at || data.createdAt
   }
 }
@@ -359,6 +421,66 @@ export const uploadMeetingAudio = async (
     headers: { 'Content-Type': undefined },
     // 录音体积可能较大，单独放宽超时。
     timeout: 300000
+  })
+
+  return response.data
+}
+
+/* ───────────── 负责人 / 成员 / 录音开放 ───────────── */
+
+/** 指定会议负责人，返回更新后的会议 */
+export const updateMeetingLeader = async (
+  id: number,
+  leaderId: number
+): Promise<MeetingRecord> => {
+  const response = await api.patch(`/meetings/${id}/leader`, { leaderId })
+
+  return normalizeMeeting(response.data)
+}
+
+/** 会议成员列表 */
+export const getMeetingMembers = async (
+  id: number
+): Promise<MemberBrief[]> => {
+  const response = await api.get<MemberBrief[]>(
+    `/meetings/${id}/members`
+  )
+
+  return response.data
+}
+
+/** 添加会议成员，返回最新成员列表 */
+export const addMeetingMember = async (
+  id: number,
+  userId: number
+): Promise<MemberBrief[]> => {
+  const response = await api.post<MemberBrief[]>(
+    `/meetings/${id}/members`,
+    { userId }
+  )
+
+  return response.data
+}
+
+/** 移除会议成员，返回最新成员列表 */
+export const removeMeetingMember = async (
+  id: number,
+  userId: number
+): Promise<MemberBrief[]> => {
+  const response = await api.delete<MemberBrief[]>(
+    `/meetings/${id}/members/${userId}`
+  )
+
+  return response.data
+}
+
+/** 控制录音是否对非负责人开放 */
+export const updateMeetingAudioOpen = async (
+  id: number,
+  audioOpen: boolean
+): Promise<{ id: number; audioOpen: boolean }> => {
+  const response = await api.patch(`/meetings/${id}/audio-open`, {
+    audioOpen
   })
 
   return response.data

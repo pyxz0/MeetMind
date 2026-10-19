@@ -2,19 +2,23 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
+  NotFoundException,
   Param,
   ParseIntPipe,
   Post,
+  Res,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MeetingAudioService } from './meeting-audio.service';
 import {
   CurrentUser,
   type AuthenticatedUser,
 } from '../auth/auth.decorators';
-import { assertCanWrite } from './meetings.access';
+import { assertCanListenAudio, assertCanWrite } from './meetings.access';
 import { PrismaService } from '../common/prisma.service';
 
 /** 浏览器录音容器，Chrome/Edge 为 webm，Safari 为 mp4。 */
@@ -92,5 +96,46 @@ export class MeetingAudioController {
     return Number.isFinite(parsed) && parsed >= 0
       ? parsed
       : undefined;
+  }
+
+  /**
+   * 带鉴权的录音流。
+   *
+   * 为什么不用静态目录直出：
+   * 「录音不开放」如果只是前端隐藏播放器，文件 URL 一旦泄露仍能直接播放，
+   * 等于没关。这里统一走鉴权接口，权限由 assertCanListenAudio 判定。
+   *
+   * 支持 Range：<audio> 拖动进度条依赖 206 Partial Content，
+   * 用 res.sendFile 由 express 处理区间请求。
+   */
+  @Get(':id/audio')
+  async streamAudio(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+    @Res() res: Response,
+  ) {
+    await assertCanListenAudio(this.prisma, user, id);
+
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id },
+      select: { audioUrl: true },
+    });
+
+    if (!meeting?.audioUrl) {
+      throw new NotFoundException('该会议没有录音');
+    }
+
+    const absolutePath = this.audioService.resolveReadablePath(
+      meeting.audioUrl,
+    );
+
+    if (!absolutePath) {
+      throw new NotFoundException('录音文件不存在');
+    }
+
+    // 浏览器可能缓存同一 URL，这里显式声明私有缓存，避免代理缓存给无权者
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+
+    return res.sendFile(absolutePath);
   }
 }

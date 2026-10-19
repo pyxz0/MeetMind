@@ -4,17 +4,113 @@ import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { PERMISSIONS, roleHasPermission } from '../auth/permissions';
 
 /**
- * 当前用户对某场会议的实际访问级别。
+ * 当前用户在某场会议中的身份。
  *
- * - owner      自己创建的会议，可读写、可共享、可删除
- * - edit       别人共享给我的「可编辑」，可读写但不能共享/删除
- * - read       别人共享给我的「只读」，只能看
+ * - owner   创建者，权限最高（可删除、可共享）
+ * - leader  负责人（主持人），可编辑会议、管理成员、控制录音开关
+ * - member  参会成员，可读并可勾选待办状态
+ * - edit    通过共享获得的编辑权
+ * - read    通过共享获得的只读权
  */
-export type MeetingAccess = 'owner' | 'edit' | 'read';
+export type MeetingAccess = 'owner' | 'leader' | 'member' | 'edit' | 'read';
+
+/** 会议内的细分能力，前端据此决定按钮是否可点 */
+export interface MeetingCapabilities {
+  canRead: boolean;
+  /** 改标题 / 改完成状态 / 重新生成 */
+  canEdit: boolean;
+  /** 勾选与增删改待办 */
+  canEditTodos: boolean;
+  /** 指定负责人与增删成员 */
+  canManageMembers: boolean;
+  /** 控制录音是否开放 */
+  canToggleAudio: boolean;
+  /** 能否收听录音（由会议开关与身份共同决定） */
+  canListenAudio: boolean;
+  /** 删除会议 */
+  canDelete: boolean;
+  /** 管理共享授权 */
+  canShare: boolean;
+  isOwner: boolean;
+  isLeader: boolean;
+  isMember: boolean;
+}
+
+export interface MeetingAccessResult {
+  access: MeetingAccess;
+  ownerId: number;
+  leaderId: number;
+  audioOpen: boolean;
+  capabilities: MeetingCapabilities;
+}
 
 /** 具备「全局会议权限」的角色（管理员及以上） */
 export const hasGlobalMeetingAccess = (user: AuthenticatedUser) =>
   roleHasPermission(user.role, PERMISSIONS.MEETING_READ_ALL);
+
+const isSuperAdmin = (user: AuthenticatedUser) => user.role === 'SUPER_ADMIN';
+
+/**
+ * 根据身份与录音开关推算能力位。
+ *
+ * 单独抽出来，保证「列表」「详情」「音频流」三处判定完全一致 ——
+ * 权限判定分散在各处是这类系统最常见的漏洞来源。
+ */
+const buildCapabilities = (params: {
+  user: AuthenticatedUser;
+  access: MeetingAccess;
+  ownerId: number;
+  leaderId: number;
+  audioOpen: boolean;
+}): MeetingCapabilities => {  const { user, access, ownerId, leaderId, audioOpen } = params;
+
+  const isOwner = access === 'owner';
+  const isLeader = access === 'leader' || (ownerId === user.id && leaderId === user.id);
+  const isMember = access === 'member';
+
+  // 管理员及以上：可读写全部会议，但不等于「拥有」
+  const privilegedEdit =
+    hasGlobalMeetingAccess(user) &&
+    roleHasPermission(user.role, PERMISSIONS.MEETING_UPDATE_ALL);
+
+  // 录音开关只对负责人、创建者与超管放行
+  const audioController = isOwner || access === 'leader' || isSuperAdmin(user);
+
+  return {
+    canRead: true,
+    canEdit:
+      isOwner ||
+      access === 'leader' ||
+      access === 'edit' ||
+      privilegedEdit,
+    canEditTodos:
+      isOwner ||
+      access === 'leader' ||
+      access === 'edit' ||
+      isMember ||
+      privilegedEdit,
+    canManageMembers:
+      isOwner ||
+      access === 'leader' ||
+      privilegedEdit,
+    canToggleAudio: audioController,
+    /**
+     * 录音开放与否：
+     * - 负责人 / 创建者 / 超管：始终可听
+     * - 其他人：仅在 audioOpen 为真时可听
+     */
+    canListenAudio: audioController || audioOpen,
+    canDelete: isOwner || privilegedEdit,
+    canShare:
+      isOwner ||
+      roleHasPermission(user.role, PERMISSIONS.MEETING_SHARE_ALL),
+    isOwner,
+    isLeader,
+    isMember,
+  };
+};
+
+export const computeMeetingCapabilities = buildCapabilities;
 
 /**
  * 计算用户对某场会议的访问级别。
@@ -26,34 +122,65 @@ export async function resolveMeetingAccess(
   prisma: PrismaService,
   user: AuthenticatedUser,
   meetingId: number,
-): Promise<{ access: MeetingAccess; ownerId: number } | null> {
+): Promise<MeetingAccessResult | null> {
   const meeting = await prisma.meeting.findUnique({
     where: { id: meetingId },
-    select: { id: true, ownerId: true },
+    select: {
+      id: true,
+      ownerId: true,
+      leaderId: true,
+      audioOpen: true,
+    },
   });
 
   if (!meeting) {
     return null;
   }
 
+  const finish = (access: MeetingAccess): MeetingAccessResult => ({
+    access,
+    ownerId: meeting.ownerId,
+    leaderId: meeting.leaderId,
+    audioOpen: meeting.audioOpen,
+    capabilities: buildCapabilities({
+      user,
+      access,
+      ownerId: meeting.ownerId,
+      leaderId: meeting.leaderId,
+      audioOpen: meeting.audioOpen,
+    }),
+  });
+
+  // 创建者优先判定：即使同时是负责人/成员，也以 owner 身份计
   if (meeting.ownerId === user.id) {
-    return { access: 'owner', ownerId: meeting.ownerId };
+    return finish('owner');
   }
 
-  // 管理员及以上可访问全部会议，视作可编辑（但不算拥有，不能移除他人授权）
+  if (meeting.leaderId === user.id) {
+    return finish('leader');
+  }
+
+  // 管理员及以上可访问全部会议
   if (hasGlobalMeetingAccess(user)) {
-    return {
-      access: roleHasPermission(user.role, PERMISSIONS.MEETING_UPDATE_ALL)
+    return finish(
+      roleHasPermission(user.role, PERMISSIONS.MEETING_UPDATE_ALL)
         ? 'edit'
         : 'read',
-      ownerId: meeting.ownerId,
-    };
+    );
+  }
+
+  // 成员：可读 + 可勾选待办
+  const membership = await prisma.meetingMember.findUnique({
+    where: { meetingId_userId: { meetingId, userId: user.id } },
+    select: { id: true },
+  });
+
+  if (membership) {
+    return finish('member');
   }
 
   const share = await prisma.meetingShare.findUnique({
-    where: {
-      meetingId_userId: { meetingId, userId: user.id },
-    },
+    where: { meetingId_userId: { meetingId, userId: user.id } },
     select: { permission: true },
   });
 
@@ -61,10 +188,7 @@ export async function resolveMeetingAccess(
     return null;
   }
 
-  return {
-    access: share.permission === 'EDIT' ? 'edit' : 'read',
-    ownerId: meeting.ownerId,
-  };
+  return finish(share.permission === 'EDIT' ? 'edit' : 'read');
 }
 
 /**
@@ -77,7 +201,7 @@ export async function assertCanRead(
   prisma: PrismaService,
   user: AuthenticatedUser,
   meetingId: number,
-): Promise<{ access: MeetingAccess; ownerId: number }> {
+): Promise<MeetingAccessResult> {
   const result = await resolveMeetingAccess(prisma, user, meetingId);
 
   if (!result) {
@@ -87,25 +211,88 @@ export async function assertCanRead(
   return result;
 }
 
-/** 断言用户具备写权限（owner 或 edit） */
+/** 断言用户具备编辑会议本体的权限（改标题、改状态、重新生成） */
 export async function assertCanWrite(
   prisma: PrismaService,
   user: AuthenticatedUser,
   meetingId: number,
-): Promise<{ access: MeetingAccess; ownerId: number }> {
+): Promise<MeetingAccessResult> {
   const result = await assertCanRead(prisma, user, meetingId);
 
-  if (result.access === 'read') {
-    throw new ForbiddenException('你对该会议只有只读权限，无法修改');
+  if (!result.capabilities.canEdit) {
+    throw new ForbiddenException('你对该会议没有修改权限');
+  }
+
+  return result;
+}
+
+/** 断言用户可修改待办（成员也可以勾选） */
+export async function assertCanEditTodos(
+  prisma: PrismaService,
+  user: AuthenticatedUser,
+  meetingId: number,
+): Promise<MeetingAccessResult> {
+  const result = await assertCanRead(prisma, user, meetingId);
+
+  if (!result.capabilities.canEditTodos) {
+    throw new ForbiddenException('你对该会议没有修改待办的权限');
+  }
+
+  return result;
+}
+
+/** 断言用户可管理成员与负责人 */
+export async function assertCanManageMembers(
+  prisma: PrismaService,
+  user: AuthenticatedUser,
+  meetingId: number,
+): Promise<MeetingAccessResult> {
+  const result = await assertCanRead(prisma, user, meetingId);
+
+  if (!result.capabilities.canManageMembers) {
+    throw new ForbiddenException('只有会议创建者、负责人或管理员可以管理成员');
+  }
+
+  return result;
+}
+
+/** 断言用户可以控制录音开放开关 */
+export async function assertCanToggleAudio(
+  prisma: PrismaService,
+  user: AuthenticatedUser,
+  meetingId: number,
+): Promise<MeetingAccessResult> {
+  const result = await assertCanRead(prisma, user, meetingId);
+
+  if (!result.capabilities.canToggleAudio) {
+    throw new ForbiddenException(
+      '只有会议创建者、负责人或超级管理员可以控制录音开放',
+    );
+  }
+
+  return result;
+}
+
+/** 断言用户可以收听录音 */
+export async function assertCanListenAudio(
+  prisma: PrismaService,
+  user: AuthenticatedUser,
+  meetingId: number,
+): Promise<MeetingAccessResult> {
+  const result = await assertCanRead(prisma, user, meetingId);
+
+  if (!result.capabilities.canListenAudio) {
+    throw new ForbiddenException('该会议录音未开放');
   }
 
   return result;
 }
 
 /**
- * 断言用户拥有该会议（共享者不算拥有）。
+ * 断言用户拥有该会议（共享者与成员都不算拥有）。
  *
- * 删除、共享授权、转移归属等操作必须走这里。
+ * 删除会议、转移归属等操作必须走这里；共享授权另有
+ * MEETING_SHARE_ALL 权限放行。
  */
 export async function assertCanOwn(
   prisma: PrismaService,
