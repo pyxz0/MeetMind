@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { updateProfile } from '../api/auth'
 import { authStore } from '../stores/auth'
 
@@ -139,6 +139,32 @@ const savePassword = async () => {
     passwordSaving.value = false
   }
 }
+
+/* =========================
+   退出登录
+   ========================= */
+
+/**
+ * 退出登录。
+ *
+ * 从侧边栏移到这里：与账号相关的操作集中在个人中心，
+ * 同时也避免在导航区域误触退出。
+ */
+const handleLogout = async () => {
+  try {
+    await ElMessageBox.confirm('确定要退出登录吗？', '退出登录', {
+      confirmButtonText: '退出',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    // 用户取消
+    return
+  }
+
+  authStore.clear()
+  await router.replace('/login')
+}
 </script>
 
 <template>
@@ -255,6 +281,22 @@ const savePassword = async () => {
           </el-button>
         </div>
       </el-card>
+
+      <!-- 退出登录放在个人中心，与账号相关操作集中在一起 -->
+      <el-card class="section-card logout-card" shadow="never">
+        <div class="manage-row">
+          <div class="manage-main">
+            <div class="manage-title">退出登录</div>
+            <div class="manage-desc">
+              退出后需要重新输入手机号与密码才能继续使用
+            </div>
+          </div>
+
+          <el-button type="danger" plain @click="handleLogout">
+            退出登录
+          </el-button>
+        </div>
+      </el-card>
     </div>
   </div>
 </template>
@@ -365,6 +407,11 @@ const savePassword = async () => {
 .manage-desc {
   color: #909399;
   font-size: 13px;
+}
+
+/* 退出登录是破坏性操作，用克制一点的边框区分 */
+.logout-card {
+  border-color: #fbc4c4;
 }
 
 @media (max-width: 768px) {

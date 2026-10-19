@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
 import { provideDraftStore } from './composables/draftStore'
 import { authStore } from './stores/auth'
 
 const draftStore = provideDraftStore()
 const route = useRoute()
-const router = useRouter()
 
 /**
  * 登录页不渲染侧边栏与内容框架。
@@ -18,21 +16,6 @@ const router = useRouter()
 const isPublicPage = computed(() => route.meta.requiresAuth === false)
 
 const currentUser = computed(() => authStore.user)
-
-const handleLogout = async () => {
-  try {
-    await ElMessageBox.confirm('确定要退出登录吗？', '退出登录', {
-      confirmButtonText: '退出',
-      cancelButtonText: '取消',
-      type: 'warning'
-    })
-  } catch {
-    return
-  }
-
-  authStore.clear()
-  await router.replace('/login')
-}
 
 onMounted(async () => {
   // 未登录时（登录页）不拉草稿数量，避免无谓的 401
@@ -106,8 +89,8 @@ onMounted(async () => {
         当前登录用户区，固定在侧边栏底部。
 
         头像与用户名本身就是「个人中心」的入口 —— 因此导航栏里不再需要
-        个人中心/用户管理这类条目，点这里即可进入。退出登录单独一个按钮，
-        用 @click.stop 阻止冒泡，避免点退出时又跳去个人中心。
+        个人中心/用户管理这类条目，点这里即可进入。
+        退出登录已移入个人中心页，这里不再放按钮，避免在侧边栏误触退出。
       -->
       <div v-if="currentUser" class="user-panel">
         <router-link
@@ -132,10 +115,6 @@ onMounted(async () => {
 
           <span class="user-arrow">›</span>
         </router-link>
-
-        <el-button link type="danger" @click.stop="handleLogout">
-          退出登录
-        </el-button>
       </div>
     </aside>
 

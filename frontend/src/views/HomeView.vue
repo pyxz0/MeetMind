@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   generateMeeting,
   createDraftMeeting,
+  getMeetings,
   uploadMeetingAudio,
+  type MeetingRecord,
   type MeetingResult,
 } from '../api/meeting'
 
@@ -12,6 +15,7 @@ import { useDraftStore } from '../composables/draftStore'
 import MeetingResultComponent from '../components/MeetingResult.vue'
 
 const draftStore = useDraftStore()
+const router = useRouter()
 
 /**
  * 浏览器 SpeechRecognition 最小类型定义。
@@ -81,6 +85,71 @@ const result = ref<MeetingResult | null>(null)
 const loading = ref(false)
 
 const draftSaving = ref(false)
+
+/* =========================
+   置顶会议提醒
+   ========================= */
+
+/** 历史的置顶会议（只取置顶的，其余不需要展示） */
+const pinnedMeetings = ref<MeetingRecord[]>([])
+
+/** 首页只展示少量置顶，多了反而变成第二个列表页 */
+const PINNED_PREVIEW_LIMIT = 3
+
+const visiblePinned = computed(() =>
+  pinnedMeetings.value.slice(0, PINNED_PREVIEW_LIMIT)
+)
+
+/** 超出预览条数时提示还有多少场 */
+const hiddenPinnedCount = computed(() =>
+  Math.max(0, pinnedMeetings.value.length - PINNED_PREVIEW_LIMIT)
+)
+
+/** 置顶会议的状态文字 */
+const getPinnedStatusText = (meeting: MeetingRecord) => {
+  switch (meeting.completionStatus) {
+    case 'COMPLETED':
+      return '已完成'
+    case 'IN_PROGRESS':
+      return '进行中'
+    case 'CANCELLED':
+      return '已取消'
+    default:
+      return '未开始'
+  }
+}
+
+/** 置顶会议的状态标签颜色，与历史页保持一致 */
+const getPinnedStatusType = (meeting: MeetingRecord) => {
+  switch (meeting.completionStatus) {
+    case 'COMPLETED':
+      return 'success'
+    case 'IN_PROGRESS':
+      return 'warning'
+    case 'CANCELLED':
+      return 'danger'
+    default:
+      return 'info'
+  }
+}
+
+/**
+ * 拉取置顶会议。
+ *
+ * 接口返回的列表本身已按「置顶优先 + 置顶时间倒序」排好，
+ * 这里只需过滤出置顶项，不需要再排序。
+ */
+const loadPinnedMeetings = async () => {
+  try {
+    const all = await getMeetings()
+
+    pinnedMeetings.value = all.filter((meeting) => !!meeting.pinnedAt)
+  } catch (error) {
+    // 提醒区属于辅助信息，加载失败不应打断首页主流程
+    console.error('置顶会议加载失败：', error)
+    pinnedMeetings.value = []
+  }
+}
 
 /* =========================
    语音识别状态
@@ -1035,6 +1104,13 @@ const handleClear = async () => {
 }
 
 /**
+ * 进入首页时加载置顶会议提醒。
+ */
+onMounted(() => {
+  loadPinnedMeetings()
+})
+
+/**
  * 页面卸载时释放语音识别资源。
  */
 onBeforeUnmount(() => {
@@ -1069,6 +1145,55 @@ onBeforeUnmount(() => {
           <p>
             输入会议内容，让 AI 自动提取摘要、决策和待办事项
           </p>
+        </div>
+      </div>
+
+      <!-- 置顶会议提醒：只占一小块，用于把重要会议顶到眼前 -->
+      <div v-if="visiblePinned.length" class="pinned-bar">
+        <div class="pinned-head">
+          <span class="pinned-head-icon">📌</span>
+
+          <span class="pinned-head-title">置顶会议</span>
+
+          <span class="pinned-head-count">{{ pinnedMeetings.length }}</span>
+
+          <el-button
+            link
+            type="primary"
+            size="small"
+            class="pinned-head-more"
+            @click="router.push('/history')"
+          >
+            查看全部
+          </el-button>
+        </div>
+
+        <ul class="pinned-list">
+          <li
+            v-for="meeting in visiblePinned"
+            :key="meeting.id"
+            class="pinned-item"
+            :title="meeting.title"
+            @click="router.push(`/history/${meeting.id}`)"
+          >
+            <span class="pinned-item-title">
+              {{ meeting.title || `会议 #${meeting.id}` }}
+            </span>
+
+            <el-tag
+              :type="getPinnedStatusType(meeting)"
+              size="small"
+              class="pinned-item-tag"
+            >
+              {{ getPinnedStatusText(meeting) }}
+            </el-tag>
+
+            <span class="pinned-item-arrow">→</span>
+          </li>
+        </ul>
+
+        <div v-if="hiddenPinnedCount > 0" class="pinned-more-tip">
+          还有 {{ hiddenPinnedCount }} 场置顶会议，可到历史会议查看
         </div>
       </div>
 
@@ -1235,6 +1360,119 @@ onBeforeUnmount(() => {
 .page-container {
   max-width: 1000px;
   margin: 0 auto;
+}
+
+/**
+ * 置顶会议提醒条。
+ *
+ * 设计目标：占用高度小、但足够显眼 —— 用琥珀色左边框 + 浅底提示「这里有事要看」，
+ * 不做成大卡片，避免和下方主输入区争夺注意力。
+ */
+.pinned-bar {
+  margin-bottom: 18px;
+  padding: 12px 16px;
+
+  background: #fffdf7;
+  border: 1px solid #f3d19e;
+  border-left: 3px solid #e6a23c;
+  border-radius: 10px;
+}
+
+.pinned-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pinned-head-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pinned-head-title {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pinned-head-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 9px;
+  background: #fdf0d9;
+  color: #b88230;
+
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pinned-head-more {
+  margin-left: auto;
+}
+
+.pinned-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pinned-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+
+  transition: background 0.15s;
+}
+
+.pinned-item:hover {
+  background: #fdf3e2;
+}
+
+.pinned-item-title {
+  flex: 1;
+  min-width: 0;
+  color: #303133;
+  font-size: 13px;
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pinned-item:hover .pinned-item-title {
+  color: #409eff;
+}
+
+.pinned-item-tag {
+  flex-shrink: 0;
+}
+
+.pinned-item-arrow {
+  flex-shrink: 0;
+  color: #c0c4cc;
+  font-size: 13px;
+}
+
+.pinned-more-tip {
+  margin-top: 6px;
+  padding-left: 6px;
+  color: #b88230;
+  font-size: 12px;
 }
 
 .page-header {
