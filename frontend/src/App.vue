@@ -61,7 +61,7 @@ onMounted(async () => {
 
       <nav class="nav">
         <router-link
-          to="/"
+          to="/minutes"
           class="nav-item"
         >
           <span class="nav-icon">📝</span>

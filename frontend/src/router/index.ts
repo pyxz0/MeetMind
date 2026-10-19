@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import HomeView from '../views/HomeView.vue'
+import MeetMindView from '../views/MeetMindView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import MeetingDetailView from '../views/MeetingDetailView.vue'
 import DraftsView from '../views/DraftsView.vue'
@@ -31,8 +32,21 @@ const router = createRouter({
     },
 
     {
+      /**
+       * 首页：MeetMind 入口页。
+       *
+       * 暂时只放四个功能入口（对应左侧导航的四个按钮），
+       * 后续可以在这里继续扩展模块。
+       */
       path: '/',
       name: 'home',
+      component: MeetMindView,
+    },
+
+    {
+      /** 智能纪要：会议原文输入与 AI 生成 */
+      path: '/minutes',
+      name: 'minutes',
       component: HomeView,
     },
 
