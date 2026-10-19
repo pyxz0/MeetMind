@@ -11,7 +11,8 @@ import {
   updateMeeting,
   regenerateMeeting,
   updateMeetingCompletionStatus,
-  updateMeetingLeader,
+  addMeetingLeader,
+  removeMeetingLeader,
   addMeetingMember,
   removeMeetingMember,
   updateMeetingAudioOpen,
@@ -103,26 +104,50 @@ const loadContacts = async () => {
 }
 
 /** 负责人选择 */
-const leaderUpdating = ref(false)
+const leaderAdding = ref(false)
+const selectedLeaderId = ref<number | null>(null)
 
-const handleLeaderChange = async (leaderId: number) => {
-  if (!meeting.value) return
+const handleAddLeader = async () => {
+  if (!meeting.value || !selectedLeaderId.value) return
 
-  leaderUpdating.value = true
+  leaderAdding.value = true
 
   try {
-    const updated = await updateMeetingLeader(meeting.value.id, leaderId)
+    const leaders = await addMeetingLeader(meeting.value.id, selectedLeaderId.value)
 
-    meeting.value = updated
+    meeting.value.leaders = leaders
+    selectedLeaderId.value = null
 
-    ElMessage.success('负责人已更新')
+    ElMessage.success('负责人已添加')
   } catch (error: any) {
-    const message = error?.response?.data?.message ?? '负责人更新失败'
+    const message = error?.response?.data?.message ?? '添加负责人失败'
     ElMessage.error(Array.isArray(message) ? message.join('；') : message)
   } finally {
-    leaderUpdating.value = false
+    leaderAdding.value = false
   }
 }
+
+const handleRemoveLeader = async (leader: MemberBrief) => {
+  if (!meeting.value) return
+
+  try {
+    const leaders = await removeMeetingLeader(meeting.value.id, leader.id)
+
+    meeting.value.leaders = leaders
+
+    ElMessage.success('负责人已移除')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '移除负责人失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  }
+}
+
+/** 可添加为负责人的人：排除已是负责人的 */
+const leaderCandidates = computed(() => {
+  const existing = new Set((meeting.value?.leaders ?? []).map((l) => l.id))
+
+  return contacts.value.filter((c) => !existing.has(c.id))
+})
 
 /** 成员选择与增删 */
 const memberSelecting = ref(false)
@@ -621,21 +646,34 @@ onMounted(async () => {
           </div>
         </template>
 
-        <div class="member-row">
+        <div class="member-row member-row--list">
           <span class="member-label">负责人</span>
 
-          <!-- 创建者/负责人/管理员可更换负责人 -->
-          <el-select v-if="canManageMembers" :model-value="meeting.leaderId" size="small" style="width: 220px"
-            :loading="leaderUpdating" filterable @focus="loadContacts"
-            @change="(v: number) => handleLeaderChange(v)">
-            <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+          <div class="member-list">
+            <span v-if="!meeting.leaders?.length" class="member-empty">暂无负责人</span>
+
+            <span v-for="l in meeting.leaders" :key="l.id" class="member-chip member-chip--leader">
+              <span class="chip-avatar">{{ l.name.slice(0, 1) }}</span>
+              <span>{{ l.name }}</span>
+
+              <el-button v-if="canManageMembers && (meeting.leaders?.length ?? 0) > 1" link type="danger" size="small"
+                class="chip-remove" @click="handleRemoveLeader(l)">
+                ×
+              </el-button>
+            </span>
+          </div>
+        </div>
+
+        <div v-if="canManageMembers" class="member-add">
+          <el-select v-model="selectedLeaderId" size="small" placeholder="添加负责人" filterable clearable
+            style="width: 200px" :loading="contactsLoading" @focus="loadContacts">
+            <el-option v-for="c in leaderCandidates" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
           </el-select>
 
-          <div v-else class="member-chip member-chip--leader">
-            <span class="chip-avatar">{{ meeting.leader?.name?.slice(0, 1) ?? '?' }}</span>
-            <span>{{ meeting.leader?.name ?? '未指定' }}</span>
-            <span v-if="meeting.isLeader" class="chip-badge">我</span>
-          </div>
+          <el-button type="primary" size="small" :loading="leaderAdding" :disabled="!selectedLeaderId"
+            @click="handleAddLeader">
+            添加负责人
+          </el-button>
         </div>
 
         <div class="member-row member-row--list">

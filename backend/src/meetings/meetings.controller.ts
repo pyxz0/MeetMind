@@ -182,24 +182,30 @@ export class MeetingsController {
     return this.meetingsService.updateMeeting(id, body, user);
   }
 
-  /** 指定会议负责人 */
-  @Patch(':id/leader')
-  setLeader(
+  /** 追加负责人（可多位） */
+  @Post(':id/leaders')
+  addLeader(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { leaderId?: number },
+    @Body() body: { userId?: number },
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const leaderId = body?.leaderId;
+    const userId = body?.userId;
 
-    if (
-      typeof leaderId !== 'number' ||
-      !Number.isInteger(leaderId) ||
-      leaderId <= 0
-    ) {
-      throw new BadRequestException('leaderId 必须是正整数');
+    if (typeof userId !== 'number' || !Number.isInteger(userId) || userId <= 0) {
+      throw new BadRequestException('userId 必须是正整数');
     }
 
-    return this.meetingsService.setLeader(id, leaderId, user);
+    return this.meetingsService.addLeader(id, userId, user);
+  }
+
+  /** 移除负责人；至少要保留一位 */
+  @Delete(':id/leaders/:userId')
+  removeLeader(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('userId', ParseIntPipe) userId: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.removeLeader(id, userId, user);
   }
 
   /** 控制录音是否对非负责人开放 */

@@ -39,7 +39,8 @@ export interface MeetingCapabilities {
 export interface MeetingAccessResult {
   access: MeetingAccess;
   ownerId: number;
-  leaderId: number;
+  /** 负责人 ID 集合（可多位） */
+  leaderIds: number[];
   audioOpen: boolean;
   capabilities: MeetingCapabilities;
 }
@@ -59,13 +60,12 @@ const isSuperAdmin = (user: AuthenticatedUser) => user.role === 'SUPER_ADMIN';
 const buildCapabilities = (params: {
   user: AuthenticatedUser;
   access: MeetingAccess;
-  ownerId: number;
-  leaderId: number;
   audioOpen: boolean;
-}): MeetingCapabilities => {  const { user, access, ownerId, leaderId, audioOpen } = params;
+}): MeetingCapabilities => {
+  const { user, access, audioOpen } = params;
 
   const isOwner = access === 'owner';
-  const isLeader = access === 'leader' || (ownerId === user.id && leaderId === user.id);
+  const isLeader = access === 'leader';
   const isMember = access === 'member';
 
   // 管理员及以上：可读写全部会议，但不等于「拥有」
@@ -128,8 +128,8 @@ export async function resolveMeetingAccess(
     select: {
       id: true,
       ownerId: true,
-      leaderId: true,
       audioOpen: true,
+      leaders: { select: { userId: true } },
     },
   });
 
@@ -137,16 +137,16 @@ export async function resolveMeetingAccess(
     return null;
   }
 
+  const leaderIds = meeting.leaders.map((l) => l.userId);
+
   const finish = (access: MeetingAccess): MeetingAccessResult => ({
     access,
     ownerId: meeting.ownerId,
-    leaderId: meeting.leaderId,
+    leaderIds,
     audioOpen: meeting.audioOpen,
     capabilities: buildCapabilities({
       user,
       access,
-      ownerId: meeting.ownerId,
-      leaderId: meeting.leaderId,
       audioOpen: meeting.audioOpen,
     }),
   });
@@ -156,7 +156,7 @@ export async function resolveMeetingAccess(
     return finish('owner');
   }
 
-  if (meeting.leaderId === user.id) {
+  if (leaderIds.includes(user.id)) {
     return finish('leader');
   }
 

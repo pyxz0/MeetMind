@@ -48,8 +48,11 @@ export interface CreateMeetingInput {
 const meetingInclude = {
   decisions: { orderBy: { sortOrder: 'asc' as const } },
   todos: { orderBy: { sortOrder: 'asc' as const } },
-  // 负责人与成员随会议一起返回，列表与详情都要展示
-  leader: { select: { id: true, name: true, phone: true } },
+  // 负责人（可多位）与成员随会议一起返回
+  leaders: {
+    select: { user: { select: { id: true, name: true, phone: true } } },
+    orderBy: { createdAt: 'asc' as const },
+  },
   members: {
     select: { user: { select: { id: true, name: true, phone: true } } },
     orderBy: { createdAt: 'asc' as const },
@@ -87,8 +90,8 @@ export class MeetingsService {
         status: 'READY',
         // 归属者为当前登录用户，是数据隔离的依据
         ownerId: user.id,
-        // 「每场会议必须有负责人」：创建者默认担任负责人，之后可转交
-        leaderId: user.id,
+        // 「每场会议至少一位负责人」：创建者默认成为首位负责人，后续可追加
+        leaders: { create: [{ userId: user.id }] },
         audioOpen: true,
         decisions: {
           create: (input.decisions ?? []).map((content, sortOrder) => ({
@@ -138,8 +141,6 @@ export class MeetingsService {
       computeMeetingCapabilities({
         user,
         access: 'owner',
-        ownerId: finalMeeting.ownerId,
-        leaderId: finalMeeting.leaderId,
         audioOpen: finalMeeting.audioOpen,
       }),
     );
@@ -163,8 +164,8 @@ export class MeetingsService {
         completionStatus: 'NOT_STARTED',
         // 草稿同样有归属者，否则草稿箱会跨用户可见
         ownerId: user.id,
-        // 草稿也要满足「必须有负责人」
-        leaderId: user.id,
+        // 草稿也要满足「至少一位负责人」
+        leaders: { create: [{ userId: user.id }] },
       },
       include: meetingInclude,
     });
@@ -176,8 +177,6 @@ export class MeetingsService {
       computeMeetingCapabilities({
         user,
         access: 'owner',
-        ownerId: draft.ownerId,
-        leaderId: draft.leaderId,
         audioOpen: draft.audioOpen,
       }),
     );
@@ -422,8 +421,8 @@ export class MeetingsService {
     return {
       OR: [
         { ownerId: user.id },
-        // 负责人与成员都能在列表里看到与自己相关的会议
-        { leaderId: user.id },
+        // 负责人（可多位）与成员都能在列表里看到与自己相关的会议
+        { leaders: { some: { userId: user.id } } },
         { members: { some: { userId: user.id } } },
         { shares: { some: { userId: user.id } } },
       ],
@@ -486,16 +485,17 @@ export class MeetingsService {
   }
 
   /**
-   * 指定会议负责人。
+   * 追加一位负责人。
    *
-   * 负责人可以是任何未停用的账号，也可以同时是成员（不强制入组）。
+   * 负责人可以有多个；同一个人也可同时是成员。
+   * 重复添加按幂等处理。
    */
-  async setLeader(id: number, leaderUserId: number, user: AuthenticatedUser) {
-    const access = await assertCanManageMembers(this.prisma, user, id);
+  async addLeader(id: number, leaderUserId: number, user: AuthenticatedUser) {
+    await assertCanManageMembers(this.prisma, user, id);
 
     const target = await this.prisma.user.findUnique({
       where: { id: leaderUserId },
-      select: { id: true, name: true, phone: true, isActive: true },
+      select: { id: true, isActive: true },
     });
 
     if (!target) {
@@ -506,13 +506,47 @@ export class MeetingsService {
       throw new BadRequestException('该账号已被停用，不能担任负责人');
     }
 
+    await this.prisma.meetingLeader.upsert({
+      where: { meetingId_userId: { meetingId: id, userId: leaderUserId } },
+      create: { meetingId: id, userId: leaderUserId },
+      update: {},
+    });
+
+    return this.findLeaders(id);
+  }
+
+  /**
+   * 移除一位负责人。
+   *
+   * 每场会议至少要保留一位负责人，移除最后一位会被拒绝。
+   */
+  async removeLeader(
+    id: number,
+    leaderUserId: number,
+    user: AuthenticatedUser,
+  ) {
+    const access = await assertCanManageMembers(this.prisma, user, id);
+
+    const leaders = await this.prisma.meetingLeader.findMany({
+      where: { meetingId: id },
+      select: { userId: true },
+    });
+
+    if (!leaders.some((l) => l.userId === leaderUserId)) {
+      throw new NotFoundException('该用户不是本会议的负责人');
+    }
+
+    if (leaders.length <= 1) {
+      throw new BadRequestException('每场会议至少要保留一位负责人');
+    }
+
     /**
-     * 负责人转交后，原负责人若既不是创建者也不是成员，就会失去访问权。
-     * 这种情况直接拒绝，并提示先把自己加为成员，避免出现「操作完就看不到」的困惑。
+     * 移除自己后若既非创建者也不是成员，会失去访问权，
+     * 直接拒绝并提示先把自己加为成员。
      */
     if (
-      access.access === 'leader' &&
-      leaderUserId !== user.id
+      leaderUserId === user.id &&
+      access.access === 'leader'
     ) {
       const selfMember = await this.prisma.meetingMember.findUnique({
         where: { meetingId_userId: { meetingId: id, userId: user.id } },
@@ -521,42 +555,32 @@ export class MeetingsService {
 
       if (!selfMember) {
         throw new BadRequestException(
-          '转交负责人后你将失去该会议的访问权限，请先把自己加为成员再转交',
+          '移除自己后你将失去该会议的访问权限，请先把自己加为成员',
         );
       }
     }
 
-    await this.prisma.meeting.update({
-      where: { id },
-      data: { leaderId: target.id },
+    await this.prisma.meetingLeader.deleteMany({
+      where: { meetingId: id, userId: leaderUserId },
     });
 
-    const meeting = await this.prisma.meeting.findUnique({
-      where: { id },
-      include: meetingIncludeFor(user.id),
+    return this.findLeaders(id);
+  }
+
+  /** 负责人列表 */
+  async listLeaders(id: number) {
+    const leaders = await this.prisma.meetingLeader.findMany({
+      where: { meetingId: id },
+      select: { user: { select: { id: true, name: true, phone: true } } },
+      orderBy: { createdAt: 'asc' },
     });
 
-    if (!meeting) throw new NotFoundException('会议记录不存在');
+    return leaders.map((l) => l.user);
+  }
 
-    // 负责人变更可能改变当前用户的身份（如 leader -> member），重新解析
-    const fresh = await resolveMeetingAccess(this.prisma, user, id);
-
-    const capabilities =
-      fresh?.capabilities ??
-      computeMeetingCapabilities({
-        user,
-        access: access.access,
-        ownerId: access.ownerId,
-        leaderId: target.id,
-        audioOpen: access.audioOpen,
-      });
-
-    return this.toApiRecord(
-      meeting,
-      fresh?.access ?? access.access,
-      user,
-      capabilities,
-    );
+  /** 带读取权限校验的负责人列表查询 */
+  async findLeaders(id: number) {
+    return this.listLeaders(id);
   }
 
   /**
@@ -890,7 +914,7 @@ export class MeetingsService {
 
       if (meeting.ownerId === user.id) {
         access = 'owner';
-      } else if (meeting.leaderId === user.id) {
+      } else if (meeting.leaders?.some((l) => l.user.id === user.id)) {
         access = 'leader';
       } else if (meeting.members?.some((m) => m.user.id === user.id)) {
         access = 'member';
@@ -907,8 +931,6 @@ export class MeetingsService {
       const capabilities = computeMeetingCapabilities({
         user,
         access,
-        ownerId: meeting.ownerId,
-        leaderId: meeting.leaderId,
         audioOpen: meeting.audioOpen,
       });
 
@@ -951,14 +973,11 @@ export class MeetingsService {
         meeting.status === 'DRAFT',
 
       // ---- 负责人与成员 ----
-      leaderId: meeting.leaderId,
-      leader: meeting.leader
-        ? {
-          id: meeting.leader.id,
-          name: meeting.leader.name,
-          phone: meeting.leader.phone,
-        }
-        : null,
+      leaders: (meeting.leaders ?? []).map((l) => ({
+        id: l.user.id,
+        name: l.user.name,
+        phone: l.user.phone,
+      })),
       members: (meeting.members ?? []).map((m) => ({
         id: m.user.id,
         name: m.user.name,
@@ -998,7 +1017,7 @@ type MeetingWithRelations = Meeting & {
     status: TodoStatus;
     sortOrder: number;
   }>;
-  leader?: UserBrief | null;
+  leaders?: Array<{ user: UserBrief }>;
   members?: Array<{ user: UserBrief }>;
   shares?: Array<{ permission: 'READ' | 'EDIT' }>;
 };

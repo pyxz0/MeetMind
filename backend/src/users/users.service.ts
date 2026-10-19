@@ -112,10 +112,13 @@ export class UsersService {
    *
    * 只给姓名与手机号，不含角色/启停等管理字段，
    * 因为普通用户也需要在会议里指定负责人与成员。
+   *
+   * 超级管理员从此处隐藏：超管是系统级账号，
+   * 不应出现在其他用户的选人列表里（避免被拉进会议或推断出账号存在）。
    */
   async listContacts() {
     const users = await this.prisma.user.findMany({
-      where: { isActive: true },
+      where: { isActive: true, role: { not: 'SUPER_ADMIN' } },
       select: { id: true, name: true, phone: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -433,15 +436,23 @@ export class UsersService {
     this.assertCanManage(operator, target.role as AppRole);
 
     /**
-     * 负责人外键是 ON DELETE RESTRICT：如果他人在其负责的会议里担任负责人，
-     * 直接删会失败。这里先把负责人转给会议创建者，保证「每场会议都有负责人」
-     * 且不会因为删账号牵连删掉别人的会议。
+     * 他人在其负责的会议里：先把会议创建者补为负责人，再删掉该用户的负责人记录。
+     * 这样既保证「至少一位负责人」，也不会因为删账号牵连删掉别人的会议。
      */
-    await this.prisma.$executeRaw`
-      UPDATE "meetings"
-      SET "leader_id" = "owner_id"
-      WHERE "leader_id" = ${targetId}
-    `;
+    await this.prisma.$transaction([
+      this.prisma.$executeRaw`
+        INSERT INTO "meeting_leaders" ("meeting_id", "user_id")
+        SELECT m."id", m."owner_id"
+        FROM "meetings" m
+        WHERE m."id" IN (
+          SELECT "meeting_id" FROM "meeting_leaders" WHERE "user_id" = ${targetId}
+        )
+        ON CONFLICT ("meeting_id", "user_id") DO NOTHING
+      `,
+      this.prisma.$executeRaw`
+        DELETE FROM "meeting_leaders" WHERE "user_id" = ${targetId}
+      `,
+    ]);
 
     await this.prisma.user.delete({ where: { id: targetId } });
 

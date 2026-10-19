@@ -72,7 +72,7 @@ model User {
   /// 自己创建的会议。
   meetings     Meeting[]       @relation("MeetingOwner")
   /// 由该用户担任负责人的会议。
-  ledMeetings  Meeting[]       @relation("MeetingLeader")
+  ledMeetings  MeetingLeader[] @relation("MeetingLeaderUser")
   /// 该用户作为成员参与的会议。
   meetingMemberships MeetingMember[] @relation("MeetingMemberUser")
   /// 别人共享给该用户的会议。
@@ -82,6 +82,25 @@ model User {
 
   @@index([role])
   @@map("users")
+}
+
+/// 会议负责人：一场会议可以有多位负责人。
+///
+/// 与成员分开建表：负责人拥有编辑、管成员、控录音等权限，
+/// 成员只有读与勾选待办；同一个人可以同时是负责人与成员。
+model MeetingLeader {
+  id        Int      @id @default(autoincrement())
+  meetingId Int      @map("meeting_id")
+  userId    Int      @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user    User    @relation("MeetingLeaderUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  /// 同一场会议对同一个用户只保留一条负责人记录
+  @@unique([meetingId, userId])
+  @@index([userId])
+  @@map("meeting_leaders")
 }
 
 /// 会议成员：记录参会人。
@@ -158,11 +177,8 @@ model Meeting {
   ownerId Int  @map("owner_id")
   owner   User @relation("MeetingOwner", fields: [ownerId], references: [id], onDelete: Cascade)
 
-  /// 会议负责人（主持人）。每场会议必须有且只有一位负责人。
-  /// 与 ownerId 的区别：owner 是创建者/数据归属者，leader 是业务上的主持人，
-  /// 两者可以是不同的人（例如助理代建会议、把负责人指定为实际主持人）。
-  leaderId Int  @map("leader_id")
-  leader   User @relation("MeetingLeader", fields: [leaderId], references: [id], onDelete: Restrict)
+  /// 会议负责人（可多位）。每场会议至少要有一位。
+  leaders MeetingLeader[]
 
   /// 录音是否对「非负责人」开放。
   /// 关闭后只有负责人、会议创建者与超级管理员能听，成员与共享者都听不到。
@@ -181,8 +197,6 @@ model Meeting {
   @@index([pinnedAt(sort: Desc)])
   /// 数据隔离的核心查询：按归属者过滤列表。
   @@index([ownerId, createdAt(sort: Desc)])
-  /// 「我参与的会议」需要按负责人过滤。
-  @@index([leaderId, createdAt(sort: Desc)])
   @@map("meetings")
 }
 

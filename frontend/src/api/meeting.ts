@@ -43,9 +43,8 @@ export interface MeetingResult {
   /** 置顶时间；为空表示未置顶。多条置顶按此时间倒序排列。 */
   pinnedAt?: string | null
 
-  // ---- 负责人与成员 ----
-  leaderId?: number
-  leader?: MemberBrief | null
+  // ---- 负责人（可多位）与成员 ----
+  leaders?: MemberBrief[]
   members?: MemberBrief[]
 
   // ---- 权限相关（由后端按归属、共享、成员关系计算）----
@@ -142,8 +141,7 @@ const normalizeMeeting = (data: any): MeetingRecord => {
     audioOpen: data.audioOpen ?? true,
     hasAudio: data.hasAudio ?? false,
     pinnedAt: data.pinnedAt ?? null,
-    leaderId: data.leaderId,
-    leader: data.leader ?? null,
+    leaders: Array.isArray(data.leaders) ? data.leaders : [],
     members: Array.isArray(data.members) ? data.members : [],
     ownerId: data.ownerId,
     access: data.access ?? 'read',
@@ -428,14 +426,29 @@ export const uploadMeetingAudio = async (
 
 /* ───────────── 负责人 / 成员 / 录音开放 ───────────── */
 
-/** 指定会议负责人，返回更新后的会议 */
-export const updateMeetingLeader = async (
+/** 追加负责人（可多位），返回最新负责人列表 */
+export const addMeetingLeader = async (
   id: number,
-  leaderId: number
-): Promise<MeetingRecord> => {
-  const response = await api.patch(`/meetings/${id}/leader`, { leaderId })
+  userId: number
+): Promise<MemberBrief[]> => {
+  const response = await api.post<MemberBrief[]>(
+    `/meetings/${id}/leaders`,
+    { userId }
+  )
 
-  return normalizeMeeting(response.data)
+  return response.data
+}
+
+/** 移除负责人；会议至少要保留一位 */
+export const removeMeetingLeader = async (
+  id: number,
+  userId: number
+): Promise<MemberBrief[]> => {
+  const response = await api.delete<MemberBrief[]>(
+    `/meetings/${id}/leaders/${userId}`
+  )
+
+  return response.data
 }
 
 /** 会议成员列表 */
