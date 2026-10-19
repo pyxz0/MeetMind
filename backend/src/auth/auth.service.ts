@@ -128,6 +128,81 @@ export class AuthService {
     return this.toPublicUser(user);
   }
 
+  /**
+   * 修改自己的资料（个人中心用）。
+   *
+   * 与管理员改用户的区别：
+   * - 只允许改姓名与密码，不允许改手机号 / 角色 / 启停状态
+   *   （手机号是登录标识，误改会把自己锁在外面；角色与启停属于管理权限）
+   * - 改密码必须提供原密码，防止会话被劫持后直接改密码
+   *
+   * 这样普通用户无需 user:manage 权限也能维护自己的账号。
+   */
+  async updateOwnProfile(
+    userId: number,
+    input: {
+      name?: string;
+      currentPassword?: string;
+      newPassword?: string;
+    },
+  ): Promise<PublicUser> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('账号不可用');
+    }
+
+    const data: { name?: string; passwordHash?: string } = {};
+
+    if (input.name !== undefined) {
+      const name = input.name.trim();
+
+      if (!name) {
+        throw new BadRequestException('姓名不能为空');
+      }
+
+      data.name = name.slice(0, 80);
+    }
+
+    if (input.newPassword !== undefined) {
+      this.assertPasswordStrength(input.newPassword);
+
+      if (!input.currentPassword) {
+        throw new BadRequestException('修改密码需要提供原密码');
+      }
+
+      const matched = await bcrypt.compare(
+        input.currentPassword,
+        user.passwordHash,
+      );
+
+      if (!matched) {
+        // 与登录失败同样的模糊表述，避免泄露「原密码是否正确」以外的信息
+        throw new BadRequestException('原密码不正确');
+      }
+
+      if (input.currentPassword === input.newPassword) {
+        throw new BadRequestException('新密码不能与原密码相同');
+      }
+
+      data.passwordHash = await bcrypt.hash(
+        input.newPassword,
+        BCRYPT_ROUNDS,
+      );
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('没有需要更新的内容');
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data,
+    });
+
+    return this.toPublicUser(updated);
+  }
+
   /** 供其他模块复用：把数据库用户转为不含敏感字段的视图 */
   toPublicUser(user: {
     id: number;

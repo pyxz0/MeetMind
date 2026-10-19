@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { CurrentUser, Public, type AuthenticatedUser } from './auth.decorators';
 
@@ -30,5 +30,24 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.getProfile(user.id);
+  }
+
+  /**
+   * 修改自己的资料（个人中心）。
+   *
+   * 只要求登录，不要求 user:manage —— 普通用户也需要能改自己的密码。
+   * 可改字段被限制为姓名与密码，手机号/角色/启停由管理员处理。
+   */
+  @Patch('me')
+  updateMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body()
+    body: {
+      name?: string;
+      currentPassword?: string;
+      newPassword?: string;
+    },
+  ) {
+    return this.authService.updateOwnProfile(user.id, body ?? {});
   }
 }

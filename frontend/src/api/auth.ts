@@ -37,6 +37,23 @@ export const fetchMe = async (): Promise<CurrentUser> => {
   return response.data
 }
 
+/**
+ * 修改自己的资料（个人中心）。
+ *
+ * 只要求登录即可调用：普通用户也需要能改自己的姓名与密码，
+ * 而管理用户的接口需要 user:manage 权限。
+ * 改密码时必须同时提供原密码。
+ */
+export const updateProfile = async (data: {
+  name?: string
+  currentPassword?: string
+  newPassword?: string
+}): Promise<CurrentUser> => {
+  const response = await api.patch<CurrentUser>('/auth/me', data)
+
+  return response.data
+}
+
 /** ───────────── 用户管理（管理员及以上） ───────────── */
 
 export interface ManagedUser {

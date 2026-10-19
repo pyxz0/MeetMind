@@ -7,6 +7,7 @@ import DraftsView from '../views/DraftsView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import LoginView from '../views/LoginView.vue'
 import UsersView from '../views/UsersView.vue'
+import ProfileView from '../views/ProfileView.vue'
 import { authStore, type Permission } from '../stores/auth'
 
 declare module 'vue-router' {
@@ -61,6 +62,23 @@ const router = createRouter({
     },
 
     {
+      /**
+       * 个人中心。
+       *
+       * 不放进侧边栏导航：入口是左下角的头像 / 用户名。
+       * 任何登录用户都能访问自己的个人中心，因此不设额外权限。
+       */
+      path: '/profile',
+      name: 'profile',
+      component: ProfileView,
+    },
+
+    {
+      /**
+       * 用户管理：管理员管所有账号的页面。
+       *
+       * 同样不占导航栏，入口在个人中心里（仅具备 user:read 的角色可见）。
+       */
       path: '/users',
       name: 'users',
       component: UsersView,

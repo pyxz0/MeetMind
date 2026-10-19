@@ -19,9 +19,6 @@ const isPublicPage = computed(() => route.meta.requiresAuth === false)
 
 const currentUser = computed(() => authStore.user)
 
-/** 只有具备 user:read 的角色才看到「用户管理」入口 */
-const canManageUsers = computed(() => authStore.can('user:read'))
-
 const handleLogout = async () => {
   try {
     await ElMessageBox.confirm('确定要退出登录吗？', '退出登录', {
@@ -103,26 +100,28 @@ onMounted(async () => {
             }}
           </span>
         </router-link>
-
-        <router-link
-          v-if="canManageUsers"
-          to="/users"
-          class="nav-item"
-        >
-          <span class="nav-icon">👥</span>
-          <span class="nav-label">用户管理</span>
-        </router-link>
       </nav>
 
-      <!-- 当前登录用户与退出入口，固定在侧边栏底部 -->
+      <!--
+        当前登录用户区，固定在侧边栏底部。
+
+        头像与用户名本身就是「个人中心」的入口 —— 因此导航栏里不再需要
+        个人中心/用户管理这类条目，点这里即可进入。退出登录单独一个按钮，
+        用 @click.stop 阻止冒泡，避免点退出时又跳去个人中心。
+      -->
       <div v-if="currentUser" class="user-panel">
-        <div class="user-main">
+        <router-link
+          to="/profile"
+          class="user-main"
+          :class="{ 'user-active': route.path === '/profile' }"
+          title="进入个人中心"
+        >
           <span class="user-avatar">
             {{ currentUser.name.slice(0, 1) }}
           </span>
 
           <div class="user-meta">
-            <div class="user-name" :title="currentUser.name">
+            <div class="user-name">
               {{ currentUser.name }}
             </div>
 
@@ -130,9 +129,11 @@ onMounted(async () => {
               {{ currentUser.roleLabel }}
             </div>
           </div>
-        </div>
 
-        <el-button link type="danger" @click="handleLogout">
+          <span class="user-arrow">›</span>
+        </router-link>
+
+        <el-button link type="danger" @click.stop="handleLogout">
           退出登录
         </el-button>
       </div>
@@ -187,7 +188,6 @@ a {
 }
 
 .sidebar {
-  flex: 0 0 200px;
   width: 200px;
 
   display: flex;
@@ -195,11 +195,29 @@ a {
 
   background: #ffffff;
   border-right: 1px solid #ebeef5;
+
+  /**
+   * 固定定位，脱离文档流。
+   *
+   * 曾用 sticky + 100vh，但 sticky 只在父容器范围内生效：
+   * 页面极长时滚到底部，侧边栏会被父容器边界推出视口，
+   * 左下角的个人中心入口就点不到了。
+   * fixed 让它始终贴住视口，内容区用 margin-left 让出宽度。
+   */
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+
+  overflow-y: auto;
+  z-index: 100;
 }
 
 .main {
   flex: 1;
   min-width: 0;
+  /* 侧边栏已脱离文档流，这里让出它的宽度 */
+  margin-left: 200px;
 }
 
 .logo {
@@ -312,6 +330,23 @@ a {
   align-items: center;
   gap: 10px;
   min-width: 0;
+
+  /* 整块是「个人中心」入口，做成可点区域并给出悬停反馈 */
+  padding: 6px 8px;
+  margin: -6px -8px;
+  border-radius: 8px;
+
+  color: inherit;
+  transition: background 0.2s;
+}
+
+.user-main:hover {
+  background: #f5f7fa;
+}
+
+/* 进入个人中心时高亮，让用户知道自己当前在哪一页 */
+.user-main.user-active {
+  background: #ecf5ff;
 }
 
 .user-avatar {
@@ -331,8 +366,22 @@ a {
   font-weight: 600;
 }
 
+/* 个人中心页高亮时，头像底色也跟着变深一点 */
+.user-main.user-active .user-avatar {
+  background: #d9ecff;
+}
+
+.user-arrow {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #c0c4cc;
+  font-size: 16px;
+  line-height: 1;
+}
+
 .user-meta {
   min-width: 0;
+  flex: 1;
 }
 
 .user-name {
@@ -360,10 +409,18 @@ a {
   }
 
   .sidebar {
-    flex: 0 0 auto;
     width: 100%;
     border-right: none;
     border-bottom: 1px solid #ebeef5;
+
+    /* 窄屏改成上下堆叠，固定定位会把内容盖住，恢复为普通流式布局 */
+    position: static;
+    overflow-y: visible;
+  }
+
+  .main {
+    /* 窄屏侧边栏回到文档流，不再需要让出宽度 */
+    margin-left: 0;
   }
 
   .logo {
