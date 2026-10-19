@@ -2,6 +2,7 @@
 import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import {
   getMeeting,
   updateTodoStatus,
@@ -565,7 +566,21 @@ const handleCompletionStatusChange = async (
   }
 }
 
+/**
+ * 返回上一级。
+ *
+ * 从历史会议进来就回历史会议，从收件箱进来就回收件箱 ——
+ * 用路由记录的上一页路径，而不是写死 /history。
+ * 直接打开详情页（无上一级）时兜底回历史列表。
+ */
 const goBack = () => {
+  const back = (window.history.state as { back?: string } | null)?.back
+
+  if (typeof back === 'string' && back.startsWith('/')) {
+    router.back()
+    return
+  }
+
   router.push('/history')
 }
 
@@ -582,8 +597,11 @@ onMounted(async () => {
 <template>
   <div class="detail-page" v-loading="loading">
     <div class="page-header">
-      <el-button @click="goBack">
-        ← 返回历史记录
+      <!-- 只保留一个小箭头：回到进入本页之前的那个页面 -->
+      <el-button class="back-arrow" text circle title="返回上一级" aria-label="返回上一级" @click="goBack">
+        <el-icon>
+          <ArrowLeft />
+        </el-icon>
       </el-button>
 
       <div class="header-title">
@@ -967,6 +985,26 @@ onMounted(async () => {
 
 .page-header {
   margin-bottom: 24px;
+}
+
+/* 返回箭头：小一点、低调，不抢标题的视觉重心 */
+.back-arrow {
+  width: 30px;
+  height: 30px;
+  color: #606266;
+  background: #ffffff;
+  border: 1px solid #ebeef5;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.back-arrow:hover {
+  color: #409eff;
+  border-color: #a0cfff;
+  background: #ffffff;
+}
+
+.back-arrow .el-icon {
+  font-size: 15px;
 }
 
 .header-title {
