@@ -14,16 +14,76 @@ const user = computed(() => authStore.user)
 
 const pinnedMeetings = ref<MeetingRecord[]>([])
 
+/** 尚未开始的会议：预约时间还没到 */
+const upcomingMeetings = ref<MeetingRecord[]>([])
+
 /** 首页只展示少量置顶，多了反而变成第二个列表页 */
 const PINNED_PREVIEW_LIMIT = 3
+const UPCOMING_PREVIEW_LIMIT = 3
 
 const visiblePinned = computed(() =>
   pinnedMeetings.value.slice(0, PINNED_PREVIEW_LIMIT)
 )
 
+const visibleUpcoming = computed(() =>
+  upcomingMeetings.value.slice(0, UPCOMING_PREVIEW_LIMIT)
+)
+
 const hiddenPinnedCount = computed(() =>
   Math.max(0, pinnedMeetings.value.length - PINNED_PREVIEW_LIMIT)
 )
+
+const hiddenUpcomingCount = computed(() =>
+  Math.max(0, upcomingMeetings.value.length - UPCOMING_PREVIEW_LIMIT)
+)
+
+/** 两个提醒块都为空时整行不渲染 */
+const hasNotice = computed(
+  () => pinnedMeetings.value.length > 0 || upcomingMeetings.value.length > 0
+)
+
+/** 只有一个块有数据时占满整行，避免留下半列空白 */
+const noticeColumns = computed(() => {
+  const count =
+    Number(pinnedMeetings.value.length > 0) +
+    Number(upcomingMeetings.value.length > 0)
+
+  return count === 1 ? 'single' : 'double'
+})
+
+/** 距离开始还有多久，用于给出直观的紧迫感 */
+const formatCountdown = (value?: string | null) => {
+  if (!value) return ''
+
+  const diff = new Date(value).getTime() - Date.now()
+
+  if (diff <= 0) return '即将开始'
+
+  const minutes = Math.floor(diff / 60000)
+
+  if (minutes < 60) return `${minutes} 分钟后`
+
+  const hours = Math.floor(minutes / 60)
+
+  if (hours < 24) return `${hours} 小时后`
+
+  return `${Math.floor(hours / 24)} 天后`
+}
+
+const formatScheduled = (value?: string | null) => {
+  if (!value) return ''
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) return ''
+
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
 
 const getPinnedStatusText = (meeting: MeetingRecord) => {
   switch (meeting.completionStatus) {
@@ -51,20 +111,34 @@ const getPinnedStatusType = (meeting: MeetingRecord) => {
   }
 }
 
-/** 接口已按「置顶优先 + 置顶时间倒序」排好，这里只过滤置顶项 */
-const loadPinnedMeetings = async () => {
+/** 接口已按「置顶优先 + 置顶时间倒序」排好，这里拆成置顶与未开始两类 */
+const loadMeetings = async () => {
   try {
     const all = await getMeetings()
+    const now = Date.now()
 
     pinnedMeetings.value = all.filter((meeting) => !!meeting.pinnedAt)
+
+    upcomingMeetings.value = all
+      .filter((meeting) => {
+        if (!meeting.scheduledAt) return false
+
+        return new Date(meeting.scheduledAt).getTime() > now
+      })
+      .sort(
+        (a, b) =>
+          new Date(a.scheduledAt as string).getTime() -
+          new Date(b.scheduledAt as string).getTime()
+      )
   } catch (error) {
     // 提醒区属于辅助信息，加载失败不应打断首页
-    console.error('置顶会议加载失败：', error)
+    console.error('会议提醒加载失败：', error)
     pinnedMeetings.value = []
+    upcomingMeetings.value = []
   }
 }
 
-onMounted(loadPinnedMeetings)
+onMounted(loadMeetings)
 
 /** 首页四个入口，对应左侧导航的四个功能 */
 const entries = [
@@ -120,37 +194,74 @@ const go = (path: string) => {
         </p>
       </header>
 
-      <!-- 置顶会议提醒：只占一小块，用于把重要会议顶到眼前 -->
-      <div v-if="visiblePinned.length" class="pinned-bar">
-        <div class="pinned-head">
-          <span class="pinned-head-icon">📌</span>
+      <!-- 置顶会议 + 未开始的会议：并排展示，都为空时整行不渲染 -->
+      <div v-if="hasNotice" :class="['notice-row', noticeColumns]">
+        <!-- 置顶会议 -->
+        <div v-if="visiblePinned.length" class="pinned-bar">
+          <div class="pinned-head">
+            <span class="pinned-head-icon">📌</span>
 
-          <span class="pinned-head-title">置顶会议</span>
+            <span class="pinned-head-title">置顶会议</span>
 
-          <span class="pinned-head-count">{{ pinnedMeetings.length }}</span>
+            <span class="pinned-head-count">{{ pinnedMeetings.length }}</span>
 
-          <el-button link type="primary" size="small" class="pinned-head-more" @click="go('/history')">
-            查看全部
-          </el-button>
+            <el-button link type="primary" size="small" class="pinned-head-more" @click="go('/history')">
+              查看全部
+            </el-button>
+          </div>
+
+          <ul class="pinned-list">
+            <li v-for="meeting in visiblePinned" :key="meeting.id" class="pinned-item" :title="meeting.title"
+              @click="go(`/history/${meeting.id}`)">
+              <span class="pinned-item-title">
+                {{ meeting.title || `会议 #${meeting.id}` }}
+              </span>
+
+              <el-tag :type="getPinnedStatusType(meeting)" size="small" class="pinned-item-tag">
+                {{ getPinnedStatusText(meeting) }}
+              </el-tag>
+
+              <span class="pinned-item-arrow">→</span>
+            </li>
+          </ul>
+
+          <div v-if="hiddenPinnedCount > 0" class="pinned-more-tip">
+            还有 {{ hiddenPinnedCount }} 场置顶会议，可到历史会议查看
+          </div>
         </div>
 
-        <ul class="pinned-list">
-          <li v-for="meeting in visiblePinned" :key="meeting.id" class="pinned-item" :title="meeting.title"
-            @click="go(`/history/${meeting.id}`)">
-            <span class="pinned-item-title">
-              {{ meeting.title || `会议 #${meeting.id}` }}
-            </span>
+        <!-- 未开始的会议 -->
+        <div v-if="visibleUpcoming.length" class="upcoming-bar">
+          <div class="pinned-head">
+            <span class="pinned-head-icon">🕒</span>
 
-            <el-tag :type="getPinnedStatusType(meeting)" size="small" class="pinned-item-tag">
-              {{ getPinnedStatusText(meeting) }}
-            </el-tag>
+            <span class="pinned-head-title">未开始的会议</span>
 
-            <span class="pinned-item-arrow">→</span>
-          </li>
-        </ul>
+            <span class="pinned-head-count upcoming-count">{{ upcomingMeetings.length }}</span>
+          </div>
 
-        <div v-if="hiddenPinnedCount > 0" class="pinned-more-tip">
-          还有 {{ hiddenPinnedCount }} 场置顶会议，可到历史会议查看
+          <ul class="pinned-list">
+            <li v-for="meeting in visibleUpcoming" :key="meeting.id" class="pinned-item" :title="meeting.title"
+              @click="go(`/history/${meeting.id}`)">
+              <span class="pinned-item-title">
+                {{ meeting.title || `会议 #${meeting.id}` }}
+              </span>
+
+              <span class="upcoming-time">
+                {{ formatScheduled(meeting.scheduledAt) }}
+              </span>
+
+              <el-tag type="primary" size="small" effect="plain" class="pinned-item-tag">
+                {{ formatCountdown(meeting.scheduledAt) }}
+              </el-tag>
+
+              <span class="pinned-item-arrow">→</span>
+            </li>
+          </ul>
+
+          <div v-if="hiddenUpcomingCount > 0" class="upcoming-more-tip">
+            还有 {{ hiddenUpcomingCount }} 场未开始的会议
+          </div>
         </div>
       </div>
 
@@ -237,6 +348,21 @@ const go = (path: string) => {
 /**
  * 置顶会议提醒条：琥珀色左边框 + 浅底，占位小但足够显眼。
  */
+/* 两个提醒块并排；只有一个时占满整行 */
+.notice-row {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.notice-row.double {
+  grid-template-columns: 1fr 1fr;
+}
+
+.notice-row.single {
+  grid-template-columns: 1fr;
+}
+
 .pinned-bar {
   margin-bottom: 20px;
   padding: 12px 16px;
@@ -342,6 +468,40 @@ const go = (path: string) => {
   padding-left: 6px;
   color: #b88230;
   font-size: 12px;
+}
+
+/* ---- 未开始的会议：与置顶区分开，用蓝色系 ---- */
+.upcoming-bar {
+  padding: 12px 16px;
+
+  background: #f7fbff;
+  border: 1px solid #c6e2ff;
+  border-left: 3px solid #409eff;
+  border-radius: 10px;
+}
+
+.upcoming-count {
+  background: #e6f2ff;
+  color: #337ecc;
+}
+
+.upcoming-time {
+  flex-shrink: 0;
+  color: #909399;
+  font-size: 12px;
+}
+
+.upcoming-more-tip {
+  margin-top: 6px;
+  padding-left: 6px;
+  color: #337ecc;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .notice-row.double {
+    grid-template-columns: 1fr;
+  }
 }
 
 .entry-card {

@@ -96,7 +96,17 @@ const completionUpdatingId = ref<number | null>(null)
 const filteredMeetings = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
 
+  /** 还没到开会时间的会议不算历史，首页单独展示 */
+  const now = Date.now()
+  const isUpcoming = (meeting: MeetingRecord) =>
+    !!meeting.scheduledAt &&
+    new Date(meeting.scheduledAt).getTime() > now
+
   const filtered = meetings.value.filter(meeting => {
+    if (isUpcoming(meeting)) {
+      return false
+    }
+
     const title = (meeting.title || `会议 #${meeting.id}`).toLowerCase()
 
     const matchesKeyword =
