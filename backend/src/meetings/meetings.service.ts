@@ -146,8 +146,95 @@ export class MeetingsService {
     );
   }
 
-  /** 手动将会议内容保存到草稿箱 */
-  async createDraft(
+  /**
+   * 创建正式会议（预约会议）。
+   *
+   * 与临时会议的区别：有 scheduledAt，开会时间前 20 分钟内
+   * 参会人员会在收件箱收到提醒。
+   * 会议原文此时为空，开会后再补充或直接生成纪要。
+   */
+  async createScheduled(
+    input: {
+      title?: string;
+      scheduledAt: string;
+      leaderIds?: number[];
+      memberIds?: number[];
+    },
+    user: AuthenticatedUser,
+  ) {
+    const when = new Date(input.scheduledAt);
+
+    if (Number.isNaN(when.getTime())) {
+      throw new BadRequestException('开会时间格式不正确');
+    }
+
+    // 允许 1 分钟误差，避免刚选完时间点提交就被判过期
+    if (when.getTime() < Date.now() - 60_000) {
+      throw new BadRequestException('开会时间不能早于当前时间');
+    }
+
+    const leaderIds = this.normalizeIds(input.leaderIds);
+    const memberIds = this.normalizeIds(input.memberIds);
+
+    // 没有指定负责人时由创建者担任，保证「至少一位负责人」
+    const finalLeaderIds = leaderIds.length ? leaderIds : [user.id];
+
+    await this.assertUsersUsable([...finalLeaderIds, ...memberIds]);
+
+    const meeting = await this.prisma.meeting.create({
+      data: {
+        title: input.title?.trim() || '未命名会议',
+        content: '',
+        summary: null,
+        status: 'READY',
+        ownerId: user.id,
+        scheduledAt: when,
+        leaders: { create: finalLeaderIds.map((userId) => ({ userId })) },
+        members: { create: memberIds.map((userId) => ({ userId })) },
+      },
+      include: meetingInclude,
+    });
+
+    return this.toApiRecord(
+      meeting,
+      'owner',
+      user,
+      computeMeetingCapabilities({
+        user,
+        access: 'owner',
+        audioOpen: meeting.audioOpen,
+      }),
+    );
+  }
+
+  /** 去重并过滤非法 id */
+  private normalizeIds(ids?: number[]) {
+    if (!Array.isArray(ids)) return [];
+
+    return [...new Set(ids)].filter(
+      (id) => typeof id === 'number' && Number.isInteger(id) && id > 0,
+    );
+  }
+
+  /** 校验账号存在且未停用，避免把停用账号设为负责人/成员 */
+  private async assertUsersUsable(ids: number[]) {
+    if (!ids.length) return;
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, isActive: true },
+    });
+
+    if (users.length !== ids.length) {
+      throw new NotFoundException('指定的参会人员中有账号不存在');
+    }
+
+    if (users.some((u) => !u.isActive)) {
+      throw new BadRequestException('指定的参会人员中有账号已被停用');
+    }
+  }
+
+  /** 手动将会议内容保存到草稿箱 */  async createDraft(
     input: { title?: string; content: string },
     user: AuthenticatedUser,
   ) {
@@ -962,6 +1049,8 @@ export class MeetingsService {
         ? `/api/meetings/${meeting.id}/audio`
         : null,
       audioDurationSec: meeting.audioDurationSec ?? null,
+      /** 正式会议的开会时间；为空表示临时会议 */
+      scheduledAt: meeting.scheduledAt?.toISOString() ?? null,
       /** 录音是否对非负责人开放（前端用于渲染开关状态） */
       audioOpen: meeting.audioOpen,
       /** 是否存在录音（与是否有权听无关，用于展示“有录音但未开放”） */

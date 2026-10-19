@@ -1,6 +1,6 @@
 import api from './http'
 
-export type InboxNotificationType = 'leader' | 'member' | 'share'
+export type InboxNotificationType = 'leader' | 'member' | 'share' | 'reminder'
 
 export interface InboxNotification {
   key: string
@@ -9,6 +9,8 @@ export interface InboxNotification {
   meetingTitle: string
   actorName: string | null
   permission: 'READ' | 'EDIT' | null
+  /** 会议开始时间，仅 reminder 类型有值 */
+  scheduledAt: string | null
   createdAt: string
   read: boolean
 }

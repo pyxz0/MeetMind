@@ -36,6 +36,8 @@ export interface MeetingResult {
   audioUrl?: string | null
   /** 录音时长（秒），与转写计时一致。 */
   audioDurationSec?: number | null
+  /** 正式会议的开会时间；为空表示临时会议 */
+  scheduledAt?: string | null
   /** 录音是否对非负责人开放 */
   audioOpen?: boolean
   /** 是否存在录音（与是否有权听无关，用于展示「有录音但未开放」） */
@@ -139,6 +141,7 @@ const normalizeMeeting = (data: any): MeetingRecord => {
     audioUrl: data.audioUrl ?? null,
     audioDurationSec: data.audioDurationSec ?? null,
     audioOpen: data.audioOpen ?? true,
+    scheduledAt: data.scheduledAt ?? null,
     hasAudio: data.hasAudio ?? false,
     pinnedAt: data.pinnedAt ?? null,
     leaders: Array.isArray(data.leaders) ? data.leaders : [],
@@ -422,6 +425,24 @@ export const uploadMeetingAudio = async (
   })
 
   return response.data
+}
+
+/* ───────────── 正式会议（预约） ───────────── */
+
+/**
+ * 创建正式会议。
+ *
+ * 传 scheduledAt 表示预约会议；未传该字段的会议走即时创建流程（临时会议）。
+ */
+export const createScheduledMeeting = async (data: {
+  title?: string
+  scheduledAt: string
+  leaderIds?: number[]
+  memberIds?: number[]
+}): Promise<MeetingRecord> => {
+  const response = await api.post('/meetings/scheduled', data)
+
+  return normalizeMeeting(response.data)
 }
 
 /* ───────────── 负责人 / 成员 / 录音开放 ───────────── */

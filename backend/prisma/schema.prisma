@@ -186,6 +186,10 @@ model Meeting {
   /// 关闭后只有负责人、会议创建者与超级管理员能听，成员与共享者都听不到。
   audioOpen Boolean @default(true) @map("audio_open")
 
+  /// 正式会议的开会时间。为空表示临时会议（即时开始）。
+  /// 距离开会时间不足 20 分钟时，参会人员会在收件箱收到提醒。
+  scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz(3)
+
   /// 会议成员（参会人）。
   members MeetingMember[]
 
@@ -199,6 +203,8 @@ model Meeting {
   @@index([pinnedAt(sort: Desc)])
   /// 数据隔离的核心查询：按归属者过滤列表。
   @@index([ownerId, createdAt(sort: Desc)])
+  /// 收件箱提醒要按开会时间扫描。
+  @@index([scheduledAt])
   @@map("meetings")
 }
 

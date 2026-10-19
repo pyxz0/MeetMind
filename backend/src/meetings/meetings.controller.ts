@@ -57,6 +57,34 @@ export class MeetingsController {
     return this.meetingsService.create(body, user);
   }
 
+  /** 创建正式会议（预约开会时间） */
+  @Post('scheduled')
+  @RequirePermissions(PERMISSIONS.MEETING_CREATE)
+  createScheduled(
+    @Body()
+    body: {
+      title?: string;
+      scheduledAt?: string;
+      leaderIds?: number[];
+      memberIds?: number[];
+    },
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    if (!body?.scheduledAt || typeof body.scheduledAt !== 'string') {
+      throw new BadRequestException('scheduledAt 不能为空');
+    }
+
+    return this.meetingsService.createScheduled(
+      {
+        title: body.title,
+        scheduledAt: body.scheduledAt,
+        leaderIds: body.leaderIds,
+        memberIds: body.memberIds,
+      },
+      user,
+    );
+  }
+
   /** 手动将会议内容保存到草稿箱 */
   @Post('drafts')
   @RequirePermissions(PERMISSIONS.MEETING_CREATE)

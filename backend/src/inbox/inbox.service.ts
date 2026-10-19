@@ -4,8 +4,8 @@ import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 
-/** 通知类型：被加为负责人 / 被加为成员 / 被共享 */
-export type InboxNotificationType = 'leader' | 'member' | 'share';
+/** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 会议即将开始 */
+export type InboxNotificationType = 'leader' | 'member' | 'share' | 'reminder';
 
 export interface InboxNotification {
   /** 同类记录的稳定标识，供前端做 key */
@@ -17,6 +17,8 @@ export interface InboxNotification {
   actorName: string | null;
   /** 共享权限，仅 share 类型有值 */
   permission: 'READ' | 'EDIT' | null;
+  /** 会议开始时间，仅 reminder 类型有值 */
+  scheduledAt: string | null;
   createdAt: string;
   read: boolean;
 }
@@ -46,42 +48,44 @@ export class InboxService {
    * 不额外建通知表 —— 关系本身就是事实，避免双写不一致。
    */
   async getInbox(user: AuthenticatedUser) {
-    const [leaders, members, shares, todoItems, seenAt] = await Promise.all([
-      this.prisma.meetingLeader.findMany({
-        where: { userId: user.id },
-        select: {
-          createdAt: true,
-          meeting: { select: { id: true, title: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      }),
-      this.prisma.meetingMember.findMany({
-        where: { userId: user.id },
-        select: {
-          createdAt: true,
-          meeting: { select: { id: true, title: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      }),
-      this.prisma.meetingShare.findMany({
-        where: { userId: user.id },
-        select: {
-          createdAt: true,
-          permission: true,
-          meeting: { select: { id: true, title: true } },
-          grantedBy: { select: { name: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      }),
-      this.collectTodos(user),
-      this.prisma.user.findUnique({
-        where: { id: user.id },
-        select: { inboxSeenAt: true },
-      }),
-    ]);
+    const [leaders, members, shares, reminders, todoItems, seenAt] =
+      await Promise.all([
+        this.prisma.meetingLeader.findMany({
+          where: { userId: user.id },
+          select: {
+            createdAt: true,
+            meeting: { select: { id: true, title: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
+        this.prisma.meetingMember.findMany({
+          where: { userId: user.id },
+          select: {
+            createdAt: true,
+            meeting: { select: { id: true, title: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
+        this.prisma.meetingShare.findMany({
+          where: { userId: user.id },
+          select: {
+            createdAt: true,
+            permission: true,
+            meeting: { select: { id: true, title: true } },
+            grantedBy: { select: { name: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
+        this.collectReminders(user),
+        this.collectTodos(user),
+        this.prisma.user.findUnique({
+          where: { id: user.id },
+          select: { inboxSeenAt: true },
+        }),
+      ]);
 
     const seenAtDate = seenAt?.inboxSeenAt ?? null;
 
@@ -89,6 +93,7 @@ export class InboxService {
       !!seenAtDate && createdAt.getTime() <= seenAtDate.getTime();
 
     const notifications: InboxNotification[] = [
+      ...reminders,
       ...leaders.map((row, index) => ({
         key: `leader-${row.meeting.id}-${index}`,
         type: 'leader' as const,
@@ -96,6 +101,7 @@ export class InboxService {
         meetingTitle: row.meeting.title,
         actorName: null,
         permission: null,
+        scheduledAt: null,
         createdAt: row.createdAt.toISOString(),
         read: isRead(row.createdAt),
       })),
@@ -106,6 +112,7 @@ export class InboxService {
         meetingTitle: row.meeting.title,
         actorName: null,
         permission: null,
+        scheduledAt: null,
         createdAt: row.createdAt.toISOString(),
         read: isRead(row.createdAt),
       })),
@@ -116,10 +123,19 @@ export class InboxService {
         meetingTitle: row.meeting.title,
         actorName: row.grantedBy?.name ?? null,
         permission: row.permission,
+        scheduledAt: null,
         createdAt: row.createdAt.toISOString(),
         read: isRead(row.createdAt),
       })),
-    ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    ].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      /**
+       * 已读统一按「createdAt <= 已读时间」判定：
+       * 提醒的 createdAt 是「开会前 20 分钟」，标记已读后自然变为已读。
+       */
+      .map((item) => ({
+        ...item,
+        read: isRead(new Date(item.createdAt)),
+      }));
 
     const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -214,6 +230,57 @@ export class InboxService {
 
     // 指派给我的排前面
     return items.sort((a, b) => Number(b.mine) - Number(a.mine));
+  }
+
+  /**
+   * 会议开始提醒。
+   *
+   * 由开会时间派生，不依赖定时任务：
+   * 只要「现在」落在「开会前 20 分钟 ~ 开会后 1 小时」区间内，
+   * 该会议的负责人与成员都会在收件箱看到提醒。
+   * 提醒的 createdAt 取「开会前 20 分钟」这个时刻，这样未读判断也成立。
+   */
+  private async collectReminders(
+    user: AuthenticatedUser,
+  ): Promise<InboxNotification[]> {
+    const WINDOW_BEFORE_MS = 20 * 60 * 1000;
+    const GRACE_AFTER_MS = 60 * 60 * 1000;
+    const now = Date.now();
+
+    const meetings = await this.prisma.meeting.findMany({
+      where: {
+        scheduledAt: {
+          not: null,
+          // 开会前 20 分钟已到（含宽限期）
+          gte: new Date(now - GRACE_AFTER_MS),
+          lte: new Date(now + WINDOW_BEFORE_MS),
+        },
+        OR: [
+          { leaders: { some: { userId: user.id } } },
+          { members: { some: { userId: user.id } } },
+        ],
+      },
+      select: { id: true, title: true, scheduledAt: true },
+      orderBy: { scheduledAt: 'asc' },
+      take: 20,
+    });
+
+    return meetings.map((meeting) => {
+      const scheduledAt = meeting.scheduledAt as Date;
+      const remindAt = new Date(scheduledAt.getTime() - WINDOW_BEFORE_MS);
+
+      return {
+        key: `reminder-${meeting.id}`,
+        type: 'reminder' as const,
+        meetingId: meeting.id,
+        meetingTitle: meeting.title,
+        actorName: null,
+        permission: null,
+        scheduledAt: scheduledAt.toISOString(),
+        createdAt: remindAt.toISOString(),
+        read: false,
+      };
+    });
   }
 
   /** 可见会议范围，与会议列表保持一致 */

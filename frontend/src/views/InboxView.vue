@@ -67,6 +67,11 @@ const handleMarkRead = async () => {
 /** 通知文案 */
 const notificationText = (item: InboxNotification) => {
   switch (item.type) {
+    case 'reminder': {
+      const when = item.scheduledAt ? formatTime(item.scheduledAt) : ''
+
+      return `「${item.meetingTitle}」${when} 开始，请准时参加`
+    }
     case 'leader':
       return `你被添加为「${item.meetingTitle}」的负责人`
     case 'member':
@@ -79,6 +84,8 @@ const notificationText = (item: InboxNotification) => {
 /** 通知图标 */
 const notificationIcon = (item: InboxNotification) => {
   switch (item.type) {
+    case 'reminder':
+      return '⏰'
     case 'leader':
       return '👑'
     case 'member':

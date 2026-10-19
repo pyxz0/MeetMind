@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import HomeView from '../views/HomeView.vue'
 import MeetMindView from '../views/MeetMindView.vue'
+import MinutesView from '../views/MinutesView.vue'
 import InboxView from '../views/InboxView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import MeetingDetailView from '../views/MeetingDetailView.vue'
@@ -45,9 +46,16 @@ const router = createRouter({
     },
 
     {
-      /** 智能纪要：会议原文输入与 AI 生成 */
+      /** 智能纪要入口：临时会议 / 正式会议 */
       path: '/minutes',
       name: 'minutes',
+      component: MinutesView,
+    },
+
+    {
+      /** 临时会议的即时纪要流程（原首页内容） */
+      path: '/minutes/instant',
+      name: 'minutes-instant',
       component: HomeView,
     },
 
