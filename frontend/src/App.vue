@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { provideDraftStore } from './composables/draftStore'
 import { authStore } from './stores/auth'
 
 const draftStore = provideDraftStore()
 const route = useRoute()
+const router = useRouter()
 
 /**
  * 登录页不渲染侧边栏与内容框架。
@@ -16,6 +18,19 @@ const route = useRoute()
 const isPublicPage = computed(() => route.meta.requiresAuth === false)
 
 const currentUser = computed(() => authStore.user)
+
+/** 当前是否处于「以他人身份浏览」状态 */
+const impersonation = computed(() => authStore.state.impersonation)
+
+/** 返回自己的账号 */
+const backToMyAccount = async () => {
+  authStore.endImpersonation()
+
+  ElMessage.success('已返回自己的账号')
+
+  // 回到用户管理，方便继续处理其他账号
+  await router.push('/users')
+}
 
 onMounted(async () => {
   // 未登录时（登录页）不拉草稿数量，避免无谓的 401
@@ -35,9 +50,13 @@ onMounted(async () => {
       <router-link
         to="/"
         class="logo"
+        aria-label="MeetMind 首页"
       >
-        <span class="logo-icon">🧠</span>
-        <span class="logo-text">MeetMind</span>
+        <img
+          src="/meetmind-logo.svg"
+          alt="MeetMind"
+          class="logo-image"
+        />
       </router-link>
 
       <nav class="nav">
@@ -119,6 +138,26 @@ onMounted(async () => {
     </aside>
 
     <main class="main">
+      <!-- 代登身份提示条：始终可见，避免误以为自己就是对方账号 -->
+      <div v-if="impersonation" class="impersonation-bar">
+        <span class="impersonation-icon">👁</span>
+
+        <span class="impersonation-text">
+          正在以
+          <strong>{{ currentUser?.name }}</strong>
+          （{{ currentUser?.phone }}）的身份浏览
+        </span>
+
+        <el-button
+          type="warning"
+          size="small"
+          class="impersonation-back"
+          @click="backToMyAccount"
+        >
+          返回我的账号
+        </el-button>
+      </div>
+
       <router-view />
     </main>
   </div>
@@ -199,29 +238,59 @@ a {
   margin-left: 200px;
 }
 
+/* 代登身份提示条：用醒目颜色区分「这不是我自己的账号」 */
+.impersonation-bar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 10px 20px;
+
+  background: #fdf6ec;
+  border-bottom: 1px solid #f3d19e;
+  color: #b88230;
+  font-size: 13px;
+}
+
+.impersonation-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.impersonation-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.impersonation-text strong {
+  color: #8a5a00;
+}
+
+.impersonation-back {
+  flex-shrink: 0;
+}
+
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
 
   height: 64px;
   padding: 0 20px;
   /* 与导航项左内边距对齐，图标与文字能连成一条竖线 */
   flex-shrink: 0;
 
-  color: #303133;
-  font-size: 20px;
-  font-weight: 700;
-
   border-bottom: 1px solid #f2f3f5;
 }
 
-.logo-icon {
-  font-size: 24px;
-}
-
-.logo-text {
-  white-space: nowrap;
+.logo-image {
+  display: block;
+  width: 160px;
+  max-width: 100%;
+  height: auto;
 }
 
 .nav {

@@ -332,6 +332,64 @@ export class UsersService {
     return { ...updated, createdAt: updated.createdAt.toISOString() };
   }
 
+  /**
+   * 以指定账号身份浏览（超级管理员专用）。
+   *
+   * 用于排障：例如用户反馈「看不到某场会议」，超管可直接切到对方身份复现。
+   *
+   * 防护要点：
+   * - 已由控制器限制为 SUPER_ADMIN
+   * - 不允许代登自己（无意义）
+   * - 不允许代登停用账号（否则等于绕过停用限制）
+   * - 不允许代登超级管理员角色（避免自我复制出第二超管身份）
+   * - 不允许在代登会话中再次代登（避免权限链失控）
+   */
+  async impersonate(operator: AuthenticatedUser, targetId: number) {
+    if (operator.impersonatedBy !== undefined) {
+      throw new ForbiddenException(
+        '当前已是代登状态，请先返回自己的账号再切换',
+      );
+    }
+
+    if (targetId === operator.id) {
+      throw new BadRequestException('不能切换到自己');
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetId },
+      select: publicUserSelect,
+    });
+
+    if (!target) {
+      throw new NotFoundException('用户不存在');
+    }
+
+    if (!target.isActive) {
+      throw new BadRequestException('该账号已被停用，无法切换');
+    }
+
+    if (target.role === 'SUPER_ADMIN') {
+      throw new ForbiddenException('不能以超级管理员身份切换');
+    }
+
+    const token = await this.authService.createImpersonationSession(
+      target.id,
+      target.role as AppRole,
+      target.phone,
+      operator.id,
+    );
+
+    return {
+      token,
+      user: this.authService.toPublicUser(target),
+      /** 真实操作者，供前端提示条展示 */
+      impersonatedBy: {
+        id: operator.id,
+        name: operator.name,
+      },
+    };
+  }
+
   /** 删除用户；其拥有的会议会因外键级联一并删除 */
   async remove(operator: AuthenticatedUser, targetId: number) {
     if (targetId === operator.id) {

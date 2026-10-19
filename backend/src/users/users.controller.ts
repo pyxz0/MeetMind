@@ -12,6 +12,7 @@ import {
 import {
   CurrentUser,
   RequirePermissions,
+  RequireRoles,
   type AuthenticatedUser,
 } from '../auth/auth.decorators';
 import { PERMISSIONS } from '../auth/permissions';
@@ -79,5 +80,20 @@ export class UsersController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     return this.usersService.remove(user, id);
+  }
+
+  /**
+   * 以指定账号身份浏览（代登）。
+   *
+   * 仅超级管理员可用：代登能完整看到对方数据，
+   * 因此不给管理员开放，避免管理员越权查看用户私有会议。
+   */
+  @Post(':id/impersonate')
+  @RequireRoles('SUPER_ADMIN')
+  impersonate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.usersService.impersonate(user, id);
   }
 }

@@ -1,20 +1,32 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listUsers,
   createUser,
   updateUser,
   deleteUser,
+  impersonateUser,
   type ManagedUser
 } from '../api/auth'
 import { authStore, type Role } from '../stores/auth'
+
+const router = useRouter()
 
 const users = ref<ManagedUser[]>([])
 const loading = ref(false)
 const keyword = ref('')
 
 const currentUser = computed(() => authStore.user)
+
+/** 只有超级管理员能切换身份（后端同样只放行超管） */
+const canImpersonate = computed(
+  () => currentUser.value?.role === 'SUPER_ADMIN'
+)
+
+/** 当前会话是否已经是代登状态（代登会话不允许再切） */
+const isImpersonating = computed(() => authStore.isImpersonating.value)
 
 /** 当前用户能否管理某个目标账号：必须严格高于对方 */
 const ROLE_RANK: Record<Role, number> = {
@@ -169,6 +181,52 @@ const changeRole = async (user: ManagedUser, role: Role) => {
   }
 }
 
+/** ───── 切换身份（以该账号浏览） ───── */
+
+/** 某个账号是否可以切换进去 */
+const canImpersonateRow = (user: ManagedUser) =>
+  canImpersonate.value &&
+  !isImpersonating.value &&
+  user.id !== currentUser.value?.id &&
+  user.isActive &&
+  user.role !== 'SUPER_ADMIN'
+
+const impersonatingId = ref<number | null>(null)
+
+const handleImpersonate = async (user: ManagedUser) => {
+  try {
+    await ElMessageBox.confirm(
+      `将以「${user.name}（${user.phone}）」的身份浏览系统，看到的会议与操作权限都与该账号一致。页面顶部会显示提示条，可随时返回自己的账号。`,
+      '切换身份',
+      {
+        confirmButtonText: '切换并进入',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+
+  impersonatingId.value = user.id
+
+  try {
+    const result = await impersonateUser(user.id)
+
+    authStore.startImpersonation(result.token, result.user)
+
+    ElMessage.success(`已切换为「${result.user.name}」`)
+
+    // 回到首页，用对方的视角重新加载数据
+    await router.push('/')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '切换失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    impersonatingId.value = null
+  }
+}
+
 /** ───── 删除 ───── */
 const handleDelete = async (user: ManagedUser) => {
   try {
@@ -300,7 +358,7 @@ onMounted(loadUsers)
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="200" fixed="right">
+          <el-table-column label="操作" width="290" fixed="right">
             <template #default="{ row }">
               <!-- 自己：只能改密码 -->
               <span v-if="isSelf(row)" class="self-actions">
@@ -313,17 +371,30 @@ onMounted(loadUsers)
 
               <span v-else-if="isSoleSuperAdmin(row)" class="no-permission">系统唯一超管</span>
 
-              <template v-else-if="canManage(row)">
-                <el-button link type="primary" :loading="togglingId === row.id" @click="toggleActive(row)">
-                  {{ row.isActive ? '停用' : '启用' }}
+              <template v-else>
+                <!-- 切换身份：超管专用，直接以该账号视角进入系统 -->
+                <el-button
+                  v-if="canImpersonateRow(row)"
+                  link
+                  type="warning"
+                  :loading="impersonatingId === row.id"
+                  @click="handleImpersonate(row)"
+                >
+                  切换身份
                 </el-button>
 
-                <el-button link type="danger" @click="handleDelete(row)">
-                  删除
-                </el-button>
+                <template v-if="canManage(row)">
+                  <el-button link type="primary" :loading="togglingId === row.id" @click="toggleActive(row)">
+                    {{ row.isActive ? '停用' : '启用' }}
+                  </el-button>
+
+                  <el-button link type="danger" @click="handleDelete(row)">
+                    删除
+                  </el-button>
+                </template>
+
+                <span v-else-if="!canImpersonateRow(row)" class="no-permission">无管理权限</span>
               </template>
-
-              <span v-else class="no-permission">无管理权限</span>
             </template>
           </el-table-column>
         </el-table>

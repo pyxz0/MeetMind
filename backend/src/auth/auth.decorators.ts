@@ -26,6 +26,13 @@ export interface AuthenticatedUser {
   name: string;
   role: AppRole;
   isActive: boolean;
+  /**
+   * 代登操作者 ID：非空表示当前会话是「以他人身份浏览」。
+   *
+   * 由 JWT 的 imp 声明带入，用于前端显示身份提示条、
+   * 以及禁止代登会话再次发起代登（避免权限链）。
+   */
+  impersonatedBy?: number;
 }
 
 /**

@@ -110,6 +110,23 @@ export const deleteUser = async (id: number) => {
   return response.data
 }
 
+/**
+ * 以指定账号身份浏览（超级管理员专用）。
+ *
+ * 后端返回该账号的 token 与其公开信息，用于前端切换会话。
+ */
+export const impersonateUser = async (
+  id: number
+): Promise<{
+  token: string
+  user: CurrentUser
+  impersonatedBy: { id: number; name: string }
+}> => {
+  const response = await api.post(`/users/${id}/impersonate`)
+
+  return response.data
+}
+
 /** ───────────── 会议共享 ───────────── */
 
 export type SharePermission = 'READ' | 'EDIT'

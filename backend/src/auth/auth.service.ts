@@ -262,6 +262,34 @@ export class AuthService {
     return digits;
   }
 
+  /**
+   * 签发「以他人身份浏览」的会话令牌（超级管理员专用）。
+   *
+   * 与普通登录令牌的区别：
+   * - 带 imp 声明（值为操作者的用户 ID），便于审计与识别当前是代登状态
+   * - 有效期缩短到 2 小时：代登属于临时排障手段，不应长期有效
+   *
+   * 权限校验（谁能代登、能否代登目标账号）由调用方 UsersService 负责，
+   * 这里只负责签发。
+   */
+  async createImpersonationSession(
+    targetUserId: number,
+    targetRole: AppRole,
+    targetPhone: string,
+    operatorId: number,
+  ): Promise<string> {
+    return this.jwtService.signAsync(
+      {
+        sub: targetUserId,
+        role: targetRole,
+        phone: targetPhone,
+        // 标记这是代登令牌，并记录真实操作者
+        imp: operatorId,
+      },
+      { expiresIn: '2h' },
+    );
+  }
+
   private signToken(userId: number, role: AppRole, phone: string) {
     return this.jwtService.signAsync({
       sub: userId,

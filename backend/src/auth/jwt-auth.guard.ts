@@ -51,7 +51,7 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('未登录或登录状态已失效');
     }
 
-    let payload: { sub?: number };
+    let payload: { sub?: number; imp?: number };
 
     try {
       payload = await this.jwtService.verifyAsync(token);
@@ -65,6 +65,13 @@ export class JwtAuthGuard implements CanActivate {
     if (typeof userId !== 'number') {
       throw new UnauthorizedException('登录凭证无效');
     }
+
+    /**
+     * imp 声明表示这是超管的代登会话，值是真实操作者的用户 ID。
+     * 这里原样传递，供业务层判断「当前是否处于代登状态」。
+     */
+    const impersonatedBy =
+      typeof payload?.imp === 'number' ? payload.imp : undefined;
 
     /**
      * 每次请求都回库读用户，而不是只信 JWT 里的角色。
@@ -92,6 +99,7 @@ export class JwtAuthGuard implements CanActivate {
       name: user.name,
       role: user.role as AppRole,
       isActive: user.isActive,
+      ...(impersonatedBy !== undefined ? { impersonatedBy } : {}),
     };
 
     // 角色校验（管人类接口用）
