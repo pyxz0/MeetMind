@@ -1,11 +1,70 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { authStore } from '../stores/auth'
+import { getMeetings, type MeetingRecord } from '../api/meeting'
 
 const router = useRouter()
 
 const user = computed(() => authStore.user)
+
+/* =========================
+   置顶会议提醒
+   ========================= */
+
+const pinnedMeetings = ref<MeetingRecord[]>([])
+
+/** 首页只展示少量置顶，多了反而变成第二个列表页 */
+const PINNED_PREVIEW_LIMIT = 3
+
+const visiblePinned = computed(() =>
+  pinnedMeetings.value.slice(0, PINNED_PREVIEW_LIMIT)
+)
+
+const hiddenPinnedCount = computed(() =>
+  Math.max(0, pinnedMeetings.value.length - PINNED_PREVIEW_LIMIT)
+)
+
+const getPinnedStatusText = (meeting: MeetingRecord) => {
+  switch (meeting.completionStatus) {
+    case 'COMPLETED':
+      return '已完成'
+    case 'IN_PROGRESS':
+      return '进行中'
+    case 'CANCELLED':
+      return '已取消'
+    default:
+      return '未开始'
+  }
+}
+
+const getPinnedStatusType = (meeting: MeetingRecord) => {
+  switch (meeting.completionStatus) {
+    case 'COMPLETED':
+      return 'success'
+    case 'IN_PROGRESS':
+      return 'warning'
+    case 'CANCELLED':
+      return 'danger'
+    default:
+      return 'info'
+  }
+}
+
+/** 接口已按「置顶优先 + 置顶时间倒序」排好，这里只过滤置顶项 */
+const loadPinnedMeetings = async () => {
+  try {
+    const all = await getMeetings()
+
+    pinnedMeetings.value = all.filter((meeting) => !!meeting.pinnedAt)
+  } catch (error) {
+    // 提醒区属于辅助信息，加载失败不应打断首页
+    console.error('置顶会议加载失败：', error)
+    pinnedMeetings.value = []
+  }
+}
+
+onMounted(loadPinnedMeetings)
 
 /** 首页四个入口，对应左侧导航的四个功能 */
 const entries = [
@@ -60,6 +119,40 @@ const go = (path: string) => {
           {{ user.name }}，欢迎回来
         </p>
       </header>
+
+      <!-- 置顶会议提醒：只占一小块，用于把重要会议顶到眼前 -->
+      <div v-if="visiblePinned.length" class="pinned-bar">
+        <div class="pinned-head">
+          <span class="pinned-head-icon">📌</span>
+
+          <span class="pinned-head-title">置顶会议</span>
+
+          <span class="pinned-head-count">{{ pinnedMeetings.length }}</span>
+
+          <el-button link type="primary" size="small" class="pinned-head-more" @click="go('/history')">
+            查看全部
+          </el-button>
+        </div>
+
+        <ul class="pinned-list">
+          <li v-for="meeting in visiblePinned" :key="meeting.id" class="pinned-item" :title="meeting.title"
+            @click="go(`/history/${meeting.id}`)">
+            <span class="pinned-item-title">
+              {{ meeting.title || `会议 #${meeting.id}` }}
+            </span>
+
+            <el-tag :type="getPinnedStatusType(meeting)" size="small" class="pinned-item-tag">
+              {{ getPinnedStatusText(meeting) }}
+            </el-tag>
+
+            <span class="pinned-item-arrow">→</span>
+          </li>
+        </ul>
+
+        <div v-if="hiddenPinnedCount > 0" class="pinned-more-tip">
+          还有 {{ hiddenPinnedCount }} 场置顶会议，可到历史会议查看
+        </div>
+      </div>
 
       <div class="entry-grid">
         <button v-for="entry in entries" :key="entry.key" type="button" class="entry-card"
@@ -139,6 +232,116 @@ const go = (path: string) => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+}
+
+/**
+ * 置顶会议提醒条：琥珀色左边框 + 浅底，占位小但足够显眼。
+ */
+.pinned-bar {
+  margin-bottom: 20px;
+  padding: 12px 16px;
+
+  background: #fffdf7;
+  border: 1px solid #f3d19e;
+  border-left: 3px solid #e6a23c;
+  border-radius: 10px;
+}
+
+.pinned-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pinned-head-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pinned-head-title {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pinned-head-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 9px;
+  background: #fdf0d9;
+  color: #b88230;
+
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pinned-head-more {
+  margin-left: auto;
+}
+
+.pinned-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pinned-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+
+  transition: background 0.15s;
+}
+
+.pinned-item:hover {
+  background: #fdf3e2;
+}
+
+.pinned-item-title {
+  flex: 1;
+  min-width: 0;
+  color: #303133;
+  font-size: 13px;
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pinned-item:hover .pinned-item-title {
+  color: #409eff;
+}
+
+.pinned-item-tag {
+  flex-shrink: 0;
+}
+
+.pinned-item-arrow {
+  flex-shrink: 0;
+  color: #c0c4cc;
+  font-size: 13px;
+}
+
+.pinned-more-tip {
+  margin-top: 6px;
+  padding-left: 6px;
+  color: #b88230;
+  font-size: 12px;
 }
 
 .entry-card {
