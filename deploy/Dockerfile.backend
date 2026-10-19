@@ -1,0 +1,71 @@
+# 后端生产镜像
+#
+# 两阶段构建：builder 里装全量依赖并编译，runtime 只带运行期产物。
+
+# 基础镜像可通过构建参数替换为国内镜像源（Docker Hub 在国内常拉不动）：
+#   docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:22-alpine ...
+ARG NODE_IMAGE=node:22-alpine
+
+# ---------- 构建阶段 ----------
+FROM ${NODE_IMAGE} AS builder
+
+WORKDIR /app
+
+# 先只拷贝依赖清单，利用 Docker 层缓存：
+# 源码变动时不会重新 npm ci
+COPY package*.json ./
+COPY prisma ./prisma
+COPY prisma7.config.ts ./prisma7.config.ts
+
+# npm ci 需要 lockfile；--ignore-scripts 避免依赖跑安装脚本
+RUN npm ci
+
+# 生成 Prisma Client（schema 已在上一步拷入）
+#
+# prisma generate 只读 schema 生成客户端，不需要真实连库；
+# 但 prisma7.config.ts 通过 env("DATABASE_URL") 取值，缺失会直接抛
+# PrismaConfigEnvError。这里给一个构建期占位串即可，
+# 运行期由 compose 注入真实连接串（ENV 不会跨阶段继承）。
+ENV DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public"
+RUN npx prisma generate
+
+COPY tsconfig*.json nest-cli.json ./
+COPY src ./src
+
+RUN npm run build
+
+# 裁掉 devDependencies，仅保留运行期依赖
+RUN npm prune --omit=dev
+
+# ---------- 运行阶段 ----------
+FROM ${NODE_IMAGE} AS runtime
+
+WORKDIR /app
+
+# 时区设为东八区，日志时间与业务一致
+ENV TZ=Asia/Shanghai
+# NestJS 默认监听 3000
+EXPOSE 3000
+
+# wget 用于容器健康检查
+RUN apk add --no-cache tzdata wget
+
+# 运行期只拷贝必要产物
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/prisma7.config.ts ./prisma7.config.ts
+
+# 录音文件目录；生产环境会用 volume 挂载覆盖
+RUN mkdir -p /app/uploads
+
+# 以非 root 用户运行，降低容器逃逸后的影响面
+RUN addgroup -S app && adduser -S app -G app \
+    && chown -R app:app /app
+
+USER app
+
+# 启动前先执行迁移，保证表结构与代码一致；
+# migrate deploy 只应用已存在的迁移，不会生成新迁移，适合生产
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]

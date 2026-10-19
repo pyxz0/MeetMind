@@ -1,0 +1,12 @@
+# 构建上下文排除项：避免把宿主机依赖与产物塞进镜像
+node_modules
+dist
+coverage
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+uploads
