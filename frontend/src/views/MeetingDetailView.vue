@@ -16,6 +16,7 @@ import {
   addMeetingMember,
   removeMeetingMember,
   updateMeetingAudioOpen,
+  updateMeetingPinned,
   type MeetingRecord,
   type MemberBrief
 } from '../api/meeting'
@@ -80,6 +81,39 @@ const todoForm = ref({
 const loading = ref(false)
 const completionStatusUpdating = ref(false)
 const regenerating = ref(false)
+
+/* =========================
+   置顶
+   ========================= */
+
+const pinning = ref(false)
+
+/**
+ * 切换置顶状态。
+ *
+ * 置顶是会议级的便捷标记，与完成状态互不影响；
+ * 后端 updatePinned 只改 pinnedAt，不碰待办与状态。
+ */
+const handleTogglePin = async () => {
+  if (!meeting.value) return
+
+  const nextPinned = !meeting.value.pinnedAt
+
+  pinning.value = true
+
+  try {
+    const result = await updateMeetingPinned(meeting.value.id, nextPinned)
+
+    meeting.value.pinnedAt = result?.pinnedAt ?? null
+
+    ElMessage.success(nextPinned ? '已置顶' : '已取消置顶')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '置顶操作失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    pinning.value = false
+  }
+}
 
 /* =========================
    负责人 / 成员 / 录音开放
@@ -579,6 +613,16 @@ onMounted(async () => {
             </div>
 
             <div class="status-actions">
+              <!-- 置顶：放在会议状态左侧，与状态互不影响 -->
+              <el-button v-if="canEdit" size="small" :type="meeting.pinnedAt ? 'warning' : 'default'"
+                :plain="!meeting.pinnedAt" :loading="pinning" class="pin-button" @click="handleTogglePin">
+                {{ meeting.pinnedAt ? '取消置顶' : '📌 置顶' }}
+              </el-button>
+
+              <el-tag v-else-if="meeting.pinnedAt" type="warning" size="small" effect="dark">
+                已置顶
+              </el-tag>
+
               <span class="completion-label">
                 会议状态
               </span>
