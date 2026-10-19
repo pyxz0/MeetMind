@@ -52,12 +52,15 @@ export const getInboxUnreadCount = async (): Promise<{
   return response.data
 }
 
-/** 标记通知全部已读 */
-export const markInboxRead = async (): Promise<{
-  seenAt: string
-  unreadCount: number
-}> => {
-  const response = await api.post('/inbox/read')
+/**
+ * 标记已读。
+ *
+ * 传 keys 只标记这几条（点击单条通知时用）；不传则全部标记已读。
+ */
+export const markInboxRead = async (
+  keys?: string[]
+): Promise<{ unreadCount: number; seenAt?: string }> => {
+  const response = await api.post('/inbox/read', keys?.length ? { keys } : {})
 
   return response.data
 }

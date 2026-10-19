@@ -77,6 +77,8 @@ model User {
   ledMeetings  MeetingLeader[] @relation("MeetingLeaderUser")
   /// 该用户作为成员参与的会议。
   meetingMemberships MeetingMember[] @relation("MeetingMemberUser")
+  /// 收件箱已读记录。
+  inboxReads   InboxRead[]
   /// 别人共享给该用户的会议。
   sharedWithMe MeetingShare[]  @relation("ShareRecipient")
   /// 该用户做过的共享操作（用于追溯是谁授的权）。
@@ -84,6 +86,24 @@ model User {
 
   @@index([role])
   @@map("users")
+}
+
+/// 收件箱单条已读记录。
+///
+/// 只用时间戳（users.inbox_seen_at）无法表达「只读了其中一条」，
+/// 因此按 item_key 记录已读，支持点击某条通知后它立刻变为已读。
+/// item_key 由通知类型 + 会议 id 组成，稳定可复现。
+model InboxRead {
+  id      Int      @id @default(autoincrement())
+  userId  Int      @map("user_id")
+  itemKey String   @map("item_key") @db.VarChar(120)
+  readAt  DateTime @default(now()) @map("read_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, itemKey])
+  @@index([userId])
+  @@map("inbox_reads")
 }
 
 /// 会议负责人：一场会议可以有多位负责人。

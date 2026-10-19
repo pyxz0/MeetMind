@@ -112,6 +112,46 @@ const openMeeting = (meetingId: number) => {
   router.push(`/history/${meetingId}`)
 }
 
+/**
+ * 点击通知：先把它标为已读（红点消失、未读数减一），再进入会议。
+ *
+ * 用本地更新而非整页刷新，保证点击后返回收件箱时状态已经是新的；
+ * 同时同步侧边栏角标。
+ */
+const openNotification = async (item: InboxNotification) => {
+  if (!item.read) {
+    // 先本地更新，避免等待请求导致的视觉延迟
+    const target = data.value.notifications.find((n) => n.key === item.key)
+
+    if (target) {
+      target.read = true
+    }
+
+    const nextUnread = Math.max(0, data.value.unreadCount - 1)
+
+    data.value.unreadCount = nextUnread
+    inboxStore.setUnreadCount(nextUnread)
+
+    try {
+      const result = await markInboxRead([item.key])
+
+      // 以服务端结果为准，防止多处点击造成计数漂移
+      data.value.unreadCount = result.unreadCount
+      inboxStore.setUnreadCount(result.unreadCount)
+    } catch {
+      // 标记失败时回滚本地状态
+      if (target) {
+        target.read = false
+      }
+
+      data.value.unreadCount = nextUnread + 1
+      inboxStore.setUnreadCount(nextUnread + 1)
+    }
+  }
+
+  openMeeting(item.meetingId)
+}
+
 onMounted(load)
 </script>
 
@@ -152,7 +192,7 @@ onMounted(load)
 
             <ul v-else class="notice-list">
               <li v-for="item in data.notifications" :key="item.key"
-                :class="['notice-item', { unread: !item.read }]" @click="openMeeting(item.meetingId)">
+                :class="['notice-item', { unread: !item.read }]" @click="openNotification(item)">
                 <span class="notice-icon">{{ notificationIcon(item) }}</span>
 
                 <div class="notice-body">

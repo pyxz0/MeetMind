@@ -48,7 +48,7 @@ export class InboxService {
    * 不额外建通知表 —— 关系本身就是事实，避免双写不一致。
    */
   async getInbox(user: AuthenticatedUser) {
-    const [leaders, members, shares, reminders, todoItems, seenAt] =
+    const [leaders, members, shares, reminders, todoItems, seenAt, readRows] =
       await Promise.all([
         this.prisma.meetingLeader.findMany({
           where: { userId: user.id },
@@ -85,9 +85,16 @@ export class InboxService {
           where: { id: user.id },
           select: { inboxSeenAt: true },
         }),
+        this.prisma.inboxRead.findMany({
+          where: { userId: user.id },
+          select: { itemKey: true },
+        }),
       ]);
 
-    const seenAtDate = seenAt?.inboxSeenAt ?? null;
+    const seenAtDate = seenAt?.inboxSeenAt ?? null
+
+    /** 已单独点开过的通知 */
+    const readKeys = new Set(readRows.map((row) => row.itemKey));
 
     const isRead = (createdAt: Date) =>
       !!seenAtDate && createdAt.getTime() <= seenAtDate.getTime();
@@ -134,7 +141,10 @@ export class InboxService {
        */
       .map((item) => ({
         ...item,
-        read: isRead(new Date(item.createdAt)),
+        // 单条已读优先，其次看「全部已读」的时间戳
+        read:
+          readKeys.has(item.key) ||
+          isRead(new Date(item.createdAt)),
       }));
 
     const unreadCount = notifications.filter((n) => !n.read).length;
@@ -147,8 +157,24 @@ export class InboxService {
     };
   }
 
-  /** 标记通知全部已读 */
-  async markAllRead(user: AuthenticatedUser) {
+  /** 标记通知已读：传 keys 只标记这几条，不传则全部标记已读 */
+  async markRead(user: AuthenticatedUser, keys?: string[]) {
+    const targets = Array.isArray(keys)
+      ? [...new Set(keys)].filter((k) => typeof k === 'string' && k)
+      : [];
+
+    if (targets.length) {
+      await this.prisma.inboxRead.createMany({
+        data: targets.map((itemKey) => ({ userId: user.id, itemKey })),
+        // 重复点击同一条不报错
+        skipDuplicates: true,
+      });
+
+      const { unreadCount } = await this.getInbox(user);
+
+      return { unreadCount };
+    }
+
     const now = new Date();
 
     await this.prisma.user.update({
@@ -157,6 +183,11 @@ export class InboxService {
     });
 
     return { seenAt: now.toISOString(), unreadCount: 0 };
+  }
+
+  /** 兼容旧调用：全部标记已读 */
+  async markAllRead(user: AuthenticatedUser) {
+    return this.markRead(user);
   }
 
   /** 只看未读数，供侧边栏角标使用 */
