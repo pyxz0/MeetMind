@@ -4,12 +4,11 @@ import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 
-/** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 会议即将开始 / 会议信息有更新 */
+/** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 落库的会议消息 */
 export type InboxNotificationType =
   | 'leader'
   | 'member'
   | 'share'
-  | 'reminder'
   | 'notice';
 
 export interface InboxNotification {
@@ -55,11 +54,16 @@ export class InboxService {
    * 不额外建通知表 —— 关系本身就是事实，避免双写不一致。
    */
   async getInbox(user: AuthenticatedUser) {
+    /**
+     * 先补齐「到期提醒」——它需要落库以获得真实发送时间，
+     * 因此必须在查询消息列表之前执行。
+     */
+    await this.syncDueReminders(user);
+
     const [
       leaders,
       members,
       shares,
-      reminders,
       todoItems,
       seenAt,
       readRows,
@@ -94,7 +98,6 @@ export class InboxService {
           orderBy: { createdAt: 'desc' },
           take: 100,
         }),
-        this.collectReminders(user),
         this.collectTodos(user),
         this.prisma.user.findUnique({
           where: { id: user.id },
@@ -138,7 +141,6 @@ export class InboxService {
         createdAt: row.createdAt.toISOString(),
         read: false,
       })),
-      ...reminders,
       ...leaders.map((row, index) => ({
         key: `leader-${row.meeting.id}-${index}`,
         type: 'leader' as const,
@@ -303,18 +305,15 @@ export class InboxService {
     // 指派给我的排前面
     return items.sort((a, b) => Number(b.mine) - Number(a.mine));
   }
-
   /**
-   * 会议开始提醒。
+   * 到期提醒：落库一条 message，记录真实发送时间。
    *
-   * 由开会时间派生，不依赖定时任务：
-   * 只要「现在」落在「开会前 20 分钟 ~ 开会后 1 小时」区间内，
-   * 该会议的负责人与成员都会在收件箱看到提醒。
-   * 提醒的 createdAt 取「开会前 20 分钟」这个时刻，这样未读判断也成立。
+   * 之前是实时推算的（createdAt 取「开会前 20 分钟」），
+   * 显示的并不是用户真正收到消息的时刻，看起来像假时间。
+   * 现在改为到期时写入 meeting_notices（kind = 'reminder'），
+   * 时间戳即落库时刻；部分唯一索引保证同一会议对同一人只发一条。
    */
-  private async collectReminders(
-    user: AuthenticatedUser,
-  ): Promise<InboxNotification[]> {
+  private async syncDueReminders(user: AuthenticatedUser) {
     const WINDOW_BEFORE_MS = 20 * 60 * 1000;
     const GRACE_AFTER_MS = 60 * 60 * 1000;
     const now = Date.now();
@@ -323,7 +322,7 @@ export class InboxService {
       where: {
         scheduledAt: {
           not: null,
-          // 开会前 20 分钟已到（含宽限期）
+          // 开会前 20 分钟已到（含开会后 1 小时宽限）
           gte: new Date(now - GRACE_AFTER_MS),
           lte: new Date(now + WINDOW_BEFORE_MS),
         },
@@ -331,28 +330,34 @@ export class InboxService {
           { leaders: { some: { userId: user.id } } },
           { members: { some: { userId: user.id } } },
         ],
+        // 已经发过提醒的会议不再重复发
+        notices: { none: { userId: user.id, kind: 'reminder' } },
       },
       select: { id: true, title: true, scheduledAt: true },
-      orderBy: { scheduledAt: 'asc' },
       take: 20,
     });
 
-    return meetings.map((meeting) => {
-      const scheduledAt = meeting.scheduledAt as Date;
-      const remindAt = new Date(scheduledAt.getTime() - WINDOW_BEFORE_MS);
+    if (!meetings.length) {
+      return;
+    }
 
-      return {
-        key: `reminder-${meeting.id}`,
-        type: 'reminder' as const,
-        meetingId: meeting.id,
-        meetingTitle: meeting.title,
-        actorName: null,
-        permission: null,
-        scheduledAt: scheduledAt.toISOString(),
-        content: null,
-        createdAt: remindAt.toISOString(),
-        read: false,
-      };
+    await this.prisma.meetingNotice.createMany({
+      data: meetings.map((meeting) => {
+        const scheduledAt = meeting.scheduledAt as Date;
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const when = `${pad(scheduledAt.getMonth() + 1)}/${pad(
+          scheduledAt.getDate(),
+        )} ${pad(scheduledAt.getHours())}:${pad(scheduledAt.getMinutes())}`;
+
+        return {
+          userId: user.id,
+          meetingId: meeting.id,
+          kind: 'reminder',
+          content: `会议「${meeting.title}」将于 ${when} 开始，请准时参加`,
+        };
+      }),
+      // 并发下可能撞唯一索引，忽略即可
+      skipDuplicates: true,
     });
   }
 

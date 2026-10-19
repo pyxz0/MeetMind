@@ -101,6 +101,8 @@ model MeetingNotice {
   meetingId Int      @map("meeting_id")
   /// 消息正文，已按收件人视角写好（如「你已被移出会议」）
   content   String   @db.Text
+  /// 消息类型：update 预约信息变更 / reminder 会议即将开始
+  kind      String   @default("update") @db.VarChar(20)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user    User    @relation("NoticeRecipient", fields: [userId], references: [id], onDelete: Cascade)
