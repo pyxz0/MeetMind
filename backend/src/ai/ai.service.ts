@@ -4,6 +4,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import OpenAI from 'openai';
+import { createHash } from 'node:crypto';
+import { NotFoundException } from '@nestjs/common';
+import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { assertCanWrite } from '../meetings/meetings.access';
@@ -502,4 +505,158 @@ deadline：截止时间
       );
     }
   }
+  /* =========================================================
+     异步生成：建任务 → 后台执行 → 前端轮询
+     ========================================================= */
+
+  /**
+   * 发起一次生成任务，立即返回任务 id。
+   *
+   * 同一个人对同一段内容重复提交时，复用还在跑的任务，
+   * 避免"点了三次产生三条记录、烧三次额度"。
+   */
+  /**
+   * 启动时清理中断的任务。
+   *
+   * 生成在进程内执行，服务重启会让 RUNNING 的任务永远停在运行中、
+   * 对应会议也卡在 PROCESSING。这里统一标记为失败，让用户能重试。
+   */
+  async onModuleInit() {
+    const stale = await this.prisma.meetingGeneration.findMany({
+      where: { status: { in: ['PENDING', 'RUNNING'] } },
+      select: { id: true, meetingId: true },
+    });
+
+    if (!stale.length) {
+      return;
+    }
+
+    await this.prisma.meetingGeneration.updateMany({
+      where: { id: { in: stale.map((item) => item.id) } },
+      data: {
+        status: 'FAILED',
+        error: '服务重启，生成任务中断，请重新提交',
+        finishedAt: new Date(),
+      },
+    });
+
+    const meetingIds = stale
+      .map((item) => item.meetingId)
+      .filter((id): id is number => typeof id === 'number');
+
+    if (meetingIds.length) {
+      await this.prisma.meeting.updateMany({
+        where: { id: { in: meetingIds } },
+        data: { status: 'FAILED' },
+      });
+    }
+
+    this.logger.warn(`已清理 ${stale.length} 个中断的生成任务（服务重启）`);
+  }
+
+  async startGeneration(content: string, user: AuthenticatedUser) {
+    const trimmed = content?.trim() ?? '';
+
+    if (!trimmed) {
+      throw new InternalServerErrorException('会议内容不能为空');
+    }
+
+    const contentHash = createHash('sha256').update(trimmed).digest('hex');
+
+    const running = await this.prisma.meetingGeneration.findFirst({
+      where: {
+        userId: user.id,
+        contentHash,
+        status: { in: ['PENDING', 'RUNNING'] },
+      },
+      select: { id: true, meetingId: true, status: true },
+    });
+
+    if (running) {
+      return { ...running, reused: true };
+    }
+
+    const generation = await this.prisma.meetingGeneration.create({
+      data: { userId: user.id, contentHash, status: 'PENDING' },
+      select: { id: true, meetingId: true, status: true },
+    });
+
+    // 后台执行，不阻塞 HTTP 响应
+    void this.runGeneration(generation.id, content, user);
+
+    return { ...generation, reused: false };
+  }
+
+  /** 后台执行生成；无论成功失败都会把状态落到任务上 */
+  private async runGeneration(
+    generationId: number,
+    content: string,
+    user: AuthenticatedUser,
+  ) {
+    await this.prisma.meetingGeneration.update({
+      where: { id: generationId },
+      data: { status: 'RUNNING', startedAt: new Date() },
+    });
+
+    try {
+      const meeting = await this.generateMeetingSummary(content, user);
+
+      await this.prisma.meetingGeneration.update({
+        where: { id: generationId },
+        data: {
+          status: 'SUCCEEDED',
+          finishedAt: new Date(),
+          meetingId: meeting?.id ?? null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '生成失败';
+
+      this.logger.error(`生成任务 ${generationId} 失败：${message}`);
+
+      await this.prisma.meetingGeneration.update({
+        where: { id: generationId },
+        data: {
+          status: 'FAILED',
+          finishedAt: new Date(),
+          error: message,
+        },
+      });
+    }
+  }
+
+  /** 查询任务状态；只有发起人或有全局权限的人能看 */
+  async getGenerationStatus(generationId: number, user: AuthenticatedUser) {
+    const generation = await this.prisma.meetingGeneration.findUnique({
+      where: { id: generationId },
+      select: {
+        id: true,
+        userId: true,
+        meetingId: true,
+        status: true,
+        error: true,
+        startedAt: true,
+        finishedAt: true,
+      },
+    });
+
+    if (!generation) {
+      throw new NotFoundException('生成任务不存在');
+    }
+
+    if (generation.userId !== user.id && !hasGlobalMeetingAccess(user)) {
+      // 与会议一致：无权访问返回 404，避免探测任务是否存在
+      throw new NotFoundException('生成任务不存在');
+    }
+
+    return {
+      id: generation.id,
+      meetingId: generation.meetingId,
+      status: generation.status,
+      error: generation.error,
+      startedAt: generation.startedAt?.toISOString() ?? null,
+      finishedAt: generation.finishedAt?.toISOString() ?? null,
+    };
+  }
+
 }

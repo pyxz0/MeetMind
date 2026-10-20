@@ -1,4 +1,4 @@
-import { Body, Controller, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
 
 import { AiService } from './ai.service';
 import { GenerateMeetingDto } from './dto/ai.dto';
@@ -24,7 +24,18 @@ export class AiController {
     @Body() dto: GenerateMeetingDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.aiService.generateMeetingSummary(dto.content, user);
+    // 立即返回任务 id，前端轮询进度，避免长请求超时
+    return this.aiService.startGeneration(dto.content, user);
+  }
+
+  /** 查询生成进度 */
+  @Get('generations/:id')
+  @RequirePermissions(PERMISSIONS.MEETING_READ_OWN)
+  getGeneration(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.aiService.getGenerationStatus(id, user);
   }
 
   /** 重新生成已有会议的 AI 纪要，需要该会议的写权限 */

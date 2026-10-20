@@ -39,6 +39,14 @@ enum Role {
   USER
 }
 
+/// AI 生成任务状态
+enum GenerationStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 /// 会议共享权限：只读 / 可编辑。
 enum SharePermission {
   READ
@@ -81,6 +89,8 @@ model User {
   inboxReads   InboxRead[]
   /// 收到的会议变更消息。
   notices      MeetingNotice[] @relation("NoticeRecipient")
+  /// 该用户发起的 AI 生成任务。
+  generations  MeetingGeneration[] @relation("GenerationOwner")
   /// 别人共享给该用户的会议。
   sharedWithMe MeetingShare[]  @relation("ShareRecipient")
   /// 该用户做过的共享操作（用于追溯是谁授的权）。
@@ -88,6 +98,33 @@ model User {
 
   @@index([role])
   @@map("users")
+}
+
+/// AI 生成任务。
+///
+/// 之前生成是同步长请求：AI 慢就超时、用户重复点击会并发生成、
+/// 失败后也没有可追踪的状态。改为「建任务 → 后台执行 → 前端轮询」。
+model MeetingGeneration {
+  id          Int              @id @default(autoincrement())
+  /// 发起人，用于权限校验与重复提交判定
+  userId      Int              @map("user_id")
+  /// 会议 id：任务开始时会议尚未创建，因此可空
+  meetingId   Int?             @map("meeting_id")
+  /// 内容指纹：同用户同内容的进行中任务会被复用，避免重复生成
+  contentHash String           @map("content_hash") @db.VarChar(64)
+  status      GenerationStatus @default(PENDING)
+  /// 失败原因，成功时为空
+  error       String?          @db.Text
+  startedAt   DateTime?        @map("started_at") @db.Timestamptz(3)
+  finishedAt  DateTime?        @map("finished_at") @db.Timestamptz(3)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user    User     @relation("GenerationOwner", fields: [userId], references: [id], onDelete: Cascade)
+  meeting Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([meetingId])
+  @@map("meeting_generations")
 }
 
 /// 会议变更消息。
@@ -239,6 +276,9 @@ model Meeting {
 
   /// 该会议发出的变更消息。
   notices MeetingNotice[]
+
+  /// 该会议的 AI 生成任务。
+  generations MeetingGeneration[]
 
   /// 该会议对其他用户的共享授权。
   shares MeetingShare[]

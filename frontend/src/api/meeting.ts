@@ -170,17 +170,46 @@ const normalizeMeeting = (data: any): MeetingRecord => {
 }
 
 /**
- * 生成并保存会议纪要
+ * 生成并保存会议纪要。
+ *
+ * 后端已改为异步任务：这里先启动任务，再轮询状态，
+ * 成功后返回会议详情。对外签名保持不变，调用方无需感知异步。
  */
 export const generateMeeting = async (
   data: GenerateMeetingRequest
 ): Promise<MeetingResult> => {
-  const response = await api.post<MeetingResult>(
-    '/ai/generate',
-    data
-  )
+  const start = await api.post<{
+    id: number
+    meetingId: number | null
+    status: string
+  }>('/ai/generate', data)
 
-  return response.data
+  const generationId = start.data.id
+  const deadline = Date.now() + 3 * 60 * 1000
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+
+    const status = await api.get<{
+      status: string
+      meetingId: number | null
+      error: string | null
+    }>(`/ai/generations/${generationId}`)
+
+    if (status.data.status === 'SUCCEEDED' && status.data.meetingId) {
+      const meeting = await api.get<MeetingResult>(
+        `/meetings/${status.data.meetingId}`
+      )
+
+      return meeting.data
+    }
+
+    if (status.data.status === 'FAILED') {
+      throw new Error(status.data.error || 'AI 生成失败')
+    }
+  }
+
+  throw new Error('AI 生成超时，请稍后在历史会议中查看结果')
 }
 
 /** 列表项：只含摘要与计数，明细需再查详情 */
