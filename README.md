@@ -221,11 +221,13 @@ MeetMind/
 │  ├─ src/
 │  │  ├─ api/                # 前端 API 请求封装
 │  │  ├─ components/         # 通用业务组件
+│  │  ├─ composables/        # 组合式函数（计时 / 录音 / 语音识别 / 原文拼接）
 │  │  ├─ router/             # Vue Router 路由配置
 │  │  └─ views/              # 页面视图
 │  │     ├─ HomeView.vue     # 首页 / AI 生成会议纪要
 │  │     ├─ HistoryView.vue  # 历史会议管理
 │  │     └─ ...
+│  ├─ Dockerfile             # 前端镜像构建（含 nginx.conf）
 │  ├─ package.json
 │  └─ vite.config.*
 │
@@ -237,10 +239,11 @@ MeetMind/
 │  │  └─ app.module.ts       # 根模块
 │  ├─ prisma/
 │  │  └─ schema.prisma       # 数据库模型与枚举
-│  ├─ .env                   # 本地环境变量，不提交 Git
+│  ├─ Dockerfile             # 后端镜像构建
 │  └─ package.json
 │
-│
+├─ compose.yaml              # 单入口部署（--profile prod / db）
+├─ .env.example              # 环境变量模板，复制成 .env 后填写
 ├─ .gitignore
 └─ README.md
 ```
@@ -342,15 +345,9 @@ localhost:5432
 
 ---
 
-## 3. 配置后端环境变量
+## 3. 配置环境变量
 
-进入后端目录：
-
-```bash
-cd backend
-```
-
-创建 `.env` 文件：
+在**仓库根目录**创建 `.env`（后端按 `.env` → `../.env` 查找，因此根目录一份即可同时供后端与 Docker 编排使用）：
 
 ```env
 DATABASE_URL="postgresql://postgres:你的数据库密码@localhost:5432/meetmind?schema=public"
