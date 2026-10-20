@@ -436,6 +436,17 @@ export class UsersService {
     this.assertCanManage(operator, target.role as AppRole);
 
     /**
+     * 删除账号前先把它拥有的会议转移给操作者。
+     *
+     * owner 外键已改为 ON DELETE RESTRICT：如果不转移，删除会直接失败。
+     * 转移而不是级联删除，是为了避免"删个测试账号，把会议资料一起删了"。
+     */
+    const reassigned = await this.prisma.meeting.updateMany({
+      where: { ownerId: targetId },
+      data: { ownerId: operator.id },
+    });
+
+    /**
      * 他人在其负责的会议里：先把会议创建者补为负责人，再删掉该用户的负责人记录。
      * 这样既保证「至少一位负责人」，也不会因为删账号牵连删掉别人的会议。
      */
@@ -456,7 +467,12 @@ export class UsersService {
 
     await this.prisma.user.delete({ where: { id: targetId } });
 
-    return { message: '用户已删除', id: targetId };
+    return {
+      message: '用户已删除',
+      id: targetId,
+      // 让调用方知道有多少会议被转移，而不是被删掉
+      reassignedMeetings: reassigned.count,
+    };
   }
 
   /** 能否管理某个目标角色：必须严格高于对方 */

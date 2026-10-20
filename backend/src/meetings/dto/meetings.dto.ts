@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -6,6 +6,8 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
+  Max,
   MaxLength,
   Min,
   ValidateNested,
@@ -180,4 +182,55 @@ export class CreateDraftDto {
 
   @IsString()
   content!: string;
+}
+/** 把 "true"/"1" 这类查询串转成布尔值 */
+const toBoolean = ({ value }: { value: unknown }) =>
+  value === true || value === 'true' || value === '1';
+
+/**
+ * 列表查询参数。
+ *
+ * 分页与服务端筛选都放在这里：
+ * pageSize 上限 100，避免一次把整库拉出来。
+ */
+export class ListMeetingsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  keyword?: string;
+
+  @IsOptional()
+  @IsIn(COMPLETION_STATUS)
+  status?: (typeof COMPLETION_STATUS)[number];
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from 需为 YYYY-MM-DD' })
+  from?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to 需为 YYYY-MM-DD' })
+  to?: string;
+
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  pinned?: boolean;
+
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  upcoming?: boolean;
 }

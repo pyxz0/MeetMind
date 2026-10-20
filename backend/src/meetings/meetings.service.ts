@@ -10,6 +10,7 @@ import {
   MeetingCompletionStatus,
 } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+import { mapMeetingSummary } from './meeting.mapper';
 import { MeetingAudioService } from './meeting-audio.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { PERMISSIONS, roleHasPermission } from '../auth/permissions';
@@ -71,6 +72,25 @@ const meetingIncludeFor = (userId: number) => ({
     select: { permission: true },
   },
 });
+
+/** 负责人/成员统一取这三个字段 */
+const USER_BRIEF_SELECT = { id: true, name: true, phone: true } as const;
+
+/** 列表查询参数 */
+export interface MeetingListQuery {
+  page?: number;
+  pageSize?: number;
+  keyword?: string;
+  status?: string;
+  /** 起始日期 YYYY-MM-DD（按创建时间） */
+  from?: string;
+  /** 结束日期 YYYY-MM-DD（含当天） */
+  to?: string;
+  /** 只看置顶 */
+  pinned?: boolean;
+  /** 只看未开始的预约会议 */
+  upcoming?: boolean;
+}
 
 @Injectable()
 export class MeetingsService {
@@ -736,25 +756,132 @@ export class MeetingsService {
     };
   }
 
-  /** 查询正常历史会议，不显示草稿箱中的 AI 失败记录。 */
-  async findAll(user: AuthenticatedUser) {
-    const meetings = await this.prisma.meeting.findMany({
-      where: {
-        AND: [
-          this.visibleMeetingWhere(user),
-          { status: { notIn: ['FAILED', 'DRAFT'] } },
-        ],
-      },
-      // 已置顶的排在最前（按置顶时间倒序），其余按创建时间倒序。
-      // nulls: 'last' 让未置顶记录排在置顶记录之后。
-      orderBy: [
-        { pinnedAt: { sort: 'desc', nulls: 'last' } },
-        { createdAt: 'desc' },
-      ],
-      include: meetingIncludeFor(user.id),
-    });
+  /**
+   * 查询历史会议（分页 + 服务端筛选）。
+   *
+   * 默认排除未开始的预约会议 —— 它们属于"待办日程"，由首页展示；
+   * 传 upcoming=true 时反过来只取未开始的会议。
+   */
+  async findAll(user: AuthenticatedUser, query: MeetingListQuery = {}) {
+    const now = new Date();
+    const page = Math.max(1, Math.trunc(query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Math.trunc(query.pageSize ?? 20)));
 
-    return this.toApiRecordList(meetings, user);
+    const conditions: Prisma.MeetingWhereInput[] = [
+      this.visibleMeetingWhere(user),
+      { status: { notIn: ['FAILED', 'DRAFT'] } },
+    ];
+
+    if (query.upcoming) {
+      conditions.push({ scheduledAt: { gt: now } });
+    } else {
+      // 已开始的会议：没有预约时间，或预约时间已过
+      conditions.push({
+        OR: [{ scheduledAt: null }, { scheduledAt: { lte: now } }],
+      });
+    }
+
+    if (query.pinned) {
+      conditions.push({ pinnedAt: { not: null } });
+    }
+
+    if (query.keyword?.trim()) {
+      conditions.push({
+        title: { contains: query.keyword.trim(), mode: 'insensitive' },
+      });
+    }
+
+    if (query.status) {
+      conditions.push({
+        completionStatus: query.status as MeetingCompletionStatus,
+      });
+    }
+
+    if (query.from || query.to) {
+      const createdAt: Prisma.DateTimeFilter = {};
+
+      if (query.from) createdAt.gte = new Date(`${query.from}T00:00:00`);
+      if (query.to) {
+        createdAt.lt = new Date(
+          new Date(`${query.to}T00:00:00`).getTime() + 24 * 60 * 60 * 1000,
+        );
+      }
+
+      conditions.push({ createdAt });
+    }
+
+    const where: Prisma.MeetingWhereInput = { AND: conditions };
+
+    const [rows, total] = await Promise.all([
+      this.prisma.meeting.findMany({
+        where,
+        // 已置顶优先，其余按创建时间倒序
+        orderBy: [
+          { pinnedAt: { sort: 'desc', nulls: 'last' } },
+          { createdAt: 'desc' },
+        ],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          title: true,
+          summary: true,
+          completionStatus: true,
+          status: true,
+          scheduledAt: true,
+          pinnedAt: true,
+          createdAt: true,
+          ownerId: true,
+          audioOpen: true,
+          leaders: { select: { user: { select: USER_BRIEF_SELECT } } },
+          members: { select: { user: { select: USER_BRIEF_SELECT } } },
+          shares: {
+            where: { userId: user.id },
+            select: { permission: true },
+          },
+          _count: { select: { decisions: true, todos: true } },
+        },
+      }),
+      this.prisma.meeting.count({ where }),
+    ]);
+
+    return {
+      items: rows.map((row) => {
+        const access = this.resolveAccessFromRow(row, user);
+        const capabilities = computeMeetingCapabilities({
+          user,
+          access,
+          audioOpen: row.audioOpen,
+        });
+
+        return mapMeetingSummary(row, access, capabilities);
+      }),
+      total,
+      page,
+      pageSize,
+      hasMore: page * pageSize < total,
+    };
+  }
+
+  /** 从列表行推断当前用户的访问级别（与 resolveMeetingAccess 同规则） */
+  private resolveAccessFromRow(
+    row: {
+      ownerId: number;
+      leaders?: Array<{ user: { id: number } }>;
+      members?: Array<{ user: { id: number } }>;
+      shares?: Array<{ permission: 'READ' | 'EDIT' }>;
+    },
+    user: AuthenticatedUser,
+  ): MeetingAccess {
+    if (row.ownerId === user.id) return 'owner';
+    if (row.leaders?.some((l) => l.user.id === user.id)) return 'leader';
+    if (row.members?.some((m) => m.user.id === user.id)) return 'member';
+    if (row.shares?.some((s) => s.permission === 'EDIT')) return 'edit';
+    if (hasGlobalMeetingAccess(user)) {
+      return roleHasUpdateAll(user.role) ? 'edit' : 'read';
+    }
+
+    return 'read';
   }
 
   /** 查询草稿箱会议；AI 生成失败的会议会保留在这里。 */

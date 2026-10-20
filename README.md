@@ -482,6 +482,38 @@ http://localhost:5173/
 **业务规则**（手机号格式、密码强度、负责人至少一位等）仍留在 Service 层，
 以便返回中文提示；DTO 只负责"结构对不对"。
 
+### 列表分页与按需明细
+
+`GET /api/meetings` 已改为**分页 + 服务端筛选**，并只返回列表摘要：
+
+| 参数 | 说明 |
+|---|---|
+| `page` / `pageSize` | 分页，`pageSize` 上限 100 |
+| `keyword` | 标题模糊搜索 |
+| `status` | 按完成状态筛选 |
+| `from` / `to` | 按创建日期范围（`YYYY-MM-DD`，含当天） |
+| `pinned=true` | 只取置顶会议（首页用） |
+| `upcoming=true` | 只取未开始的预约会议（首页用） |
+
+返回 `{ items, total, page, pageSize, hasMore }`。
+
+**列表项不再包含 `decisions` / `todos` 明细**，只给 `todoCount` / `decisionCount`；
+明细由详情接口 `GET /api/meetings/:id` 提供。历史页在展开卡片时才拉取详情，
+避免"打开列表就把所有会议的决策与待办全部读出来"。
+
+默认列表**不含未开始的预约会议**（它们属于日程，由首页展示）。
+
+### 删除账号不删除会议
+
+`meetings.owner_id` 的外键已从 `ON DELETE CASCADE` 改为 `ON DELETE RESTRICT`：
+
+- 数据库层面禁止"直接删掉仍有会议的用户"
+- 应用层在删除用户前，先把其名下的会议**转移给操作者**
+- 删除接口会返回 `reassignedMeetings`，明确告知转移了多少场会议
+
+> 之前删掉一个测试账号，会把该账号创建的全部会议（含决策、待办、录音）一起静默删除。
+> 现在改为转移，属于数据安全修复。
+
 ### 统一错误响应
 
 ```json

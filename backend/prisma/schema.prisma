@@ -221,7 +221,7 @@ model Meeting {
   /// 会议归属者。所有数据隔离都以该字段为准：
   /// 用户只能看到自己拥有的、或被共享给自己的会议。
   ownerId Int  @map("owner_id")
-  owner   User @relation("MeetingOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  owner   User @relation("MeetingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
 
   /// 会议负责人（可多位）。每场会议至少要有一位。
   leaders MeetingLeader[]

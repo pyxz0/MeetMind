@@ -5,7 +5,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, ArrowDown } from '@element-plus/icons-vue'
 
 import {
-  getMeetings,
+  getMeetingsPage,
+  getMeeting,
   deleteMeeting,
   updateMeetingPinned,
   updateMeetingCompletionStatus,
@@ -174,6 +175,29 @@ const filteredMeetings = computed(() => {
  */
 const expandedIds = ref<Set<number>>(new Set())
 
+/** 列表总条数（服务端分页后的总数） */
+const totalMeetings = ref(0)
+
+/** 展开卡片时才按需拉详情：列表接口不返回决策与待办明细 */
+const detailCache = ref<Record<number, MeetingRecord>>({})
+const detailLoading = ref<Record<number, boolean>>({})
+
+const detailOf = (id: number) => detailCache.value[id]
+
+const ensureDetail = async (id: number) => {
+  if (detailCache.value[id] || detailLoading.value[id]) return
+
+  detailLoading.value[id] = true
+
+  try {
+    detailCache.value[id] = await getMeeting(id)
+  } catch {
+    ElMessage.error('会议详情加载失败')
+  } finally {
+    detailLoading.value[id] = false
+  }
+}
+
 const isExpanded = (id: number) => expandedIds.value.has(id)
 
 /** 用替换 Set 的方式更新，确保 Vue 能感知变化 */
@@ -184,6 +208,9 @@ const toggleExpanded = (id: number) => {
     next.delete(id)
   } else {
     next.add(id)
+
+    // 列表只含摘要，展开时才拉取决策与待办明细
+    void ensureDetail(id)
   }
 
   expandedIds.value = next
@@ -209,6 +236,11 @@ const toggleAllExpanded = () => {
   expandedIds.value = new Set(
     filteredMeetings.value.map(meeting => meeting.id)
   )
+
+  // 全部展开后逐条补齐明细（列表接口只给摘要）
+  filteredMeetings.value.forEach(meeting => {
+    void ensureDetail(meeting.id)
+  })
 }
 
 /** 加载历史会议 */
@@ -216,7 +248,10 @@ const loadMeetings = async () => {
   loading.value = true
 
   try {
-    meetings.value = await getMeetings()
+    const page = await getMeetingsPage({ pageSize: 100 })
+
+      meetings.value = page.items
+      totalMeetings.value = page.total
 
   } catch (error) {
     console.error(error)
@@ -532,21 +567,21 @@ onMounted(() => {
                 </p>
               </div>
 
-              <div v-if="meeting.decisions?.length" class="section">
+              <div v-if="detailOf(meeting.id)?.decisions?.length" class="section">
                 <div class="label">🎯 会议决策</div>
 
                 <ul>
-                  <li v-for="(decision, index) in meeting.decisions" :key="index">
+                  <li v-for="(decision, index) in detailOf(meeting.id)?.decisions ?? []" :key="index">
                     {{ decision }}
                   </li>
                 </ul>
               </div>
 
-              <div v-if="meeting.todos?.length" class="section">
+              <div v-if="detailOf(meeting.id)?.todos?.length" class="section">
                 <div class="label">✅ 待办事项</div>
 
                 <div class="todo-list">
-                  <div v-for="(todo, index) in meeting.todos" :key="index" class="todo-item">
+                  <div v-for="(todo, index) in detailOf(meeting.id)?.todos ?? []" :key="index" class="todo-item">
                     <div class="todo-content">
                       {{ todo.content }}
                     </div>

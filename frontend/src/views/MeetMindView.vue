@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { authStore } from '../stores/auth'
-import { getMeetings, type MeetingRecord } from '../api/meeting'
+import { getMeetingsPage, type MeetingRecord } from '../api/meeting'
 
 const router = useRouter()
 
@@ -111,25 +111,21 @@ const getPinnedStatusType = (meeting: MeetingRecord) => {
   }
 }
 
-/** 接口已按「置顶优先 + 置顶时间倒序」排好，这里拆成置顶与未开始两类 */
+/** 首页只需两小块数据：置顶的、未开始的，各自单独查询，不拉全量历史 */
 const loadMeetings = async () => {
   try {
-    const all = await getMeetings()
-    const now = Date.now()
+    const [pinnedPage, upcomingPage] = await Promise.all([
+      getMeetingsPage({ pinned: true, pageSize: 20 }),
+      getMeetingsPage({ upcoming: true, pageSize: 20 })
+    ])
 
-    pinnedMeetings.value = all.filter((meeting) => !!meeting.pinnedAt)
+    pinnedMeetings.value = pinnedPage.items
 
-    upcomingMeetings.value = all
-      .filter((meeting) => {
-        if (!meeting.scheduledAt) return false
-
-        return new Date(meeting.scheduledAt).getTime() > now
-      })
-      .sort(
-        (a, b) =>
-          new Date(a.scheduledAt as string).getTime() -
-          new Date(b.scheduledAt as string).getTime()
-      )
+    upcomingMeetings.value = [...upcomingPage.items].sort(
+      (a, b) =>
+        new Date(a.scheduledAt as string).getTime() -
+        new Date(b.scheduledAt as string).getTime()
+    )
   } catch (error) {
     // 提醒区属于辅助信息，加载失败不应打断首页
     console.error('会议提醒加载失败：', error)

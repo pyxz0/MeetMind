@@ -8,6 +8,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
 import {
@@ -16,6 +17,7 @@ import {
   CreateMeetingDto,
   CreateScheduledMeetingDto,
   CreateTodoDto,
+  ListMeetingsQueryDto,
   AudioOpenDto,
   MeetingUserDto,
   PinMeetingDto,
@@ -191,10 +193,18 @@ export class MeetingsController {
     return this.meetingsService.removeMember(id, userId, user);
   }
 
-  /** 获取所有历史会议，顺序和输出格式由业务服务统一处理。 */
+  /**
+   * 历史会议列表：分页 + 服务端筛选。
+   *
+   * 默认不含未开始的预约会议（由首页展示）；upcoming=true 时反过来只取未开始的。
+   * 列表只返回摘要与计数，明细请调 GET /meetings/:id。
+   */
   @Get()
-  findAll(@CurrentUser() user: AuthenticatedUser) {
-    return this.meetingsService.findAll(user);
+  findAll(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListMeetingsQueryDto,
+  ) {
+    return this.meetingsService.findAll(user, query);
   }
 
   /** 获取草稿箱中的会议 */

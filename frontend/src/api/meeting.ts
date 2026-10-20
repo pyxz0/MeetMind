@@ -44,6 +44,10 @@ export interface MeetingResult {
   hasAudio?: boolean
   /** 置顶时间；为空表示未置顶。多条置顶按此时间倒序排列。 */
   pinnedAt?: string | null
+  /** 待办数量（列表接口只给数量，明细走详情接口） */
+  todoCount?: number
+  /** 决策数量 */
+  decisionCount?: number
 
   // ---- 负责人（可多位）与成员 ----
   leaders?: MemberBrief[]
@@ -144,6 +148,8 @@ const normalizeMeeting = (data: any): MeetingRecord => {
     scheduledAt: data.scheduledAt ?? null,
     hasAudio: data.hasAudio ?? false,
     pinnedAt: data.pinnedAt ?? null,
+    todoCount: data.todoCount ?? (Array.isArray(data.todos) ? data.todos.length : 0),
+    decisionCount: data.decisionCount ?? (Array.isArray(data.decisions) ? data.decisions.length : 0),
     leaders: Array.isArray(data.leaders) ? data.leaders : [],
     members: Array.isArray(data.members) ? data.members : [],
     ownerId: data.ownerId,
@@ -177,13 +183,59 @@ export const generateMeeting = async (
   return response.data
 }
 
+/** 列表项：只含摘要与计数，明细需再查详情 */
+export interface MeetingPage {
+  items: MeetingRecord[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
+}
+
+export interface MeetingQuery {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  status?: MeetingCompletionStatusValue
+  from?: string
+  to?: string
+  pinned?: boolean
+  upcoming?: boolean
+}
+
 /**
- * 获取历史会议
+ * 分页查询会议。
+ *
+ * 后端默认排除未开始的预约会议；传 upcoming=true 只取未开始的，
+ * 传 pinned=true 只取置顶的。
+ */
+export const getMeetingsPage = async (
+  query: MeetingQuery = {}
+): Promise<MeetingPage> => {
+  const response = await api.get<{
+    items: any[]
+    total: number
+    page: number
+    pageSize: number
+    hasMore: boolean
+  }>('/meetings', { params: query })
+
+  return {
+    ...response.data,
+    items: response.data.items.map(normalizeMeeting)
+  }
+}
+
+/**
+ * 兼容旧用法：拉取一页较大的列表。
+ *
+ * 保留它是为了让尚未改造的页面无需一次性重写，
+ * 新代码请直接用 getMeetingsPage 控制分页。
  */
 export const getMeetings = async (): Promise<MeetingRecord[]> => {
-  const response = await api.get<any[]>('/meetings')
+  const page = await getMeetingsPage({ pageSize: 100 })
 
-  return response.data.map(normalizeMeeting)
+  return page.items
 }
 
 /**
