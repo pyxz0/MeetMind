@@ -6,8 +6,8 @@
 #   runtime 只带运行期产物，非 root 运行
 #
 # 基础镜像可用构建参数替换为国内源：
-#   docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:22-alpine .
-ARG NODE_IMAGE=node:22-alpine
+#   docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine .
+ARG NODE_IMAGE=node:24-alpine
 
 # ---------- 依赖 ----------
 FROM ${NODE_IMAGE} AS deps

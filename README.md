@@ -317,7 +317,7 @@ Windows 也可以直接双击根目录的 `start-backend.cmd` / `start-frontend.
 
 建议准备：
 
-- Node.js 18+
+- Node.js 24+（后端依赖的 NestJS 12 是纯 ESM 包，Jest 在 Node 22 上无法加载 `@nestjs/testing`）
 - npm
 - Docker Desktop
 - PostgreSQL（项目使用 Docker 运行 PostgreSQL）

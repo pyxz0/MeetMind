@@ -1,9 +1,9 @@
 # MeetMind 前端镜像：构建静态资源后交给 nginx 托管
 #
 # 基础镜像可用构建参数替换为国内源：
-#   docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:22-alpine \
+#   docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine \
 #                --build-arg NGINX_IMAGE=docker.m.daocloud.io/library/nginx:1.27-alpine .
-ARG NODE_IMAGE=node:22-alpine
+ARG NODE_IMAGE=node:24-alpine
 ARG NGINX_IMAGE=nginx:1.27-alpine
 
 # ---------- 构建 ----------

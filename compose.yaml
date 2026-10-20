@@ -43,7 +43,7 @@ services:
       context: ./backend
       target: deps
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
     command: ["npx", "prisma", "migrate", "deploy"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meetmind}:${POSTGRES_PASSWORD:-meetmind}@db:5432/${POSTGRES_DB:-meetmind}?schema=public
@@ -58,7 +58,7 @@ services:
     build:
       context: ./backend
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
     init: true
     restart: unless-stopped
     depends_on:
@@ -87,7 +87,7 @@ services:
     build:
       context: ./frontend
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
         NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.27-alpine}
         VITE_API_BASE_URL: /api
     restart: unless-stopped
