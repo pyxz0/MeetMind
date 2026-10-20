@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { LoginDto, RegisterDto, UpdateProfileDto } from './dto/auth.dto';
 import { CurrentUser, Public, type AuthenticatedUser } from './auth.decorators';
 
 @Controller('auth')
@@ -9,21 +10,15 @@ export class AuthController {
   /** 登录：手机号 + 密码换取 JWT */
   @Public()
   @Post('login')
-  login(@Body() body: { phone?: string; password?: string }) {
-    return this.authService.login(body?.phone ?? '', body?.password ?? '');
+  login(@Body() dto: LoginDto) {
+    return this.authService.login(dto.phone, dto.password);
   }
 
   /** 自助注册，固定为普通用户 */
   @Public()
   @Post('register')
-  register(
-    @Body() body: { phone?: string; password?: string; name?: string },
-  ) {
-    return this.authService.register({
-      phone: body?.phone ?? '',
-      password: body?.password ?? '',
-      name: body?.name ?? '',
-    });
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
   }
 
   /** 当前登录用户信息与权限位，前端据此渲染菜单和按钮 */
@@ -41,13 +36,8 @@ export class AuthController {
   @Patch('me')
   updateMe(
     @CurrentUser() user: AuthenticatedUser,
-    @Body()
-    body: {
-      name?: string;
-      currentPassword?: string;
-      newPassword?: string;
-    },
+    @Body() dto: UpdateProfileDto,
   ) {
-    return this.authService.updateOwnProfile(user.id, body ?? {});
+    return this.authService.updateOwnProfile(user.id, dto);
   }
 }

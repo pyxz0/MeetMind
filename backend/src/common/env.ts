@@ -8,7 +8,11 @@ export function validateEnv(config: Record<string, unknown>) {
   const required = ['DATABASE_URL', 'JWT_SECRET'];
   const missing = required.filter((key) => {
     const value = config[key];
-    return value === undefined || value === null || String(value).trim() === '';
+
+    if (value === undefined || value === null) return true;
+    if (typeof value === 'string') return value.trim() === '';
+
+    return false;
   });
 
   if (missing.length) {

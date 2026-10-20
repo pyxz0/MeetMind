@@ -16,6 +16,7 @@ import {
   type AuthenticatedUser,
 } from '../auth/auth.decorators';
 import { PERMISSIONS } from '../auth/permissions';
+import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
 import { UsersService } from './users.service';
 
 @Controller('users')
@@ -25,11 +26,8 @@ export class UsersController {
   /**
    * 通讯录：只返回「姓名 + 手机号」的最小集合。
    *
-   * 任何已登录用户都能调用，用于在会议里指定负责人与成员 ——
-   * 普通用户没有 user:read 权限，不能走完整用户列表接口。
-   * 只暴露姓名与手机号，不含角色、启用状态、创建时间等管理信息。
-   *
-   * 注意：必须声明在 `:id` 相关路由之前，避免被当成 id 参数解析。
+   * 任何已登录用户都能调用，用于在会议里指定负责人与成员。
+   * 必须声明在 `:id` 相关路由之前，避免被当成 id 参数解析。
    */
   @Get('contacts')
   contacts() {
@@ -50,22 +48,8 @@ export class UsersController {
   /** 新建账号（管理员及以上） */
   @Post()
   @RequirePermissions(PERMISSIONS.USER_MANAGE)
-  create(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body()
-    body: {
-      phone?: string;
-      password?: string;
-      name?: string;
-      role?: string;
-    },
-  ) {
-    return this.usersService.create(user, {
-      phone: body?.phone ?? '',
-      password: body?.password ?? '',
-      name: body?.name ?? '',
-      role: body?.role,
-    });
+  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateUserDto) {
+    return this.usersService.create(user, dto);
   }
 
   /** 修改资料、手机号、角色或启用状态 */
@@ -74,16 +58,9 @@ export class UsersController {
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseIntPipe) id: number,
-    @Body()
-    body: {
-      phone?: string;
-      name?: string;
-      role?: string;
-      isActive?: boolean;
-      password?: string;
-    },
+    @Body() dto: UpdateUserDto,
   ) {
-    return this.usersService.update(user, id, body ?? {});
+    return this.usersService.update(user, id, dto);
   }
 
   /** 删除账号 */
@@ -97,10 +74,7 @@ export class UsersController {
   }
 
   /**
-   * 以指定账号身份浏览（代登）。
-   *
-   * 仅超级管理员可用：代登能完整看到对方数据，
-   * 因此不给管理员开放，避免管理员越权查看用户私有会议。
+   * 以指定账号身份浏览（代登）。仅超级管理员可用。
    */
   @Post(':id/impersonate')
   @RequireRoles('SUPER_ADMIN')

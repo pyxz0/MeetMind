@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: 后端（校验 / 构建 / 测试 / 冒烟）
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: meetmind
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/meetmind?schema=public
+      # CI 专用占位值，不是真实密钥
+      JWT_SECRET: ci-only-secret-not-used-in-production
+      DEEPSEEK_API_KEY: sk-ci-placeholder
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 生成 Prisma Client
+        run: npx prisma generate
+
+      - name: 应用迁移（真实 PostgreSQL）
+        run: npx prisma migrate deploy
+
+      - name: Lint
+        run: npm run lint
+
+      - name: 类型检查
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: 构建
+        run: npm run build
+
+      - name: 单元测试
+        run: npm test
+
+      # 冒烟：真正启动服务，确认健康检查可访问、鉴权生效。
+      # 这一步能拦住"类型检查通过但运行时炸"的问题（例如 schema 与代码漂移）。
+      - name: 启动冒烟
+        run: |
+          node dist/main.js &
+          SERVER_PID=$!
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:3000/api > /dev/null; then break; fi
+            sleep 1
+          done
+          echo "健康检查: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api)"
+          echo "未登录访问: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/auth/me)"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/auth/me)" = "401"
+          kill $SERVER_PID
+
+  frontend:
+    name: 前端（类型检查 / 构建）
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npx vue-tsc --noEmit -p tsconfig.app.json
+
+      - name: 构建
+        run: npm run build

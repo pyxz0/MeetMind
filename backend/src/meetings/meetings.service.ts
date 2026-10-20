@@ -22,7 +22,6 @@ import {
   assertCanWrite,
   computeMeetingCapabilities,
   hasGlobalMeetingAccess,
-  resolveMeetingAccess,
   type MeetingAccess,
   type MeetingCapabilities,
 } from './meetings.access';

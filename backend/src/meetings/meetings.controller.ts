@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,11 +6,24 @@ import {
   HttpCode,
   Param,
   ParseIntPipe,
-  Post,
   Patch,
+  Post,
 } from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
-import type { CreateMeetingInput } from './meetings.service';
+import {
+  CompletionStatusDto,
+  CreateDraftDto,
+  CreateMeetingDto,
+  CreateScheduledMeetingDto,
+  CreateTodoDto,
+  AudioOpenDto,
+  MeetingUserDto,
+  PinMeetingDto,
+  TodoStatusDto,
+  UpdateMeetingTitleDto,
+  UpdateScheduledMeetingDto,
+  UpdateTodoDto,
+} from './dto/meetings.dto';
 import {
   CurrentUser,
   RequirePermissions,
@@ -19,161 +31,73 @@ import {
 } from '../auth/auth.decorators';
 import { PERMISSIONS } from '../auth/permissions';
 
+/**
+ * 会议接口。
+ *
+ * 入参结构统一交给 DTO + 全局 ValidationPipe 校验，
+ * 因此这里不再手写 if (typeof ...) 判断 —— 校验规则集中在 dto/meetings.dto.ts。
+ */
 @Controller('meetings')
 export class MeetingsController {
-  constructor(private readonly meetingsService: MeetingsService) { }
+  constructor(private readonly meetingsService: MeetingsService) {}
 
-  /** 校验前端传入的纪要结构，再交给业务服务进行关联保存。 */
+  /** 保存 AI 生成的纪要结构 */
   @Post()
   @RequirePermissions(PERMISSIONS.MEETING_CREATE)
-  create(@Body() body: CreateMeetingInput, @CurrentUser() user: AuthenticatedUser) {
-    if (!body || typeof body.content !== 'string' || !body.content.trim()) {
-      throw new BadRequestException('content 不能为空');
-    }
-    if (body.summary != null && typeof body.summary !== 'string') {
-      throw new BadRequestException('summary 必须是字符串');
-    }
-    if (
-      body.decisions != null &&
-      (!Array.isArray(body.decisions) ||
-        body.decisions.some((item) => typeof item !== 'string'))
-    ) {
-      throw new BadRequestException('decisions 必须是字符串数组');
-    }
-    if (
-      body.todos != null &&
-      (!Array.isArray(body.todos) ||
-        body.todos.some(
-          (todo) =>
-            !todo ||
-            typeof todo.content !== 'string' ||
-            (todo.assignee != null && typeof todo.assignee !== 'string') ||
-            (todo.deadline != null && typeof todo.deadline !== 'string'),
-        ))
-    ) {
-      throw new BadRequestException('todos 格式无效');
-    }
-
-    return this.meetingsService.create(body, user);
+  create(@Body() dto: CreateMeetingDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.meetingsService.create(dto, user);
   }
 
   /** 创建正式会议（预约开会时间） */
   @Post('scheduled')
   @RequirePermissions(PERMISSIONS.MEETING_CREATE)
   createScheduled(
-    @Body()
-    body: {
-      title?: string;
-      scheduledAt?: string;
-      leaderIds?: number[];
-      memberIds?: number[];
-    },
+    @Body() dto: CreateScheduledMeetingDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (!body?.scheduledAt || typeof body.scheduledAt !== 'string') {
-      throw new BadRequestException('scheduledAt 不能为空');
-    }
-
-    return this.meetingsService.createScheduled(
-      {
-        title: body.title,
-        scheduledAt: body.scheduledAt,
-        leaderIds: body.leaderIds,
-        memberIds: body.memberIds,
-      },
-      user,
-    );
+    return this.meetingsService.createScheduled(dto, user);
   }
 
   /** 手动将会议内容保存到草稿箱 */
   @Post('drafts')
   @RequirePermissions(PERMISSIONS.MEETING_CREATE)
   createDraft(
-    @Body()
-    body: {
-      title?: string;
-      content: string;
-    },
+    @Body() dto: CreateDraftDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (
-      !body ||
-      typeof body.content !== 'string' ||
-      !body.content.trim()
-    ) {
-      throw new BadRequestException('content 不能为空');
-    }
-
-    if (
-      body.title != null &&
-      typeof body.title !== 'string'
-    ) {
-      throw new BadRequestException('title 必须是字符串');
-    }
-
-    return this.meetingsService.createDraft(body, user);
+    return this.meetingsService.createDraft(dto, user);
   }
 
   /** 为指定会议新增待办事项 */
   @Post(':id/todos')
   createTodo(
     @Param('id', ParseIntPipe) id: number,
-    @Body()
-    body: {
-      content: string;
-      assignee?: string;
-      deadline?: string;
-    },
+    @Body() dto: CreateTodoDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (!body || typeof body.content !== 'string' || !body.content.trim()) {
-      throw new BadRequestException('待办内容不能为空');
-    }
-
-    return this.meetingsService.createTodo(id, body, user);
+    return this.meetingsService.createTodo(id, dto, user);
   }
 
   /** 编辑待办事项 */
   @Patch('todos/:id')
   updateTodo(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: {
-      content?: string
-      assignee?: string
-      deadline?: string
-    },
+    @Body() dto: UpdateTodoDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.updateTodo(id, body, user)
+    return this.meetingsService.updateTodo(id, dto, user);
   }
 
   /** 手动修改会议完成状态 */
   @Patch(':id/completion-status')
   updateMeetingCompletionStatus(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { completionStatus: string },
+    @Body() dto: CompletionStatusDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const allowedStatuses = [
-      'NOT_STARTED',
-      'IN_PROGRESS',
-      'COMPLETED',
-      'CANCELLED',
-    ];
-
-    if (
-      !body ||
-      typeof body.completionStatus !== 'string' ||
-      !allowedStatuses.includes(body.completionStatus)
-    ) {
-      throw new BadRequestException(
-        '无效的会议完成状态',
-      );
-    }
-
     return this.meetingsService.updateMeetingCompletionStatus(
       id,
-      body.completionStatus as import('@prisma/client').MeetingCompletionStatus,
+      dto.completionStatus,
       user,
     );
   }
@@ -182,64 +106,40 @@ export class MeetingsController {
   @Patch(':id/pin')
   updatePinned(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { pinned: boolean },
+    @Body() dto: PinMeetingDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (!body || typeof body.pinned !== 'boolean') {
-      throw new BadRequestException('pinned 必须是布尔值');
-    }
-
-    return this.meetingsService.updatePinned(id, body.pinned, user);
+    return this.meetingsService.updatePinned(id, dto.pinned, user);
   }
 
   /** 修改会议标题 */
   @Patch(':id')
   updateMeeting(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { title: string },
+    @Body() dto: UpdateMeetingTitleDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (!body || typeof body.title !== 'string' || !body.title.trim()) {
-      throw new BadRequestException('会议标题不能为空');
-    }
-
-    if (body.title.trim().length > 200) {
-      throw new BadRequestException('会议标题不能超过200个字符');
-    }
-
-    return this.meetingsService.updateMeeting(id, body, user);
+    return this.meetingsService.updateMeeting(id, { title: dto.title }, user);
   }
 
   /** 修改未开始会议的预约信息（标题 / 时间 / 负责人 / 成员） */
   @Patch(':id/schedule')
   updateScheduled(
     @Param('id', ParseIntPipe) id: number,
-    @Body()
-    body: {
-      title?: string;
-      scheduledAt?: string;
-      leaderIds?: number[];
-      memberIds?: number[];
-    },
+    @Body() dto: UpdateScheduledMeetingDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.updateScheduled(id, body ?? {}, user);
+    return this.meetingsService.updateScheduled(id, dto, user);
   }
 
   /** 追加负责人（可多位） */
   @Post(':id/leaders')
   addLeader(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { userId?: number },
+    @Body() dto: MeetingUserDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const userId = body?.userId;
-
-    if (typeof userId !== 'number' || !Number.isInteger(userId) || userId <= 0) {
-      throw new BadRequestException('userId 必须是正整数');
-    }
-
-    return this.meetingsService.addLeader(id, userId, user);
+    return this.meetingsService.addLeader(id, dto.userId, user);
   }
 
   /** 移除负责人；至少要保留一位 */
@@ -256,14 +156,10 @@ export class MeetingsController {
   @Patch(':id/audio-open')
   updateAudioOpen(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { audioOpen?: boolean },
+    @Body() dto: AudioOpenDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (typeof body?.audioOpen !== 'boolean') {
-      throw new BadRequestException('audioOpen 必须是布尔值');
-    }
-
-    return this.meetingsService.updateAudioOpen(id, body.audioOpen, user);
+    return this.meetingsService.updateAudioOpen(id, dto.audioOpen, user);
   }
 
   /** 会议成员列表 */
@@ -279,16 +175,10 @@ export class MeetingsController {
   @Post(':id/members')
   addMember(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { userId?: number },
+    @Body() dto: MeetingUserDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const userId = body?.userId;
-
-    if (typeof userId !== 'number' || !Number.isInteger(userId) || userId <= 0) {
-      throw new BadRequestException('userId 必须是正整数');
-    }
-
-    return this.meetingsService.addMember(id, userId, user);
+    return this.meetingsService.addMember(id, dto.userId, user);
   }
 
   /** 移除会议成员 */
@@ -342,29 +232,10 @@ export class MeetingsController {
   @Patch('todos/:id/status')
   updateTodoStatus(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { status: string },
+    @Body() dto: TodoStatusDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const allowedStatuses = [
-      'OPEN',
-      'IN_PROGRESS',
-      'COMPLETED',
-      'CANCELLED',
-    ];
-
-    if (
-      !body ||
-      typeof body.status !== 'string' ||
-      !allowedStatuses.includes(body.status)
-    ) {
-      throw new BadRequestException('无效的待办状态');
-    }
-
-    return this.meetingsService.updateTodoStatus(
-      id,
-      body.status as import('@prisma/client').TodoStatus,
-      user,
-    );
+    return this.meetingsService.updateTodoStatus(id, dto.status, user);
   }
 
   /** 删除单条待办事项 */

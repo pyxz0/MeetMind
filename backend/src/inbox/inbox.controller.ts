@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
 import { InboxService } from './inbox.service';
+import { MarkInboxReadDto } from './dto/inbox.dto';
 import { CurrentUser, type AuthenticatedUser } from '../auth/auth.decorators';
 
 @Controller('inbox')
@@ -26,8 +27,8 @@ export class InboxController {
   @Post('read')
   markRead(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() body?: { keys?: string[] },
+    @Body() dto: MarkInboxReadDto,
   ) {
-    return this.inboxService.markRead(user, body?.keys);
+    return this.inboxService.markRead(user, dto?.keys);
   }
 }

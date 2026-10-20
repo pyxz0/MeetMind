@@ -469,6 +469,39 @@ http://localhost:5173/
 
 ---
 
+## 🧱 接口约定
+
+### 参数校验
+
+所有写接口的入参结构由 DTO 定义，配合全局 `ValidationPipe` 统一校验：
+
+- `whitelist`：DTO 未声明的字段直接丢弃
+- `forbidNonWhitelisted`：出现未声明字段返回 400，避免拼错的参数被静默忽略
+- `transform`：路径参数与查询参数按 DTO 类型转换
+
+**业务规则**（手机号格式、密码强度、负责人至少一位等）仍留在 Service 层，
+以便返回中文提示；DTO 只负责"结构对不对"。
+
+### 统一错误响应
+
+```json
+{
+  "code": "VALIDATION_FAILED",
+  "message": "property extraField should not exist",
+  "statusCode": 400,
+  "path": "/api/meetings/scheduled",
+  "requestId": "9f1c...",
+  "timestamp": "2026-10-20T14:23:30.325Z"
+}
+```
+
+- `message` 保持原有中文业务提示，前端现有代码无需改动
+- `code` 供程序判断（`VALIDATION_FAILED` / `NOT_FOUND` / `FORBIDDEN` / `INTERNAL_ERROR` 等）
+- 每个响应都带 `X-Request-Id` 头，日志与错误体用同一个 ID 关联
+
+后端日志统一使用 Nest `Logger`（按级别输出），已移除 `console.log`。
+
+---
 ## 🔌 主要 API
 
 > 除 `/api`（健康检查）、`/api/auth/login`、`/api/auth/register` 外，

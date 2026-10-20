@@ -1,6 +1,7 @@
 import {
   Injectable,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import OpenAI from 'openai';
 import { PrismaService } from '../common/prisma.service';
@@ -9,6 +10,9 @@ import { assertCanWrite } from '../meetings/meetings.access';
 
 @Injectable()
 export class AiService {
+  /** 结构化日志：代替 console，便于按级别检索 */
+  private readonly logger = new Logger(AiService.name);
+
   private readonly client: OpenAI;
 
   constructor(
@@ -47,14 +51,14 @@ export class AiService {
           status: 'PROCESSING',
           // 归属发起该请求的用户，保证生成结果不会跨用户可见
           ownerId: user.id,
-          // 每场会议必须有负责人，AI 生成的会议由发起者担任
-          leaderId: user.id,
+          // 每场会议至少一位负责人，AI 生成的会议由发起者担任（多负责人是关联表）
+          leaders: { create: [{ userId: user.id }] },
         },
       });
 
       meetingId = processingMeeting.id;
 
-      console.log(
+      this.logger.log(
         `会议 ${meetingId} 已保存，开始调用 DeepSeek...`,
       );
 
@@ -208,37 +212,37 @@ deadline：截止时间
           },
         });
 
-      console.log(
+      this.logger.log(
         `会议 ${meetingId} AI 纪要生成成功`,
       );
 
       return meeting;
     } catch (error: any) {
-      console.error(
+      this.logger.error(
         '================ AI 生成失败 ================',
       );
 
-      console.error(
+      this.logger.error(
         '会议 ID:',
         meetingId,
       );
 
-      console.error(
+      this.logger.error(
         '错误信息:',
         error?.message,
       );
 
-      console.error(
+      this.logger.error(
         '错误状态:',
         error?.status,
       );
 
-      console.error(
+      this.logger.error(
         '错误类型:',
         error?.type,
       );
 
-      console.error(
+      this.logger.error(
         '完整错误:',
         error,
       );
@@ -259,18 +263,18 @@ deadline：截止时间
             },
           });
 
-          console.log(
+          this.logger.log(
             `会议 ${meetingId} 已标记为 FAILED`,
           );
         } catch (statusError) {
-          console.error(
+          this.logger.error(
             '更新会议 FAILED 状态失败:',
             statusError,
           );
         }
       }
 
-      console.error(
+      this.logger.error(
         '=============================================',
       );
 
@@ -470,13 +474,13 @@ deadline：截止时间
           },
         });
 
-      console.log(
+      this.logger.log(
         `会议 ${id} 重新生成成功`,
       );
 
       return updatedMeeting;
     } catch (error: any) {
-      console.error(
+      this.logger.error(
         `会议 ${id} 重新生成失败:`,
         error,
       );
