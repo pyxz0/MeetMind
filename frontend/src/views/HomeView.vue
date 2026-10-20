@@ -17,18 +17,6 @@ defineOptions({ name: 'MinutesInstant' })
 const draftStore = useDraftStore()
 
 /**
- * 把录音状态同步到全局，供其他页面的「后台录音中」提示使用。
- * 每秒随会议计时刷新一次。
- */
-watchEffect(() => {
-  syncRecordingStatus({
-    recording: isRecording.value,
-    paused: isPaused.value,
-    seconds: meetingDuration.value,
-  })
-})
-
-/**
  * 浏览器 SpeechRecognition 最小类型定义。
  * 部分 Chromium 浏览器使用 webkitSpeechRecognition 前缀，
  * 因此这里同时兼容两种写法。
@@ -1048,6 +1036,21 @@ const handleClear = async () => {
   // 清空后重新计数，避免下一场会议的标记从上一次的分钟数续上
   lastMarkedMinute = 0
 }
+
+/**
+ * 把录音状态同步到全局，供其他页面的「后台录音中」提示使用。
+ *
+ * 必须放在 isRecording / isPaused / meetingDuration 声明之后：
+ * watchEffect 会立即执行一次，提前访问这些 ref 会触发 TDZ 报错，
+ * 表现为整个页面白屏。
+ */
+watchEffect(() => {
+  syncRecordingStatus({
+    recording: isRecording.value,
+    paused: isPaused.value,
+    seconds: meetingDuration.value,
+  })
+})
 
 /**
  * 页面卸载时释放语音识别资源。
