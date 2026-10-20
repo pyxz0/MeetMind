@@ -575,8 +575,8 @@ onMounted(() => {
                   {{ meeting.pinnedAt ? '取消置顶' : '置顶' }}
                 </el-button>
 
-                <!-- 删除只对拥有者开放（共享者即使可编辑也不能删） -->
-                <el-button v-if="meeting.isOwner" type="danger" plain @click="handleDelete(meeting.id)">
+                <!-- 删除按后端 capability 判定：拥有者与管理员及以上都能删 -->
+                <el-button v-if="meeting.canDelete" type="danger" plain @click="handleDelete(meeting.id)">
                   删除
                 </el-button>
 
