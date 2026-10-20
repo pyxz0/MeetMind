@@ -1,5 +1,6 @@
-﻿<script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+<script setup lang="ts">
+import { onBeforeUnmount, ref, watchEffect } from 'vue'
+import { syncRecordingStatus } from '../composables/recordingStatus'
 import { ElMessage } from 'element-plus'
 import {
   generateMeeting,
@@ -11,7 +12,21 @@ import {
 import { useDraftStore } from '../composables/draftStore'
 import MeetingResultComponent from '../components/MeetingResult.vue'
 
+defineOptions({ name: 'MinutesInstant' })
+
 const draftStore = useDraftStore()
+
+/**
+ * 把录音状态同步到全局，供其他页面的「后台录音中」提示使用。
+ * 每秒随会议计时刷新一次。
+ */
+watchEffect(() => {
+  syncRecordingStatus({
+    recording: isRecording.value,
+    paused: isPaused.value,
+    seconds: meetingDuration.value,
+  })
+})
 
 /**
  * 浏览器 SpeechRecognition 最小类型定义。

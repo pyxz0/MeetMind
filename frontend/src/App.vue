@@ -4,10 +4,23 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { provideDraftStore } from './composables/draftStore'
 import { useInboxStore } from './composables/inboxStore'
+import {
+  recordingStatus,
+  formatRecordingTime,
+} from './composables/recordingStatus'
 import { authStore } from './stores/auth'
 
 const draftStore = provideDraftStore()
 const inboxStore = useInboxStore()
+
+/** 后台录音时，在其他页面顶部提示，避免忘了还在录 */
+const showRecordingTip = computed(
+  () => recordingStatus.recording && route.path !== '/minutes/instant'
+)
+
+const backToRecording = async () => {
+  await router.push('/minutes/instant')
+}
 const route = useRoute()
 const router = useRouter()
 
@@ -182,7 +195,30 @@ onMounted(async () => {
         </el-button>
       </div>
 
-      <router-view />
+      <!-- 后台录音提示：切到其他页面时仍能看到录音在进行，点击可回到会议 -->
+      <div v-if="showRecordingTip" class="recording-bar">
+        <span class="recording-dot" />
+
+        <span class="recording-text">
+          {{ recordingStatus.paused ? '会议录音已暂停' : '会议录音与转写进行中' }}
+          <strong>{{ formatRecordingTime(recordingStatus.seconds) }}</strong>
+        </span>
+
+        <el-button type="primary" size="small" class="recording-back" @click="backToRecording">
+          返回会议
+        </el-button>
+      </div>
+
+      <router-view v-slot="{ Component }">
+        <!--
+          纪要页用 KeepAlive 缓存：切到其他页面时组件不卸载，
+          SpeechRecognition 与 MediaRecorder 就能继续在后台录音转写，
+          回到该页时计时与转写内容都保持原样。
+        -->
+        <keep-alive :include="['MinutesInstant']">
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </main>
   </div>
 </template>
@@ -262,8 +298,65 @@ a {
   margin-left: 200px;
 }
 
-/* 代登身份提示条：用醒目颜色区分「这不是我自己的账号」 */
-.impersonation-bar {
+/* 后台录音提示条：红点 + 计时，提示录音仍在继续 */
+.recording-bar {
+  position: sticky;
+  top: 0;
+  z-index: 95;
+
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 8px 20px;
+
+  background: #fef0f0;
+  border-bottom: 1px solid #fbc4c4;
+
+  color: #c45656;
+  font-size: 13px;
+}
+
+/* 呼吸红点，比静态圆点更容易被注意到 */
+.recording-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+
+  border-radius: 50%;
+  background: #f56c6c;
+
+  animation: recording-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+.recording-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.recording-text strong {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-back {
+  flex-shrink: 0;
+}
+
+/* 代登身份提示条：用醒目颜色区分「这不是我自己的账号」 */.impersonation-bar {
   position: sticky;
   top: 0;
   z-index: 90;
