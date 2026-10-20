@@ -39,6 +39,37 @@ enum Role {
   USER
 }
 
+/// 审计日志。
+///
+/// 记录"谁在什么时候对什么资源做了什么"。
+/// actor 可空：账号被删除后历史记录仍需保留（外键 SET NULL）。
+model AuditLog {
+  id             Int      @id @default(autoincrement())
+  /// 操作者；账号被删后置空
+  actorId        Int?     @map("actor_id")
+  /// 代登场景下的真实操作者
+  impersonatedBy Int?     @map("impersonated_by")
+  /// 动作标识，如 meeting.delete / user.update_role
+  action         String   @db.VarChar(64)
+  /// 资源类型：meeting / user / share
+  resourceType   String   @map("resource_type") @db.VarChar(32)
+  /// 资源 id
+  resourceId     String?  @map("resource_id") @db.VarChar(64)
+  /// 附加信息（修改前后的值等）
+  metadata       Json?
+  /// 客户端 IP
+  ip             String?  @db.VarChar(64)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([actorId])
+  @@index([resourceType, resourceId])
+  @@map("audit_logs")
+}
+
+/// AI 生成任务状态
 /// AI 生成任务状态
 enum GenerationStatus {
   PENDING
@@ -91,6 +122,8 @@ model User {
   notices      MeetingNotice[] @relation("NoticeRecipient")
   /// 该用户发起的 AI 生成任务。
   generations  MeetingGeneration[] @relation("GenerationOwner")
+  /// 该用户产生的审计日志。
+  auditLogs    AuditLog[] @relation("AuditActor")
   /// 别人共享给该用户的会议。
   sharedWithMe MeetingShare[]  @relation("ShareRecipient")
   /// 该用户做过的共享操作（用于追溯是谁授的权）。

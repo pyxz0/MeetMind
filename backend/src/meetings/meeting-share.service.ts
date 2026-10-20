@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { assertCanOwn, hasGlobalMeetingAccess } from './meetings.access';
 
@@ -12,7 +13,10 @@ export type SharePermissionInput = 'READ' | 'EDIT';
 
 @Injectable()
 export class MeetingShareService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   /**
    * 列出某场会议的共享情况。
@@ -108,6 +112,13 @@ export class MeetingShareService {
       },
     });
 
+    await this.audit.record(user, {
+      action: 'meeting.share',
+      resourceType: 'meeting',
+      resourceId: meetingId,
+      metadata: { targetUserId, permission },
+    });
+
     return {
       id: share.id,
       userId: share.user.id,
@@ -159,6 +170,13 @@ export class MeetingShareService {
     }
 
     await this.prisma.meetingShare.delete({ where: { id: existing.id } });
+
+    await this.audit.record(user, {
+      action: 'meeting.share_revoke',
+      resourceType: 'meeting',
+      resourceId: meetingId,
+      metadata: { targetUserId },
+    });
 
     return { message: '已撤销共享', meetingId, userId: targetUserId };
   }

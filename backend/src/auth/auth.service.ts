@@ -6,6 +6,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../common/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import type { AppRole } from './permissions';
 import { ROLE_PERMISSIONS, ROLE_LABELS } from './permissions';
 
@@ -37,6 +38,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly audit: AuditService,
   ) {}
 
   /** 登录：校验手机号与密码，签发 JWT */
@@ -64,6 +66,12 @@ export class AuthService {
     if (!user.isActive) {
       throw new UnauthorizedException('账号已被停用，请联系管理员');
     }
+
+    await this.audit.record(user, {
+      action: 'auth.login',
+      resourceType: 'user',
+      resourceId: user.id,
+    });
 
     return {
       token: await this.signToken(user.id, user.role as AppRole, user.phone),
@@ -109,6 +117,12 @@ export class AuthService {
         name: name.slice(0, 80),
         role: 'USER',
       },
+    });
+
+    await this.audit.record(user, {
+      action: 'auth.login',
+      resourceType: 'user',
+      resourceId: user.id,
     });
 
     return {

@@ -7,6 +7,7 @@ import {
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../common/prisma.service';
 import { AuthService } from '../auth/auth.service';
+import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import type { AppRole } from '../auth/permissions';
 
@@ -49,6 +50,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -184,6 +186,13 @@ export class UsersService {
         role,
       },
       select: publicUserSelect,
+    });
+
+    await this.audit.record(operator, {
+      action: 'user.create',
+      resourceType: 'user',
+      resourceId: user.id,
+      metadata: { role },
     });
 
     return { ...user, createdAt: user.createdAt.toISOString() };
@@ -350,6 +359,18 @@ export class UsersService {
       select: publicUserSelect,
     });
 
+    await this.audit.record(operator, {
+      action: 'user.update',
+      resourceType: 'user',
+      resourceId: updated.id,
+      metadata: {
+        role: input.role ?? null,
+        isActive: input.isActive ?? null,
+        passwordChanged: input.password !== undefined,
+        phoneChanged: input.phone !== undefined,
+      },
+    });
+
     return { ...updated, createdAt: updated.createdAt.toISOString() };
   }
 
@@ -399,6 +420,12 @@ export class UsersService {
       target.phone,
       operator.id,
     );
+
+    await this.audit.record(operator, {
+      action: 'user.impersonate',
+      resourceType: 'user',
+      resourceId: target.id,
+    });
 
     return {
       token,
@@ -466,6 +493,13 @@ export class UsersService {
     ]);
 
     await this.prisma.user.delete({ where: { id: targetId } });
+
+    await this.audit.record(operator, {
+      action: 'user.delete',
+      resourceType: 'user',
+      resourceId: targetId,
+      metadata: { reassignedMeetings: reassigned.count },
+    });
 
     return {
       message: '用户已删除',

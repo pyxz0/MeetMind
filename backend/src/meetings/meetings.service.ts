@@ -12,6 +12,7 @@ import {
 import { PrismaService } from '../common/prisma.service';
 import { mapMeetingSummary } from './meeting.mapper';
 import { MeetingAudioService } from './meeting-audio.service';
+import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { PERMISSIONS, roleHasPermission } from '../auth/permissions';
 import {
@@ -99,6 +100,7 @@ export class MeetingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audioService: MeetingAudioService,
+    private readonly audit: AuditService,
   ) { }
 
   /** 创建会议并通过嵌套写入原文、摘要、决策和待办，保证一次提交完成。 */
@@ -1038,6 +1040,12 @@ export class MeetingsService {
     await this.audioService.removeAudioByMeetingId(id);
 
     await this.prisma.meeting.delete({ where: { id } });
+
+    await this.audit.record(user, {
+      action: 'meeting.delete',
+      resourceType: 'meeting',
+      resourceId: id,
+    });
   }
 
   /**
