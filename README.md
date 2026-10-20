@@ -518,6 +518,26 @@ http://localhost:5173/
 > 之前删掉一个测试账号，会把该账号创建的全部会议（含决策、待办、录音）一起静默删除。
 > 现在改为转移，属于数据安全修复。
 
+### 审计日志
+
+敏感操作会写入 `audit_logs`，由 `GET /api/audit-logs` 提供查询（需要 `audit:read`）。
+
+已接入的动作：
+
+| 分类 | 动作 |
+|---|---|
+| 认证 | `auth.login` |
+| 账号 | `user.create` / `user.update` / `user.delete` / `user.impersonate` |
+| 会议 | `meeting.delete` |
+| 共享 | `meeting.share` / `meeting.share_revoke` |
+
+设计要点：
+
+- `actor_id` 使用 `ON DELETE SET NULL` —— 账号删除后「谁做的」这条记录仍然保留
+- 代登场景额外记录 `impersonated_by`，能区分「超管以某人身份操作」
+- 写入失败只记日志，不影响主流程
+- 前端入口在**个人中心**（仅 `audit:read` 可见），页面为只读表格 + 操作/资源筛选 + 翻页
+
 ### 统一错误响应
 
 ```json

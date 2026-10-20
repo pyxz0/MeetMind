@@ -4,6 +4,7 @@ import HomeView from '../views/HomeView.vue'
 import MeetMindView from '../views/MeetMindView.vue'
 import MinutesView from '../views/MinutesView.vue'
 import InboxView from '../views/InboxView.vue'
+import AuditView from '../views/AuditView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import MeetingDetailView from '../views/MeetingDetailView.vue'
 import DraftsView from '../views/DraftsView.vue'
@@ -101,6 +102,16 @@ const router = createRouter({
       path: '/profile',
       name: 'profile',
       component: ProfileView,
+    },
+
+    {
+      /**
+       * 审计日志：只读，入口在个人中心（仅具备 audit:read 的角色可见）。
+       */
+      path: '/audit',
+      name: 'audit',
+      component: AuditView,
+      meta: { permissions: ['audit:read'] },
     },
 
     {

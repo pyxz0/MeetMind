@@ -12,6 +12,9 @@ const user = computed(() => authStore.user)
 /** 管理员及以上才有「用户管理」入口 */
 const canManageUsers = computed(() => authStore.can('user:read'))
 
+/** 审计日志入口：需要 audit:read（管理员及以上） */
+const canViewAudit = computed(() => authStore.can('audit:read'))
+
 /** 该账号是否就是系统唯一超管 */
 const isSoleSuperAdmin = computed(
   () => user.value?.role === 'SUPER_ADMIN'
@@ -280,6 +283,19 @@ const handleLogout = async () => {
             进入用户管理
           </el-button>
         </div>
+
+        <div v-if="canViewAudit" class="manage-row manage-row--divided">
+          <div class="manage-main">
+            <div class="manage-title">审计日志</div>
+            <div class="manage-desc">
+              登录、账号变更、会议删除、共享与切换身份的操作留痕
+            </div>
+          </div>
+
+          <el-button type="primary" plain @click="router.push('/audit')">
+            查看审计日志
+          </el-button>
+        </div>
       </el-card>
 
       <!-- 退出登录放在个人中心，与账号相关操作集中在一起 -->
@@ -407,6 +423,13 @@ const handleLogout = async () => {
 .manage-desc {
   color: #909399;
   font-size: 13px;
+}
+
+/* 同一张卡片里的第二个入口，用细分隔线区分 */
+.manage-row--divided {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f5f7fa;
 }
 
 /* 退出登录是破坏性操作，用克制一点的边框区分 */
