@@ -638,6 +638,27 @@ http://localhost:5173/
 
 ---
 
+## 🔄 AI 生成改为异步任务
+
+生成不再是同步长请求，而是「建任务 → 后台执行 → 前端轮询」：
+
+```text
+POST /api/ai/generate          立即返回 { id, status: PENDING }
+        ↓
+后台生成（进程内执行，不阻塞响应）
+        ↓
+GET /api/ai/generations/:id    轮询状态
+        ↓
+SUCCEEDED（带 meetingId）/ FAILED（带 error）
+```
+
+- **重复提交自动复用**：同一用户 + 同一段内容 + 正在运行的任务，直接返回原任务，不会重复烧额度
+- **失败可追踪**：任务表保留 `error`，前端能显示具体原因
+- **重启自愈**：服务启动时把残留的 `PENDING/RUNNING` 任务标记为失败，对应会议置为 FAILED
+- 前端 `generateMeeting()` 内部完成启动与轮询，调用方签名不变
+
+> 单实例假设：进程内执行 + 启动清理；多副本部署需要改成独立 Worker 或队列。
+
 ## 🔄 AI 处理流程
 
 ```text
