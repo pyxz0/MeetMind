@@ -1,0 +1,108 @@
+# MeetMind 唯一编排文件
+#
+# 本地开发（只需数据库，前后端用 npm run dev 热重载）：
+#   docker compose --profile db up -d
+#
+# 生产部署（数据库 + 迁移 + 后端 + 前端）：
+#   cp .env.example .env   # 填好 JWT_SECRET 等
+#   docker compose --profile prod up -d --build
+
+name: meetmind
+
+services:
+  db:
+    profiles: ["prod", "db"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meetmind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meetmind}
+      POSTGRES_DB: ${POSTGRES_DB:-meetmind}
+      TZ: Asia/Shanghai
+    ports:
+      # 只绑回环地址：本地开发可直连，公网访问不到
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 一次性迁移任务：跑完即退出
+  # 复用 deps 阶段（含 prisma CLI），因此 runtime 镜像可以保持精简
+  migrate:
+    profiles: ["prod"]
+    build:
+      context: ./backend
+      target: deps
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meetmind}:${POSTGRES_PASSWORD:-meetmind}@db:5432/${POSTGRES_DB:-meetmind}?schema=public
+      TZ: Asia/Shanghai
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    profiles: ["prod"]
+    build:
+      context: ./backend
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meetmind}:${POSTGRES_PASSWORD:-meetmind}@db:5432/${POSTGRES_DB:-meetmind}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 必须在 .env 中设置}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      PORT: 3000
+      TZ: Asia/Shanghai
+    volumes:
+      # 录音必须落盘持久化，否则重建容器就丢音频
+      - uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging: *default-logging
+
+  frontend:
+    profiles: ["prod"]
+    build:
+      context: ./frontend
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.27-alpine}
+        VITE_API_BASE_URL: /api
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+volumes:
+  pgdata:
+  uploads:

@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common'
 import { APP_GUARD } from '@nestjs/core'
 import { ConfigModule } from '@nestjs/config'
+import { validateEnv } from './common/env'
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { AiModule } from './ai/ai.module'
@@ -16,6 +17,10 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard'
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      // 兼容两种位置：backend/.env（本地）与仓库根 .env（Docker 编排）
+      envFilePath: ['.env', '../.env'],
+      // 缺少 DATABASE_URL / JWT_SECRET 时启动即失败，避免运行到一半才 500
+      validate: validateEnv,
     }),
     PrismaModule,
     // AuthModule 为 @Global，JwtModule / AuthService / 守卫在全局可用

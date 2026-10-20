@@ -240,7 +240,6 @@ MeetMind/
 │  ├─ .env                   # 本地环境变量，不提交 Git
 │  └─ package.json
 │
-├─ ai-service/               # Python AI 服务目录（扩展预留）
 │
 ├─ .gitignore
 └─ README.md
@@ -278,24 +277,38 @@ Todo
 
 ---
 
-## 🚀 本地启动
+## 🚀 启动与部署
 
-### 快捷方式（Windows）
+### 配置（唯一入口）
 
-项目根目录提供两个启动脚本，**双击即可在独立的命令提示符窗口中运行**，
-窗口里能直接看到日志，按 `Ctrl+C` 或关闭窗口即停止服务：
+```bash
+cp .env.example .env      # 填好 JWT_SECRET、DEEPSEEK_API_KEY
+```
 
-| 脚本 | 作用 | 地址 |
-|---|---|---|
-| `start-backend.cmd` | 启动 NestJS 后端 | http://127.0.0.1:3000/api |
-| `start-frontend.cmd` | 启动前端开发服务器 | http://127.0.0.1:5173/ |
+后端与 Docker 编排都读**仓库根目录的 `.env`**（后端按 `.env` → `../.env` 顺序查找），
+不再需要维护多份环境变量文件。缺少 `DATABASE_URL` 或 `JWT_SECRET` 时服务启动即报错。
 
-> 脚本用 `%~dp0` 定位项目目录，可放在任意路径；
-> 内部保持纯 ASCII，避免中文代码页导致 cmd 解析异常。
+### 一条命令部署（Docker）
 
-### 手动启动
+```bash
+docker compose --profile prod up -d --build
+```
 
-以下为分步说明。
+启动顺序由编排保证：`db` → `migrate`（一次性跑完迁移并退出）→ `backend` → `frontend`。
+前端 nginx 同时托管 SPA 与反向代理 `/api`，对外只暴露 `HTTP_PORT`（默认 80）。
+
+### 本地开发
+
+```bash
+docker compose --profile db up -d     # 只起 PostgreSQL（仅监听 127.0.0.1）
+cd backend && npm run start:dev       # 后端热重载
+cd frontend && npm run dev            # 前端热重载（http://127.0.0.1:5173）
+```
+
+Windows 也可以直接双击根目录的 `start-backend.cmd` / `start-frontend.cmd`，
+在独立命令提示符窗口中运行并查看日志。
+
+> 基础镜像拉不动时，在 `.env` 里设置 `NODE_IMAGE` / `NGINX_IMAGE` 为国内镜像源。
 
 ## 1. 环境要求
 
