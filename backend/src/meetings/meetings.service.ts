@@ -90,6 +90,8 @@ export interface MeetingListQuery {
   pinned?: boolean;
   /** 只看未开始的预约会议 */
   upcoming?: boolean;
+  /** 创建时间排序方向 */
+  sort?: 'newest' | 'oldest';
 }
 
 @Injectable()
@@ -812,13 +814,16 @@ export class MeetingsService {
 
     const where: Prisma.MeetingWhereInput = { AND: conditions };
 
-    const [rows, total] = await Promise.all([
+    // 置顶永远排在最前，其余按用户选择的创建时间方向
+    const createdDirection: Prisma.SortOrder =
+      query.sort === 'oldest' ? 'asc' : 'desc';
+
+    const [rows, total, pinnedTotal] = await Promise.all([
       this.prisma.meeting.findMany({
         where,
-        // 已置顶优先，其余按创建时间倒序
         orderBy: [
           { pinnedAt: { sort: 'desc', nulls: 'last' } },
-          { createdAt: 'desc' },
+          { createdAt: createdDirection },
         ],
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -843,6 +848,8 @@ export class MeetingsService {
         },
       }),
       this.prisma.meeting.count({ where }),
+      // 当前筛选下的置顶总数，供列表上方的统计文案使用
+      this.prisma.meeting.count({ where: { AND: [...conditions, { pinnedAt: { not: null } }] } }),
     ]);
 
     return {
@@ -857,6 +864,7 @@ export class MeetingsService {
         return mapMeetingSummary(row, access, capabilities);
       }),
       total,
+      pinnedTotal,
       page,
       pageSize,
       hasMore: page * pageSize < total,

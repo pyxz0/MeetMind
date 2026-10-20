@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, ArrowDown } from '@element-plus/icons-vue'
@@ -35,9 +35,7 @@ const selectedStatus = ref('')
 const sortOrder = ref('newest')
 
 /** 当前筛选结果中的置顶数量，用于列表上方的统计提示 */
-const pinnedCount = computed(
-  () => filteredMeetings.value.filter(meeting => !!meeting.pinnedAt).length
-)
+const pinnedCount = ref(0)
 
 /**
  * 可直接修改的会议完成状态。
@@ -94,75 +92,7 @@ const completionStatusStyle = (
 const completionUpdatingId = ref<number | null>(null)
 
 /** 根据标题和日期筛选会议 */
-const filteredMeetings = computed(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
-
-  /** 还没到开会时间的会议不算历史，首页单独展示 */
-  const now = Date.now()
-  const isUpcoming = (meeting: MeetingRecord) =>
-    !!meeting.scheduledAt &&
-    new Date(meeting.scheduledAt).getTime() > now
-
-  const filtered = meetings.value.filter(meeting => {
-    if (isUpcoming(meeting)) {
-      return false
-    }
-
-    const title = (meeting.title || `会议 #${meeting.id}`).toLowerCase()
-
-    const matchesKeyword =
-      !keyword || title.includes(keyword)
-
-    const matchesStatus =
-      !selectedStatus.value ||
-      meeting.completionStatus === selectedStatus.value
-
-    const meetingDate = meeting.createdAt
-      ? new Date(meeting.createdAt)
-      : null
-
-    const matchesStartDate =
-      !startDate.value ||
-      (meetingDate !== null &&
-        !Number.isNaN(meetingDate.getTime()) &&
-        meetingDate >= new Date(`${startDate.value}T00:00:00`))
-
-    const matchesEndDate =
-      !endDate.value ||
-      (meetingDate !== null &&
-        !Number.isNaN(meetingDate.getTime()) &&
-        meetingDate < new Date(
-          new Date(`${endDate.value}T00:00:00`).getTime() +
-          24 * 60 * 60 * 1000
-        ))
-
-    return (
-      matchesKeyword &&
-      matchesStatus &&
-      matchesStartDate &&
-      matchesEndDate
-    )
-  })
-
-  return [...filtered].sort((a, b) => {
-    // 置顶优先：无论用户选哪种排序，置顶会议始终在最前
-    const pinA = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0
-    const pinB = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0
-
-    if (pinA !== pinB) {
-      // 多条置顶之间按“最近置顶优先”
-      return pinB - pinA
-    }
-
-    // 同为置顶或同为未置顶时，按用户选择的创建时间排序
-    const timeA = new Date(a.createdAt || 0).getTime()
-    const timeB = new Date(b.createdAt || 0).getTime()
-
-    return sortOrder.value === 'newest'
-      ? timeB - timeA
-      : timeA - timeB
-  })
-})
+const filteredMeetings = computed(() => meetings.value)
 
 /**
  * 已展开的会议 ID 集合。
@@ -243,25 +173,72 @@ const toggleAllExpanded = () => {
   })
 }
 
-/** 加载历史会议 */
-const loadMeetings = async () => {
-  loading.value = true
+/** 每页条数 */
+const PAGE_SIZE = 20
+
+const currentPage = ref(1)
+const hasMore = ref(false)
+const loadingMore = ref(false)
+
+/** 组装服务端查询参数：筛选与排序都交给后端，避免只过滤当前页 */
+const buildQuery = (page: number) => ({
+  page,
+  pageSize: PAGE_SIZE,
+  keyword: searchKeyword.value.trim() || undefined,
+  status: (selectedStatus.value || undefined) as
+    | MeetingCompletionStatusValue
+    | undefined,
+  from: startDate.value || undefined,
+  to: endDate.value || undefined,
+  sort: sortOrder.value as 'newest' | 'oldest'
+})
+
+/** 加载历史会议（reset=true 为重新加载第一页） */
+const loadMeetings = async (reset = true) => {
+  if (reset) {
+    loading.value = true
+  } else {
+    loadingMore.value = true
+  }
 
   try {
-    const page = await getMeetingsPage({ pageSize: 100 })
+    const page = reset ? 1 : currentPage.value + 1
+    const result = await getMeetingsPage(buildQuery(page))
 
-      meetings.value = page.items
-      totalMeetings.value = page.total
+    meetings.value = reset ? result.items : [...meetings.value, ...result.items]
 
+    currentPage.value = result.page
+    hasMore.value = result.hasMore
+    totalMeetings.value = result.total
+    pinnedCount.value = result.pinnedTotal ?? 0
   } catch (error) {
     console.error(error)
 
     ElMessage.error('历史记录加载失败，请检查后端服务是否启动')
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
+/**
+ * 筛选条件变化后重新查询。
+ *
+ * 关键词做了 300ms 防抖，避免每敲一个字就打一次接口。
+ */
+let keywordTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(searchKeyword, () => {
+  if (keywordTimer) clearTimeout(keywordTimer)
+
+  keywordTimer = setTimeout(() => {
+    void loadMeetings()
+  }, 300)
+})
+
+watch([selectedStatus, startDate, endDate, sortOrder], () => {
+  void loadMeetings()
+})
 /**
  * 在历史列表里直接修改会议完成状态。
  *
@@ -466,7 +443,7 @@ onMounted(() => {
           </el-button>
 
           <span class="search-count">
-            共找到 {{ filteredMeetings.length }} 条会议记录
+            共找到 {{ totalMeetings }} 条会议记录
             <template v-if="pinnedCount > 0">
               （已置顶 {{ pinnedCount }} 条）
             </template>
@@ -476,6 +453,13 @@ onMounted(() => {
         <el-empty v-if="!loading && meetings.length === 0" description="暂时没有会议记录" />
 
         <el-empty v-else-if="!loading && filteredMeetings.length === 0" description="没有找到匹配的会议记录" />
+
+        <!-- 服务端分页：还有更多时显示"加载更多" -->
+        <div v-if="hasMore" class="load-more">
+          <el-button :loading="loadingMore" @click="loadMeetings(false)">
+            加载更多
+          </el-button>
+        </div>
 
         <div v-else class="meeting-list">
           <el-card v-for="meeting in filteredMeetings" :key="meeting.id"
@@ -694,6 +678,12 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.load-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
 }
 
 .status-select {

@@ -233,4 +233,9 @@ export class ListMeetingsQueryDto {
   @Transform(toBoolean)
   @IsBoolean()
   upcoming?: boolean;
+
+  /** 排序：newest 最新创建在前（默认），oldest 最早创建在前 */
+  @IsOptional()
+  @IsIn(['newest', 'oldest'])
+  sort?: 'newest' | 'oldest';
 }

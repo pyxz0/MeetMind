@@ -187,6 +187,8 @@ export const generateMeeting = async (
 export interface MeetingPage {
   items: MeetingRecord[]
   total: number
+  /** 当前筛选下的置顶总数 */
+  pinnedTotal: number
   page: number
   pageSize: number
   hasMore: boolean
@@ -201,6 +203,8 @@ export interface MeetingQuery {
   to?: string
   pinned?: boolean
   upcoming?: boolean
+  /** newest 最新创建在前（默认），oldest 最早创建在前 */
+  sort?: 'newest' | 'oldest'
 }
 
 /**
@@ -215,6 +219,7 @@ export const getMeetingsPage = async (
   const response = await api.get<{
     items: any[]
     total: number
+    pinnedTotal: number
     page: number
     pageSize: number
     hasMore: boolean
