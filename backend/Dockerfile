@@ -45,8 +45,13 @@ ENV TZ=Asia/Shanghai
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# wget 用于容器健康检查
-RUN apk add --no-cache tzdata wget
+# wget 用于容器健康检查。
+#
+# Alpine 官方源（dl-cdn.alpinelinux.org）在国内多数云主机上不可达，
+# 直接 apk add 会挂在网络超时上，构建卡死在 runtime 阶段。
+# 先切到腾讯云镜像源；海外环境可删掉这段 sed 换回官方源。
+RUN sed -i s@dl-cdn.alpinelinux.org@mirrors.cloud.tencent.com@g /etc/apk/repositories \
+    && apk add --no-cache tzdata wget
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
