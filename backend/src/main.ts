@@ -12,7 +12,17 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 const UPLOAD_DIR = join(process.cwd(), 'uploads');
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  /**
+   * rawBody：平台回调（飞书 / 企业微信）的签名是对**原始请求体**算的。
+   * 请求体一旦被 body-parser 反序列化，再序列化时字段顺序、空格、转义都可能变，
+   * 验签会永远失败，而报错只会是"签名不匹配"，极难排查。
+   *
+   * 开启后每个请求额外挂一个 req.rawBody（Buffer），只给验签用，
+   * 不影响现有的 JSON 解析（req.body 照常可用）。
+   */
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   app.setGlobalPrefix('api');
 
