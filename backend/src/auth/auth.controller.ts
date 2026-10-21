@@ -38,6 +38,6 @@ export class AuthController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateProfileDto,
   ) {
-    return this.authService.updateOwnProfile(user.id, dto);
+    return this.authService.updateOwnProfile(user, dto);
   }
 }

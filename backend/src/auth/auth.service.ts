@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import type { AuthenticatedUser } from './auth.decorators';
 import type { AppRole } from './permissions';
 import { ROLE_PERMISSIONS, ROLE_LABELS } from './permissions';
 
@@ -153,13 +154,14 @@ export class AuthService {
    * 这样普通用户无需 user:manage 权限也能维护自己的账号。
    */
   async updateOwnProfile(
-    userId: number,
+    actor: Pick<AuthenticatedUser, 'id' | 'impersonatedBy'>,
     input: {
       name?: string;
       currentPassword?: string;
       newPassword?: string;
     },
   ): Promise<PublicUser> {
+    const userId = actor.id;
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     if (!user || !user.isActive) {
@@ -212,6 +214,26 @@ export class AuthService {
     const updated = await this.prisma.user.update({
       where: { id: userId },
       data,
+    });
+
+    /**
+     * 自助改资料同样要留痕。
+     *
+     * 之前这里只更新数据库、不写审计：用户把自己的密码改掉之后，
+     * 日志里查不到任何痕迹，只能靠比对 password_hash 去猜，
+     * 排查「密码到底是谁改的」时完全没有抓手。
+     *
+     * 与管理员改他人（users.service 里的 user.update）分开记一条，
+     * 便于按动作筛选；只记改了哪些字段，绝不落密码内容。
+     */
+    await this.audit.record(actor, {
+      action: 'user.self_update',
+      resourceType: 'user',
+      resourceId: updated.id,
+      metadata: {
+        nameChanged: data.name !== undefined,
+        passwordChanged: data.passwordHash !== undefined,
+      },
     });
 
     return this.toPublicUser(updated);

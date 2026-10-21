@@ -26,6 +26,7 @@ const ACTION_LABELS: Record<string, string> = {
   'auth.login': '登录',
   'user.create': '新建账号',
   'user.update': '修改账号',
+  'user.self_update': '修改本账号',
   'user.delete': '删除账号',
   'user.impersonate': '切换身份',
   'meeting.delete': '删除会议',
