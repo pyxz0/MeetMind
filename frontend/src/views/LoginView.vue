@@ -8,9 +8,6 @@ import { authStore } from '../stores/auth'
 const router = useRouter()
 const route = useRoute()
 
-/** 「忘记密码」说明弹窗：账号由管理员维护，没有自助找回渠道 */
-const forgotVisible = ref(false)
-
 /** 当前是登录还是注册 */
 const mode = ref<'login' | 'register'>('login')
 const loading = ref(false)
@@ -137,7 +134,7 @@ const submit = async () => {
             还没有账号？
             <el-button link type="primary" @click="switchMode">注册一个</el-button>
             <el-divider direction="vertical" />
-            <el-button link @click="forgotVisible = true">忘记密码？</el-button>
+            <el-button link @click="router.push('/forgot-password')">忘记密码？</el-button>
           </span>
 
           <span v-else>
@@ -151,37 +148,11 @@ const submit = async () => {
         </p>
       </div>
 
-      <el-dialog v-model="forgotVisible" title="忘记密码" width="420px">
-        <p class="forgot-text">
-          账号由管理员维护，暂不支持自助找回。请联系你的管理员，让 TA 在「用户管理」里
-          为你生成一条一次性重置链接。
-        </p>
-        <p class="forgot-note">
-          链接 30 分钟内有效，只能使用一次；打开后由你本人设置新密码，
-          管理员不会看到你设置的密码。
-        </p>
-        <template #footer>
-          <el-button type="primary" @click="forgotVisible = false">知道了</el-button>
-        </template>
-      </el-dialog>
     </div>
   </div>
 </template>
 
 <style scoped>
-.forgot-text {
-  margin: 0 0 10px;
-  font-size: 14px;
-  line-height: 1.8;
-  color: var(--ink-2);
-}
-
-.forgot-note {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.8;
-  color: var(--ink-3);
-}
 
 .auth-page {
   min-height: 100vh;

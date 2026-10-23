@@ -4,6 +4,7 @@ import {
   ConfirmPasswordResetDto,
   LoginDto,
   PasswordResetTokenDto,
+  RequestPasswordResetDto,
   RegisterDto,
   UpdateProfileDto,
 } from './dto/auth.dto';
@@ -25,6 +26,17 @@ export class AuthController {
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
+  }
+
+  /**
+   * 自助找回第一步：提交绑定邮箱，由后端发一次性链接（公开）。
+   *
+   * 无论邮箱是否绑定账号都返回同一句话，避免被用来枚举账号。
+   */
+  @Public()
+  @Post('password-reset/request')
+  requestPasswordReset(@Body() dto: RequestPasswordResetDto) {
+    return this.authService.requestPasswordReset(dto.email);
   }
 
   /**

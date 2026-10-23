@@ -98,6 +98,9 @@ model User {
   /// 手机号，唯一登录标识。
   /// 存 11 位中国大陆手机号（不带 +86 前缀），入库前统一去空格与分隔符。
   phone        String    @unique @db.VarChar(20)
+  /// 绑定邮箱：用于自助找回密码。可为空（老账号与不填的用户），一旦绑定即唯一。
+  /// 不做登录标识 —— 登录仍然只认手机号。
+  email        String?   @unique @db.VarChar(160)
   /// bcrypt 哈希；接口返回时永远剔除该字段。
   passwordHash String    @map("password_hash") @db.VarChar(120)
   /// 展示名称。

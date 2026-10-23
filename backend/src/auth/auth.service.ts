@@ -7,7 +7,12 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../audit/audit.service';
-import { hashResetToken } from './password-reset-token';
+import {
+  createResetToken,
+  hashResetToken,
+  RESET_TOKEN_TTL_MINUTES,
+} from './password-reset-token';
+import { MailService } from '../common/mail.service';
 import type { AuthenticatedUser } from './auth.decorators';
 import type { AppRole } from './permissions';
 import { ROLE_PERMISSIONS, ROLE_LABELS } from './permissions';
@@ -23,6 +28,18 @@ const BCRYPT_ROUNDS = 12;
  */
 const PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
+/**
+ * 邮箱：只做「结构 + 长度」校验。
+ *
+ * 不做 DNS/MX 探测 —— 自助找回是低敏感场景，真正的有效性靠用户能否收到信；
+ * 过严的正则会误杀 icloud、企业邮等合法地址。
+ */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/** 自助找回的统一回复：不区分「邮箱存在」与「不存在」 */
+const SELF_SERVICE_SENT_MESSAGE =
+  '如果该邮箱已绑定账号，重置链接已发送，请查收（含垃圾邮件箱）';
+
 /** 对外返回的用户视图，绝不包含 passwordHash */
 export interface PublicUser {
   id: number;
@@ -33,16 +50,27 @@ export interface PublicUser {
   isActive: boolean;
   /** 头像（data URL）；为空时界面用姓名首字 */
   avatar: string | null;
+  /** 绑定邮箱；为空表示未绑定，找回密码只能走管理员 */
+  email: string | null;
   permissions: string[];
   createdAt: string;
 }
 
 @Injectable()
 export class AuthService {
+  /**
+   * 自助找回的请求时间表（邮箱 -> 时间戳）。
+   *
+   * 只做进程内限频：单实例部署足够挡住误点与脚本刷接口；
+   * 多副本或要做严格风控时要换成 Redis 计数。
+   */
+  private readonly resetRequests = new Map<string, number[]>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly audit: AuditService,
+    private readonly mail: MailService,
   ) {}
 
   /** 登录：校验手机号与密码，签发 JWT */
@@ -171,6 +199,7 @@ export class AuthService {
     input: {
       name?: string;
       avatar?: string;
+      email?: string;
       currentPassword?: string;
       newPassword?: string;
     },
@@ -186,6 +215,7 @@ export class AuthService {
       name?: string;
       passwordHash?: string;
       avatar?: string | null;
+      email?: string | null;
       tokenVersion?: { increment: number };
     } = {};
 
@@ -218,6 +248,35 @@ export class AuthService {
         }
 
         data.avatar = avatar;
+      }
+    }
+
+    /**
+     * 绑定邮箱：自助找回密码的接收地址。
+     *
+     * 不要求输入密码 —— 这一步本身就在已登录会话里，
+     * 与改姓名同级；真正的接管风险由「重置密码要邮箱」承担。
+     */
+    if (input.email !== undefined) {
+      const email = input.email.trim().toLowerCase();
+
+      if (!email) {
+        data.email = null;
+      } else {
+        if (email.length > 160 || !EMAIL_PATTERN.test(email)) {
+          throw new BadRequestException('邮箱格式不正确');
+        }
+
+        const occupied = await this.prisma.user.findFirst({
+          where: { email, id: { not: userId } },
+          select: { id: true },
+        });
+
+        if (occupied) {
+          throw new BadRequestException('该邮箱已被其他账号绑定');
+        }
+
+        data.email = email;
       }
     }
 
@@ -276,6 +335,7 @@ export class AuthService {
       metadata: {
         nameChanged: data.name !== undefined,
         avatarChanged: data.avatar !== undefined,
+        emailChanged: data.email !== undefined,
         passwordChanged: data.passwordHash !== undefined,
       },
     });
@@ -307,6 +367,7 @@ export class AuthService {
     phone: string;
     name: string;
     avatar: string | null;
+    email: string | null;
     role: string;
     isActive: boolean;
     createdAt: Date;
@@ -321,6 +382,7 @@ export class AuthService {
       roleLabel: ROLE_LABELS[role] ?? role,
       isActive: user.isActive,
       avatar: user.avatar ?? null,
+      email: user.email ?? null,
       permissions: ROLE_PERMISSIONS[role] ?? [],
       createdAt: user.createdAt.toISOString(),
     };
@@ -395,6 +457,111 @@ export class AuthService {
       },
       { expiresIn: '2h' },
     );
+  }
+
+  /**
+   * 自助找回：给绑定邮箱发一次性链接。
+   *
+   * 无论邮箱是否绑定账号，对外都返回同一句话 —— 否则这个接口
+   * 会变成「查某个邮箱有没有注册」的探测器。
+   */
+  async requestPasswordReset(email: string) {
+    const normalized = email?.trim().toLowerCase() ?? '';
+
+    if (!EMAIL_PATTERN.test(normalized)) {
+      throw new BadRequestException('邮箱格式不正确');
+    }
+
+    this.assertResetRequestAllowed(normalized);
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalized },
+    });
+
+    if (!user || !user.isActive) {
+      // 不写库、不发信，但对外表现与成功一致
+      return {
+        message: SELF_SERVICE_SENT_MESSAGE,
+        delivered: this.mail.configured,
+      };
+    }
+
+    const token = createResetToken();
+    const expiresAt = new Date(
+      Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000,
+    );
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetTokenHash: hashResetToken(token),
+        passwordResetExpiresAt: expiresAt,
+      },
+    });
+
+    const delivered = await this.mail.sendPasswordReset(
+      normalized,
+      user.name,
+      this.buildResetLink(token),
+      RESET_TOKEN_TTL_MINUTES,
+    );
+
+    await this.audit.record(
+      { id: user.id },
+      {
+        action: 'user.password_reset_request',
+        resourceType: 'user',
+        resourceId: user.id,
+        metadata: { delivered },
+      },
+    );
+
+    return { message: SELF_SERVICE_SENT_MESSAGE, delivered };
+  }
+
+  /**
+   * 拼重置链接。
+   *
+   * 必须配 APP_PUBLIC_URL：容器里拿不到用户访问的域名，
+   * 靠请求头拼会被伪造 Host 头利用。
+   */
+  private buildResetLink(token: string): string {
+    const base = (process.env.APP_PUBLIC_URL ?? 'http://localhost:5173').replace(
+      /\/+$/,
+      '',
+    );
+
+    return `${base}/reset-password?token=${encodeURIComponent(token)}`;
+  }
+
+  /**
+   * 同一邮箱 15 分钟内最多 3 次。
+   *
+   * 目的是挡住误点与脚本刷接口，不指望它防住分布式攻击；
+   * 进程内 Map 在重启后清零，多副本时需要换 Redis。
+   */
+  private assertResetRequestAllowed(email: string) {
+    const now = Date.now();
+    const windowMs = 15 * 60 * 1000;
+    const recent = (this.resetRequests.get(email) ?? []).filter(
+      (at) => now - at < windowMs,
+    );
+
+    if (recent.length >= 3) {
+      throw new BadRequestException('请求过于频繁，请 15 分钟后再试');
+    }
+
+    recent.push(now);
+    this.resetRequests.set(email, recent);
+
+    // 顺手清理过期条目，避免长期运行后 Map 只增不减
+    if (this.resetRequests.size > 500) {
+      for (const [key, times] of this.resetRequests) {
+        if (!times.some((at) => now - at < windowMs)) {
+          this.resetRequests.delete(key);
+        }
+      }
+    }
   }
 
   /**

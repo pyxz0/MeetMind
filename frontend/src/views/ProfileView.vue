@@ -180,6 +180,43 @@ const openAvatarDialog = () => {
   avatarDialogVisible.value = true
 }
 
+/** 绑定邮箱：自助找回密码的接收地址 */
+const emailForm = reactive({ email: authStore.user?.email ?? '' })
+const emailSaving = ref(false)
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+
+const saveEmail = async () => {
+  const email = emailForm.email.trim().toLowerCase()
+
+  if (email && !EMAIL_PATTERN.test(email)) {
+    ElMessage.warning('邮箱格式不正确')
+    return
+  }
+
+  if (email === (user.value?.email ?? '')) {
+    ElMessage.info('邮箱没有变化')
+    return
+  }
+
+  emailSaving.value = true
+
+  try {
+    const updated = await updateProfile({ email })
+    const { token, ...rest } = updated
+
+    authStore.setUser(rest)
+    emailForm.email = updated.email ?? ''
+
+    ElMessage.success(email ? '邮箱已绑定，可用于自助找回密码' : '已解除邮箱绑定')
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '保存失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    emailSaving.value = false
+  }
+}
+
 const saveName = async () => {
   const name = nameForm.name.trim()
 
@@ -357,6 +394,11 @@ const handleLogout = async () => {
               <dd class="num">{{ user?.phone }}</dd>
             </div>
 
+            <div v-if="user?.email" class="ident-row">
+              <dt>邮箱</dt>
+              <dd>{{ user?.email }}</dd>
+            </div>
+
             <div v-if="user?.createdAt" class="ident-row">
               <dt>注册时间</dt>
               <dd class="num">{{ formatDate(user?.createdAt) }}</dd>
@@ -399,6 +441,30 @@ const handleLogout = async () => {
           <section class="sec">
             <div class="sec-h">
               <span class="sec-n">二</span>
+              <span class="sec-t">绑定邮箱</span>
+              <span class="sec-x">忘记密码时用它自助重置，可不填</span>
+            </div>
+
+            <el-form label-position="top" class="fields">
+              <el-form-item label="邮箱">
+                <el-input v-model="emailForm.email" maxlength="160" type="email" placeholder="name@example.com"
+                  @keyup.enter="saveEmail" />
+              </el-form-item>
+            </el-form>
+
+            <p class="sec-hint">
+              绑定后可在登录页「忘记密码」里输入该邮箱，收到一次性链接自行重置；
+              不绑定时仍需联系管理员发链接。
+            </p>
+
+            <el-button type="primary" :loading="emailSaving" @click="saveEmail">
+              保存
+            </el-button>
+          </section>
+
+          <section class="sec">
+            <div class="sec-h">
+              <span class="sec-n">三</span>
               <span class="sec-t">修改密码</span>
               <span class="sec-x">下次登录使用新密码</span>
             </div>
@@ -475,6 +541,13 @@ const handleLogout = async () => {
 </template>
 
 <style scoped>
+.sec-hint {
+  margin: -4px 0 14px;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-3);
+}
+
 .account {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);

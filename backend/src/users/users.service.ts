@@ -31,6 +31,7 @@ const publicUserSelect = {
   phone: true,
   name: true,
   avatar: true,
+  email: true,
   role: true,
   isActive: true,
   createdAt: true,

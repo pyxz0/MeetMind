@@ -11,6 +11,7 @@ import DraftsView from '../views/DraftsView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import LoginView from '../views/LoginView.vue'
 import ResetPasswordView from '../views/ResetPasswordView.vue'
+import ForgotPasswordView from '../views/ForgotPasswordView.vue'
 import UsersView from '../views/UsersView.vue'
 import ProfileView from '../views/ProfileView.vue'
 import { authStore, type Permission } from '../stores/auth'
@@ -32,6 +33,14 @@ const router = createRouter({
       path: '/login',
       name: 'login',
       component: LoginView,
+      meta: { requiresAuth: false },
+    },
+
+    {
+      /** 自助找回：输入绑定邮箱，收一次性链接 */
+      path: '/forgot-password',
+      name: 'forgot-password',
+      component: ForgotPasswordView,
       meta: { requiresAuth: false },
     },
 

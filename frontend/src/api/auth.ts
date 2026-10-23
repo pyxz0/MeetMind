@@ -48,6 +48,8 @@ export const updateProfile = async (data: {
   name?: string
   /** 头像 data URL；传空字符串表示移除 */
   avatar?: string
+  /** 绑定邮箱；传空字符串表示解除绑定 */
+  email?: string
   currentPassword?: string
   newPassword?: string
 }): Promise<CurrentUser & { token?: string }> => {
@@ -255,6 +257,18 @@ export const confirmPasswordReset = async (
   const response = await api.post<{ message: string }>(
     '/auth/password-reset/confirm',
     { token, password }
+  )
+
+  return response.data
+}
+
+/** 自助找回：提交绑定邮箱，后端发一次性链接 */
+export const requestPasswordReset = async (
+  email: string
+): Promise<{ message: string; delivered: boolean }> => {
+  const response = await api.post<{ message: string; delivered: boolean }>(
+    '/auth/password-reset/request',
+    { email }
   )
 
   return response.data

@@ -43,6 +43,17 @@ export class UpdateProfileDto {
   @IsString()
   avatar?: string;
 
+  /**
+   * 绑定邮箱：自助找回密码的接收地址。
+   *
+   * 格式与唯一性在 Service 里校验（要返回中文提示）；
+   * 传空字符串表示解除绑定。
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  email?: string;
+
   @IsOptional()
   @IsString()
   currentPassword?: string;
@@ -72,4 +83,11 @@ export class ConfirmPasswordResetDto extends PasswordResetTokenDto {
   @MinLength(8)
   @MaxLength(72)
   password!: string;
+}
+
+/** 自助找回：提交绑定邮箱，由后端发一次性链接 */
+export class RequestPasswordResetDto {
+  @IsString()
+  @MaxLength(160)
+  email!: string;
 }

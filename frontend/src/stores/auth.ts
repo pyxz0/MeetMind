@@ -25,6 +25,8 @@ export interface CurrentUser {
   name: string
   /** 头像 data URL；为空时界面用姓名首字 */
   avatar?: string | null
+  /** 绑定邮箱；为空表示未绑定，找回密码只能走管理员 */
+  email?: string | null
   role: Role
   roleLabel: string
   isActive: boolean
