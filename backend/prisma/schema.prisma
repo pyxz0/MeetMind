@@ -136,6 +136,8 @@ model User {
   notices      MeetingNotice[] @relation("NoticeRecipient")
   /// 该用户发起的 AI 生成任务。
   generations  MeetingGeneration[] @relation("GenerationOwner")
+  /// 该用户上传的转写任务。
+  asrJobs      AsrJob[]        @relation("AsrJobUser")
   /// 该用户产生的审计日志。
   auditLogs    AuditLog[] @relation("AuditActor")
   /// 别人共享给该用户的会议。
@@ -381,4 +383,37 @@ model Todo {
   @@index([meetingId, sortOrder])
   @@index([status])
   @@map("meeting_todos")
+}
+
+
+/// 服务端转写任务：上传录音 / 会议文件后由 ASR 转成文字。
+///
+/// 与「会议录音」分开存：转写发生在会议存在之前（用户先上传、再决定要不要生成纪要），
+/// 失败的任务也不该污染会议表。
+model AsrJob {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  /// 原始文件名，用于展示与预填会议标题
+  filename  String   @db.VarChar(255)
+  /// 相对 backend 运行目录的存储路径（uploads/asr/xxx）
+  storedPath String  @map("stored_path") @db.VarChar(255)
+  sizeBytes Int      @map("size_bytes")
+  /// PENDING / RUNNING / SUCCEEDED / FAILED
+  status    String   @default("PENDING") @db.VarChar(20)
+  /// 转写结果；纯文本文件（txt/md）上传时直接落这里
+  transcript String? @db.Text
+  /// 音频时长（秒），由服务商返回
+  durationSec Int?   @map("duration_sec")
+  /// 服务商侧任务 id（腾讯云 TaskId），用于轮询
+  providerTaskId String? @map("provider_task_id") @db.VarChar(120)
+  /// 实际使用的转写通道：mock / tencent
+  provider  String   @db.VarChar(32)
+  error     String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation("AsrJobUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("asr_jobs")
 }

@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import MeetMindView from '../views/MeetMindView.vue'
 import MinutesView from '../views/MinutesView.vue'
+import UploadMinutesView from '../views/UploadMinutesView.vue'
 import InboxView from '../views/InboxView.vue'
 import AuditView from '../views/AuditView.vue'
 import HistoryView from '../views/HistoryView.vue'
@@ -73,6 +74,13 @@ const router = createRouter({
       path: '/minutes',
       name: 'minutes',
       component: MinutesView,
+    },
+
+    {
+      /** 上传录音 / 会议文件，服务端转写后生成纪要 */
+      path: '/minutes/upload',
+      name: 'minutes-upload',
+      component: UploadMinutesView,
     },
 
     {

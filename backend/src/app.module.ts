@@ -7,6 +7,7 @@ import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { AiModule } from './ai/ai.module'
 import { MeetingsModule } from './meetings/meetings.module'
+import { AsrModule } from './asr/asr.module'
 import { PrismaModule } from './common/prisma.module'
 import { AuthModule } from './auth/auth.module'
 import { UsersModule } from './users/users.module'
@@ -31,6 +32,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard'
     AuditModule,
     AiModule,
     MeetingsModule,
+    AsrModule,
   ],
   controllers: [AppController],
   providers: [

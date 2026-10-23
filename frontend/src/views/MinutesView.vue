@@ -168,11 +168,46 @@ onMounted(loadContacts)
           </p>
         </section>
       </div>
+
+      <section class="upload-entry">
+        <div class="upload-copy">
+          <div class="upload-t">已有录音？上传转写</div>
+          <p class="upload-d">
+            把手机录音或会议软件的录制文件传上来，服务端转成文字，再一键生成摘要、决策与待办。
+          </p>
+        </div>
+
+        <el-button @click="router.push('/minutes/upload')">上传录音</el-button>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
+.upload-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 18px;
+  padding: 18px 22px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  flex-wrap: wrap;
+}
+
+.upload-t {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.upload-d {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
 .modes {
   display: grid;
   grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
