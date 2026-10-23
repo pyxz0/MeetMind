@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8" />
+  <title>C · 台账</title>
+  <style>
+    :root {
+      --bg: #edf0ec;
+      --card: #ffffff;
+      --ink: #12241e;
+      --ink-2: #5c6b65;
+      --ink-3: #8b9891;
+      --line: #ccd5cf;
+      --line-soft: #e4eae5;
+      --green: #2e6f5e;
+      --ochre: #a9761f;
+      --ochre-wash: #f7f1e4;
+      --ui: "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
+      --hei: "SimHei", "黑体", var(--ui);
+      --num: "Consolas", "Courier New", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      width: 1440px;
+      height: 900px;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--ui);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app { display: flex; height: 900px; }
+
+    /* ---------- 左侧索引栏 ---------- */
+    .side {
+      width: 236px;
+      flex-shrink: 0;
+      background: #f7f9f7;
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      padding: 0 0 14px;
+    }
+
+    .brand {
+      height: 66px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .mark {
+      width: 22px;
+      height: 22px;
+      background: var(--ink);
+      color: #f3f6f2;
+      font-family: var(--hei);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand-name {
+      font-family: var(--hei);
+      font-size: 14.5px;
+      letter-spacing: 0.05em;
+    }
+
+    .group {
+      margin-top: 16px;
+      border-top: 3px solid var(--ink);
+      padding: 10px 14px 4px;
+    }
+
+    .group + .group { border-top-color: var(--line-soft); }
+
+    .group-h {
+      font-family: var(--hei);
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      color: var(--ink-3);
+      padding: 0 6px 8px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .group-h span:last-child {
+      letter-spacing: 0;
+      font-family: var(--ui);
+      color: #aeb8b2;
+    }
+
+    .item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 34px;
+      padding: 0 8px;
+      font-size: 13px;
+      color: #3b4a44;
+      position: relative;
+    }
+
+    .item-on {
+      background: var(--card);
+      color: var(--ink);
+      font-weight: 600;
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .item-on::before {
+      content: "";
+      width: 3px;
+      height: 16px;
+      background: var(--green);
+      position: absolute;
+      left: 0;
+      top: 9px;
+    }
+
+    .item-n {
+      margin-left: auto;
+      font-size: 10.5px;
+      color: var(--ochre);
+      border: 1px solid #e0cba4;
+      background: var(--ochre-wash);
+      padding: 0 4px;
+      line-height: 15px;
+    }
+
+    .side-foot {
+      margin-top: auto;
+      padding: 14px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .avatar {
+      width: 26px;
+      height: 26px;
+      background: var(--green);
+      color: #f3f6f2;
+      font-size: 11.5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .who-name { font-size: 12px; color: var(--ink); }
+    .who-role { font-size: 10.5px; color: var(--ink-3); margin-top: 1px; }
+
+    /* ---------- 右侧 ---------- */
+    .main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+    }
+
+    .searchbar {
+      height: 66px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 26px;
+      background: #f7f9f7;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .search {
+      width: 340px;
+      height: 34px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 11px;
+      font-size: 12.5px;
+      color: var(--ink-3);
+    }
+
+    .chip {
+      height: 28px;
+      padding: 0 13px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #fdfefd;
+      font-size: 12px;
+      color: #3b4a44;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .chip-on {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: #f1f5f2;
+    }
+
+    .searchbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+    .btn-green {
+      height: 34px;
+      padding: 0 18px;
+      background: var(--green);
+      color: #f2f7f4;
+      border: 1px solid var(--green);
+      border-radius: 3px;
+      font-size: 12.5px;
+      font-family: var(--ui);
+    }
+
+    .content {
+      flex: 1;
+      min-height: 0;
+      padding: 22px 26px 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 汇总：用栏线和字级分栏，不用卡片 */
+    .totals {
+      display: flex;
+      background: var(--card);
+      border: 1px solid var(--line);
+      flex-shrink: 0;
+    }
+
+    .total {
+      flex: 1;
+      padding: 19px 20px 18px;
+      border-left: 1px solid var(--line-soft);
+    }
+
+    .total:first-child { border-left: none; }
+
+    .total-k {
+      font-size: 11.5px;
+      color: var(--ink-3);
+      letter-spacing: 0.04em;
+    }
+
+    .total-v {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .total-v b {
+      font-family: var(--hei);
+      font-size: 30px;
+      font-weight: 400;
+      letter-spacing: 0.01em;
+      line-height: 1;
+    }
+
+    .total-v span { font-size: 11.5px; color: var(--green); }
+
+    .total-v span.warn { color: var(--ochre); }
+
+    /* 台账 */
+    .ledger {
+      margin-top: 18px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .ledger-head {
+      display: flex;
+      align-items: center;
+      padding: 13px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .ledger-title {
+      font-family: var(--hei);
+      font-size: 13.5px;
+      letter-spacing: 0.1em;
+    }
+
+    .ledger-count {
+      margin-left: 10px;
+      font-size: 11px;
+      color: var(--ink-3);
+    }
+
+    .ledger-right {
+      margin-left: auto;
+      display: flex;
+      gap: 16px;
+      font-size: 11.5px;
+      color: var(--ink-2);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th {
+      font-family: var(--ui);
+      font-weight: 400;
+      font-size: 11px;
+      color: var(--ink-3);
+      letter-spacing: 0.06em;
+      text-align: left;
+      padding: 9px 12px;
+      background: #fbfcfb;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+
+    th.n, td.n { text-align: right; padding-right: 18px; }
+
+    td {
+      font-size: 12.5px;
+      padding: 0 12px;
+      height: 56px;
+      border-bottom: 1px solid var(--line-soft);
+      color: #24332d;
+      vertical-align: middle;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    tr.on td { background: #f4f8f5; }
+
+    .no {
+      font-family: var(--num);
+      font-size: 11px;
+      color: var(--ink-3);
+    }
+
+    .mtitle { font-size: 13px; color: var(--ink); }
+
+    .sub { display: block; font-size: 10.5px; color: var(--ink-3); margin-top: 2px; }
+
+    .pin {
+      display: inline-block;
+      width: 3px;
+      height: 12px;
+      background: var(--ochre);
+      vertical-align: -1px;
+      margin-right: 7px;
+    }
+
+    .state {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      white-space: nowrap;
+    }
+
+    .pip { width: 7px; height: 7px; }
+    .pip-done { background: var(--green); }
+    .pip-live { background: var(--ochre); }
+    .pip-wait { background: #b9c4be; }
+
+    .bar {
+      width: 56px;
+      height: 4px;
+      background: var(--line-soft);
+      display: inline-block;
+      vertical-align: 1px;
+      margin-right: 7px;
+    }
+
+    .bar i { display: block; height: 4px; background: var(--green); }
+
+    .num {
+      font-family: var(--num);
+      font-size: 11.5px;
+      color: var(--ink-2);
+    }
+
+    /* 分组带 */
+    .band td {
+      height: 32px;
+      background: #f2f5f2;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      font-size: 11px;
+      color: var(--ink-2);
+      letter-spacing: 0.06em;
+    }
+
+    .band-tab {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      background: var(--ochre);
+      margin-right: 8px;
+      vertical-align: -2px;
+    }
+
+    .concl {
+      font-size: 12px;
+      color: #4d5c56;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding-right: 18px;
+    }
+    tr.more td {
+      height: 44px;
+      text-align: center;
+      font-size: 11.5px;
+      color: var(--ink-3);
+      background: #fbfcfb;
+      border-bottom: none;
+      letter-spacing: 0.04em;
+    }
+
+    .ledger-foot {
+      margin-top: auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 11px 18px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfb;
+      font-size: 11px;
+      color: var(--ink-3);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="brand">
+        <span class="mark">M</span>
+        <span class="brand-name">MeetMind</span>
+      </div>
+
+      <div class="group">
+        <div class="group-h"><span>记录</span><span>今日 2</span></div>
+        <a class="item item-on">智能纪要</a>
+        <a class="item">草稿箱<span class="item-n">3</span></a>
+      </div>
+
+      <div class="group">
+        <div class="group-h"><span>查看</span></div>
+        <a class="item">会议台账</a>
+        <a class="item">数据看板</a>
+        <a class="item">收件箱<span class="item-n">2</span></a>
+      </div>
+
+      <div class="group">
+        <div class="group-h"><span>管理</span></div>
+        <a class="item">用户管理</a>
+        <a class="item">审计日志</a>
+      </div>
+
+      <div class="side-foot">
+        <span class="avatar">陈</span>
+        <div>
+          <div class="who-name">陈晓</div>
+          <div class="who-role">管理员</div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="searchbar">
+        <div class="search">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" />
+          </svg>
+          搜索会议、待办、负责人
+        </div>
+
+        <span class="chip chip-on">本周</span>
+        <span class="chip">全部状态</span>
+        <span class="chip">全部部门</span>
+
+        <div class="searchbar-right">
+          <span class="chip">导出</span>
+          <button class="btn-green">新建会议</button>
+        </div>
+      </div>
+
+      <div class="content">
+        <div class="totals">
+          <div class="total">
+            <div class="total-k">本月会议</div>
+            <div class="total-v"><b>12</b><span>本周 +3</span></div>
+          </div>
+          <div class="total">
+            <div class="total-k">待办事项</div>
+            <div class="total-v"><b>9</b><span class="warn">1 项逾期</span></div>
+          </div>
+          <div class="total">
+            <div class="total-k">待办完成率</div>
+            <div class="total-v"><b>78%</b><span>较上周 +6</span></div>
+          </div>
+          <div class="total">
+            <div class="total-k">核心决策</div>
+            <div class="total-v"><b>31</b><span>已归档 9 场</span></div>
+          </div>
+        </div>
+
+        <div class="ledger">
+          <div class="ledger-head">
+            <span class="ledger-title">会议台账</span>
+            <span class="ledger-count">共 12 份 · 按更新时间</span>
+            <div class="ledger-right">
+              <span>列设置</span>
+              <span>全部展开</span>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 56px">日期</th>
+                <th style="width: 252px">会议</th>
+                <th>结论</th>
+                <th style="width: 72px">归属</th>
+                <th class="n" style="width: 54px">参会</th>
+                <th style="width: 86px">状态</th>
+                <th style="width: 130px">待办完成</th>
+                <th class="n" style="width: 52px">决策</th>
+                <th class="n" style="width: 86px">时长</th>
+                <th class="n" style="width: 112px">更新</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              <tr class="band">
+                <td colspan="10"><i class="band-tab"></i>本周 · 9 月 29 日 — 10 月 5 日</td>
+              </tr>
+
+              <tr>
+                <td class="no">10-02</td>
+                <td>
+                  <span class="mtitle">首页交互走查</span>
+                  <span class="sub">主持人 张三</span>
+                </td>
+                <td class="concl">首页只留五个入口，纪要页正文收成一列</td>
+                <td>产品</td>
+                <td class="n num">4</td>
+                <td><span class="state"><i class="pip pip-done"></i>已完成</span></td>
+                <td>
+                  <span class="bar"><i style="width: 75%"></i></span>
+                  <span class="num">3/4</span>
+                </td>
+                <td class="n num">1</td>
+                <td class="n num">32:10</td>
+                <td class="n num">10-02 17:22</td>
+              </tr>
+
+              <tr class="on">
+                <td class="no">10-01</td>
+                <td>
+                  <span class="mtitle"><i class="pin"></i>MeetMind 产品需求评审会</span>
+                  <span class="sub">主持人 王敏</span>
+                </td>
+                <td class="concl">第一版仅支持邮箱登录，首页保留竖向导航</td>
+                <td>产品</td>
+                <td class="n num">6</td>
+                <td><span class="state"><i class="pip pip-done"></i>已完成</span></td>
+                <td>
+                  <span class="bar"><i style="width: 78%"></i></span>
+                  <span class="num">7/9</span>
+                </td>
+                <td class="n num">3</td>
+                <td class="n num">14:32</td>
+                <td class="n num">10-01 10:58</td>
+              </tr>
+
+              <tr>
+                <td class="no">09-30</td>
+                <td>
+                  <span class="mtitle">登录接口联调与灰度方案</span>
+                  <span class="sub">主持人 李四</span>
+                </td>
+                <td class="concl">灰度先切 5%，接口对齐到 10 月 8 日</td>
+                <td>研发</td>
+                <td class="n num">4</td>
+                <td><span class="state"><i class="pip pip-live"></i>进行中</span></td>
+                <td>
+                  <span class="bar"><i style="width: 40%"></i></span>
+                  <span class="num">2/5</span>
+                </td>
+                <td class="n num">2</td>
+                <td class="n num">41:07</td>
+                <td class="n num">09-30 16:20</td>
+              </tr>
+
+              <tr>
+                <td class="no">09-29</td>
+                <td>
+                  <span class="mtitle">季度复盘 · 增长与留存</span>
+                  <span class="sub">主持人 王敏</span>
+                </td>
+                <td class="concl">留存看会议后 7 天的待办回收率</td>
+                <td>运营</td>
+                <td class="n num">8</td>
+                <td><span class="state"><i class="pip pip-done"></i>已完成</span></td>
+                <td>
+                  <span class="bar"><i style="width: 100%"></i></span>
+                  <span class="num">6/6</span>
+                </td>
+                <td class="n num">5</td>
+                <td class="n num">1:02:44</td>
+                <td class="n num">09-29 10:12</td>
+              </tr>
+
+              <tr class="band">
+                <td colspan="10"><i class="band-tab" style="background: #b9c4be"></i>上周 · 9 月 22 日 — 9 月 28 日</td>
+              </tr>
+
+              <tr>
+                <td class="no">09-26</td>
+                <td>
+                  <span class="mtitle">设计系统与组件库选型</span>
+                  <span class="sub">主持人 张三</span>
+                </td>
+                <td class="concl">暂缓选型，先用现有组件补齐三个页面</td>
+                <td>设计</td>
+                <td class="n num">5</td>
+                <td><span class="state"><i class="pip pip-wait"></i>未开始</span></td>
+                <td>
+                  <span class="bar"><i style="width: 0"></i></span>
+                  <span class="num">0/4</span>
+                </td>
+                <td class="n num">0</td>
+                <td class="n num">—</td>
+                <td class="n num">09-26 14:08</td>
+              </tr>
+
+              <tr>
+                <td class="no">09-24</td>
+                <td>
+                  <span class="mtitle">移动端适配评审</span>
+                  <span class="sub">主持人 陈晓</span>
+                </td>
+                <td class="concl">窄屏改单列，宽表格降级为卡片列表</td>
+                <td>研发</td>
+                <td class="n num">3</td>
+                <td><span class="state"><i class="pip pip-done"></i>已完成</span></td>
+                <td>
+                  <span class="bar"><i style="width: 66%"></i></span>
+                  <span class="num">2/3</span>
+                </td>
+                <td class="n num">1</td>
+                <td class="n num">27:15</td>
+                <td class="n num">09-24 17:40</td>
+              </tr>
+
+              <tr>
+                <td class="no">09-22</td>
+                <td>
+                  <span class="mtitle">数据口径对齐</span>
+                  <span class="sub">主持人 李四</span>
+                </td>
+                <td class="concl">会议数与待办数统一按完成时间统计</td>
+                <td>数据</td>
+                <td class="n num">4</td>
+                <td><span class="state"><i class="pip pip-done"></i>已完成</span></td>
+                <td>
+                  <span class="bar"><i style="width: 100%"></i></span>
+                  <span class="num">4/4</span>
+                </td>
+                <td class="n num">2</td>
+                <td class="n num">38:02</td>
+                <td class="n num">09-22 11:05</td>
+              </tr>
+
+              <tr>
+                <td class="no">09-19</td>
+                <td>
+                  <span class="mtitle">客户需求回访汇总</span>
+                  <span class="sub">主持人 陈晓</span>
+                </td>
+                <td class="concl">三家客户都提到纪要要能导出 Word</td>
+                <td>销售</td>
+                <td class="n num">3</td>
+                <td><span class="state"><i class="pip pip-done"></i>已完成</span></td>
+                <td>
+                  <span class="bar"><i style="width: 50%"></i></span>
+                  <span class="num">1/2</span>
+                </td>
+                <td class="n num">1</td>
+                <td class="n num">22:48</td>
+                <td class="n num">09-19 15:30</td>
+              </tr>
+
+              <tr class="more">
+                <td colspan="10">还有 4 份 · 加载更早的会议</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="ledger-foot">
+            <span>已同步 12 份纪要 · 最近一次同步 1 分钟前</span>
+            <span style="margin-left: auto">点击行展开原文、录音与决策明细</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>
