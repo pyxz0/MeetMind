@@ -11,6 +11,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { mapMeetingSummary } from './meeting.mapper';
+import { buildMeetingMarkdown, markdownFilename } from './meeting-markdown';
 import { MeetingAudioService } from './meeting-audio.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
@@ -789,9 +790,31 @@ export class MeetingsService {
       conditions.push({ pinnedAt: { not: null } });
     }
 
+    /**
+     * 关键词检索覆盖「标题 + 摘要 + 原文 + 决策 + 待办」。
+     *
+     * 列表只返回摘要字段，所以这里用 Prisma 的关系过滤（some）直接命中子表，
+     * 不需要把 decisions / todos 一起读出来；命中位置由前端提示说明。
+     */
     if (query.keyword?.trim()) {
+      const keyword = query.keyword.trim();
+
       conditions.push({
-        title: { contains: query.keyword.trim(), mode: 'insensitive' },
+        OR: [
+          { title: { contains: keyword, mode: 'insensitive' } },
+          { summary: { contains: keyword, mode: 'insensitive' } },
+          { content: { contains: keyword, mode: 'insensitive' } },
+          {
+            decisions: {
+              some: { content: { contains: keyword, mode: 'insensitive' } },
+            },
+          },
+          {
+            todos: {
+              some: { content: { contains: keyword, mode: 'insensitive' } },
+            },
+          },
+        ],
       });
     }
 
@@ -926,6 +949,21 @@ export class MeetingsService {
     if (!meeting) throw new NotFoundException('会议记录不存在');
 
     return this.toApiRecord(meeting, access, user, capabilities);
+  }
+
+  /**
+   * 导出会议纪要（Markdown）。
+   *
+   * 直接复用 findOne：访问权限、能力位与关联数据都在那一层校验过，
+   * 这里不另写一套判断，避免出现「详情打不开、导出却拿得到」的旁路。
+   */
+  async exportMarkdown(id: number, user: AuthenticatedUser) {
+    const meeting = await this.findOne(id, user);
+
+    return {
+      filename: markdownFilename(meeting.title, meeting.id),
+      content: buildMeetingMarkdown(meeting),
+    };
   }
 
   /**

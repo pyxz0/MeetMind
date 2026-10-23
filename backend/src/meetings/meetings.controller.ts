@@ -228,6 +228,20 @@ export class MeetingsController {
     return this.meetingsService.findOne(id, user);
   }
 
+  /**
+   * 导出会议纪要（Markdown）。
+   *
+   * 返回 JSON 而不是文件流：前端拿到 filename + content 后自己造 Blob 下载，
+   * 这样不必把令牌塞进 URL（`<a download>` 无法携带 Authorization 头）。
+   */
+  @Get(':id/export')
+  exportOne(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.exportMarkdown(id, user);
+  }
+
   /** 删除会议及其关联内容，并返回无响应体的 204 状态。 */
   @Delete(':id')
   @HttpCode(204)

@@ -393,7 +393,7 @@ onMounted(() => {
 
       <!-- 检索带 -->
       <div class="filter-bar">
-        <el-input v-model="searchKeyword" class="f-search" placeholder="搜索会议标题" clearable>
+        <el-input v-model="searchKeyword" class="f-search" placeholder="搜索标题、摘要、原文、决策与待办" clearable>
           <template #prefix>
             <el-icon>
               <Search />

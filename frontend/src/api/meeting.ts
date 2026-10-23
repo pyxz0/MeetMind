@@ -285,6 +285,27 @@ export const getMeeting = async (
   return normalizeMeeting(response.data)
 }
 
+export interface MeetingExport {
+  filename: string
+  content: string
+}
+
+/**
+ * 导出会议纪要（Markdown）。
+ *
+ * 后端返回 JSON，前端自己造 Blob 触发下载：`<a download>` 带不了
+ * Authorization 头，而把令牌拼进 URL 又会留在浏览器历史里。
+ */
+export const exportMeetingMarkdown = async (
+  id: number
+): Promise<MeetingExport> => {
+  const response = await api.get<MeetingExport>(
+    `/meetings/${id}/export`
+  )
+
+  return response.data
+}
+
 /**
  * 获取草稿箱会议
  */

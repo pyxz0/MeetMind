@@ -124,7 +124,7 @@ MeetMind 是一个面向会议内容整理场景的全栈 AI 应用。用户输�
 ### 历史会议管理
 
 - 查看历史会议列表
-- 关键词搜索会议标题
+- 关键词搜索**会议标题、摘要、原文、决策与待办**（命中任一即可，服务端过滤）
 - 按日期范围筛选会议
 - 按会议状态筛选
 - 按创建时间排序
@@ -486,7 +486,7 @@ http://localhost:5173/
 | 参数 | 说明 |
 |---|---|
 | `page` / `pageSize` | 分页，`pageSize` 上限 100 |
-| `keyword` | 标题模糊搜索 |
+| `keyword` | 全文检索：标题、摘要、原文、决策、待办（命中任一即返回） |
 | `status` | 按完成状态筛选 |
 | `from` / `to` | 按创建日期范围（`YYYY-MM-DD`，含当天） |
 | `pinned=true` | 只取置顶会议（首页用） |
@@ -625,6 +625,7 @@ http://localhost:5173/
 | POST | `/api/meetings` | 创建会议 / 生成 AI 纪要 |
 | GET | `/api/meetings` | 获取历史会议（按数据隔离过滤） |
 | GET | `/api/meetings/:id` | 获取会议详情 |
+| GET | `/api/meetings/:id/export` | 导出 Markdown 纪要（返回 `{ filename, content }`，前端造 Blob 下载） |
 | PATCH | `/api/meetings/:id` | 编辑会议标题 |
 | PATCH | `/api/meetings/:id/pin` | 置顶 / 取消置顶（`{"pinned": true}`） |
 | PATCH | `/api/meetings/:id/completion-status` | 修改会议完成状态 |

@@ -18,6 +18,7 @@ import {
   updateMeetingAudioOpen,
   updateMeetingPinned,
   updateScheduledMeeting,
+  exportMeetingMarkdown,
   type MeetingRecord,
   type MemberBrief
 } from '../api/meeting'
@@ -874,6 +875,36 @@ const scrollToAudio = () => {
   audioAnchor.value?.scrollIntoView({ block: 'center' })
 }
 
+/** 导出 Markdown 纪要：后端给 filename + content，这里造 Blob 触发下载 */
+const exporting = ref(false)
+
+const handleExport = async () => {
+  if (!meeting.value) return
+
+  exporting.value = true
+
+  try {
+    const { filename, content } = await exportMeetingMarkdown(meeting.value.id)
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+
+    ElMessage.success('已导出 Markdown 纪要')
+  } catch (error) {
+    console.error('导出失败：', error)
+    ElMessage.error('导出失败，请稍后重试')
+  } finally {
+    exporting.value = false
+  }
+}
+
 onMounted(async () => {
   await loadMeeting()
 
@@ -1095,6 +1126,10 @@ onMounted(async () => {
             <div class="foot-actions">
               <el-button v-if="canListenAudio && meeting.audioUrl" @click="scrollToAudio">
                 回听录音
+              </el-button>
+
+              <el-button :loading="exporting" @click="handleExport">
+                导出纪要
               </el-button>
 
               <el-button v-if="canShare" @click="shareDialogVisible = true">
