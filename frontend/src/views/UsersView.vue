@@ -8,6 +8,7 @@ import {
   updateUser,
   deleteUser,
   impersonateUser,
+  issuePasswordReset,
   type ManagedUser
 } from '../api/auth'
 import { authStore, type Role } from '../stores/auth'
@@ -325,6 +326,53 @@ const submitPassword = async () => {
   }
 }
 
+/** ───── 生成一次性密码重置链接 ───── */
+const resetIssuingId = ref<number | null>(null)
+const resetDialogVisible = ref(false)
+const resetLink = ref('')
+const resetTarget = ref('')
+const resetExpiresAt = ref('')
+
+const handleIssueReset = async (row: ManagedUser) => {
+  try {
+    await ElMessageBox.confirm(
+      `将为「${row.name}（${row.phone}）」生成一条一次性重置链接。` +
+        '链接 30 分钟内有效、只能用一次，请通过可信渠道发给本人。',
+      '生成重置链接',
+      { confirmButtonText: '生成', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+
+  resetIssuingId.value = row.id
+
+  try {
+    const issued = await issuePasswordReset(row.id)
+
+    // 用当前站点拼出完整链接：管理员复制后直接发微信/企微
+    resetLink.value = `${window.location.origin}/reset-password?token=${encodeURIComponent(issued.token)}`
+    resetTarget.value = `${issued.name}（${issued.phone}）`
+    resetExpiresAt.value = new Date(issued.expiresAt).toLocaleString('zh-CN', {
+      hour12: false
+    })
+    resetDialogVisible.value = true
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message ?? '生成失败，请稍后重试')
+  } finally {
+    resetIssuingId.value = null
+  }
+}
+
+const copyResetLink = async () => {
+  try {
+    await navigator.clipboard.writeText(resetLink.value)
+    ElMessage.success('链接已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动选中链接复制')
+  }
+}
+
 onMounted(loadUsers)
 </script>
 
@@ -422,7 +470,7 @@ onMounted(loadUsers)
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="300" fixed="right">
+            <el-table-column label="操作" width="360" fixed="right">
               <template #default="{ row }">
                 <span class="ops">
                   <!-- 自己：只能改密码 -->
@@ -444,6 +492,10 @@ onMounted(loadUsers)
                     </el-button>
 
                     <template v-if="canManage(row)">
+                      <el-button link :loading="resetIssuingId === row.id" @click="handleIssueReset(row)">
+                        重置链接
+                      </el-button>
+
                       <el-button link :loading="togglingId === row.id" @click="toggleActive(row)">
                         {{ row.isActive ? '停用' : '启用' }}
                       </el-button>
@@ -516,11 +568,49 @@ onMounted(loadUsers)
           </el-button>
         </template>
       </el-dialog>
+
+      <!-- 一次性重置链接：管理员只发链接，不接触对方新密码 -->
+      <el-dialog v-model="resetDialogVisible" title="一次性重置链接" width="520px">
+        <p class="reset-hint">
+          把下面这条链接发给 <strong>{{ resetTarget }}</strong>，
+          由本人打开后设置新密码。管理员全程看不到对方设置的密码。
+        </p>
+
+        <el-input v-model="resetLink" type="textarea" :rows="3" readonly resize="none" />
+
+        <p class="reset-note">
+          有效期至 {{ resetExpiresAt }}，只能使用一次；重新生成会让上一条立即失效。
+        </p>
+
+        <template #footer>
+          <el-button @click="resetDialogVisible = false">关闭</el-button>
+          <el-button type="primary" @click="copyResetLink">复制链接</el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
 
 <style scoped>
+.reset-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+.reset-hint strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.reset-note {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-3);
+}
+
 /* 姓名列：头像（没有就用首字）+ 名字 */
 .user-cell {
   display: inline-flex;

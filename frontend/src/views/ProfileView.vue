@@ -256,10 +256,16 @@ const savePassword = async () => {
   passwordSaving.value = true
 
   try {
-    await updateProfile({
+    const updated = await updateProfile({
       currentPassword: passwordForm.currentPassword,
       newPassword: passwordForm.newPassword
     })
+
+    // 改密后旧令牌已失效，用后端补发的新令牌续上当前会话
+    if (updated.token) {
+      const { token, ...rest } = updated
+      authStore.setSession(token, rest)
+    }
 
     passwordForm.currentPassword = ''
     passwordForm.newPassword = ''

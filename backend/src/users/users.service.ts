@@ -10,6 +10,11 @@ import { AuthService } from '../auth/auth.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import type { AppRole } from '../auth/permissions';
+import {
+  createResetToken,
+  hashResetToken,
+  RESET_TOKEN_TTL_MINUTES,
+} from '../auth/password-reset-token';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -511,6 +516,65 @@ export class UsersService {
   }
 
   /** 能否管理某个目标角色：必须严格高于对方 */
+  /**
+   * 生成一次性密码重置链接。
+   *
+   * 为什么不直接由管理员设新密码：那样管理员会知道用户的明文密码，
+   * 事后也无法证明是本人操作的。发链接后，管理员只负责核实身份，
+   * 新密码只有用户自己知道。
+   *
+   * 明文令牌只在这里返回一次（库里存 SHA-256），过期或用过即失效。
+   */
+  async issuePasswordReset(operator: AuthenticatedUser, targetId: number) {
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetId },
+      select: { id: true, name: true, phone: true, role: true },
+    });
+
+    if (!target) {
+      throw new NotFoundException('用户不存在');
+    }
+
+    /**
+     * 自己改密码走个人中心（需要原密码），不经过重置链接。
+     * 这条要先于层级校验，否则同级判断会把它盖成「不能管理同级账号」。
+     */
+    if (target.id === operator.id) {
+      throw new BadRequestException('请在个人中心修改自己的密码');
+    }
+
+    // 与改资料、停用同一套规则：不能管理同级或更高级别的账号
+    this.assertCanManage(operator, target.role as AppRole);
+
+    const token = createResetToken();
+    const expiresAt = new Date(
+      Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000,
+    );
+
+    await this.prisma.user.update({
+      where: { id: target.id },
+      data: {
+        passwordResetTokenHash: hashResetToken(token),
+        passwordResetExpiresAt: expiresAt,
+      },
+    });
+
+    await this.audit.record(operator, {
+      action: 'user.password_reset_issue',
+      resourceType: 'user',
+      resourceId: target.id,
+      metadata: { expiresAt: expiresAt.toISOString() },
+    });
+
+    return {
+      token,
+      expiresAt: expiresAt.toISOString(),
+      ttlMinutes: RESET_TOKEN_TTL_MINUTES,
+      name: target.name,
+      phone: target.phone,
+    };
+  }
+
   private assertCanManage(operator: AuthenticatedUser, targetRole: AppRole) {
     if (ROLE_RANK[targetRole] >= ROLE_RANK[operator.role]) {
       throw new ForbiddenException(

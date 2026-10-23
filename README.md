@@ -397,7 +397,30 @@ DELETE FROM users WHERE id = 1;
 COMMIT;
 ```
 
-> 数据库只保存 bcrypt 哈希（cost=12），忘记密码需直接改库。
+> 数据库只保存 bcrypt 哈希（cost=12）。普通账号忘记密码由管理员发一次性链接（见下），
+> **超级管理员忘记密码仍然只能直接改库** —— 因为系统里没有比他更高的人能核实身份。
+
+### 忘记密码
+
+不依赖短信或邮件，走「管理员核实身份 → 发一次性链接 → 本人设密码」：
+
+```text
+用户点「忘记密码？」→ 提示联系管理员
+        ↓
+管理员在「用户管理」点「重置链接」→ 生成链接（30 分钟有效，只能用一次）
+        ↓
+管理员把链接发给本人 → 打开 /reset-password?token=...
+        ↓
+页面显示脱敏手机号供确认 → 本人设置新密码
+```
+
+安全设计：
+
+- 令牌 256 位随机，**只以 SHA-256 入库**，数据库被读走也拿不到可用链接
+- 令牌一次性：密码重置成功后立即清空，重放返回「链接无效或已过期」
+- 重置成功会让该账号的 **所有旧会话立即失效**（`users.token_version` 自增，守卫比对 JWT 里的 `tv`）
+- 同样约束层级：管理员不能给同级或更高级账号发链接，也不能给自己发（自己走个人中心）
+- 两个动作都写审计：`user.password_reset_issue` / `user.password_reset`
 
 ---
 
@@ -524,7 +547,7 @@ http://localhost:5173/
 | 分类 | 动作 |
 |---|---|
 | 认证 | `auth.login` |
-| 账号 | `user.create` / `user.update` / `user.delete` / `user.impersonate` |
+| 账号 | `user.create` / `user.update` / `user.self_update` / `user.delete` / `user.impersonate` / `user.password_reset_issue` / `user.password_reset` |
 | 会议 | `meeting.delete` |
 | 共享 | `meeting.share` / `meeting.share_revoke` |
 
@@ -567,7 +590,9 @@ http://localhost:5173/
 | POST | `/api/auth/login` | 手机号 + 密码登录，返回 JWT 与权限位（公开） |
 | POST | `/api/auth/register` | 手机号自助注册，固定为 USER 角色（公开） |
 | GET | `/api/auth/me` | 当前登录用户信息与权限 |
-| PATCH | `/api/auth/me` | 修改自己的姓名 / 密码（个人中心，仅需登录） |
+| PATCH | `/api/auth/me` | 修改自己的姓名 / 密码 / 头像（个人中心，仅需登录） |
+| POST | `/api/auth/password-reset/inspect` | 校验一次性重置链接（公开） |
+| POST | `/api/auth/password-reset/confirm` | 用一次性链接设置新密码（公开） |
 
 登录标识为**手机号**（11 位中国大陆号码），不接受邮箱。
 后端会先归一化再校验：自动去掉空格、短横线、括号与 `+86` 前缀，
@@ -588,6 +613,7 @@ http://localhost:5173/
 | PATCH | `/api/users/:id` | 改资料 / 角色 / 启用状态 |
 | DELETE | `/api/users/:id` | 删除账号 |
 | POST | `/api/users/:id/impersonate` | 切换身份：以该账号 token 返回（仅超级管理员） |
+| POST | `/api/users/:id/password-reset` | 生成一次性密码重置链接（返回明文令牌，仅此一次） |
 | GET | `/api/users/contacts` | 通讯录（只含姓名 + 手机号，任何登录用户可调用，用于选负责人/成员） |
 
 ### 收件箱

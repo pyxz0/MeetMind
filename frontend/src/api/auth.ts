@@ -50,8 +50,15 @@ export const updateProfile = async (data: {
   avatar?: string
   currentPassword?: string
   newPassword?: string
-}): Promise<CurrentUser> => {
-  const response = await api.patch<CurrentUser>('/auth/me', data)
+}): Promise<CurrentUser & { token?: string }> => {
+  /**
+   * 改密时后端会补发一枚新令牌：旧令牌因为 users.token_version 自增已失效，
+   * 不换掉的话下一个请求就会被踢回登录页。
+   */
+  const response = await api.patch<CurrentUser & { token?: string }>(
+    '/auth/me',
+    data
+  )
 
   return response.data
 }
@@ -196,6 +203,58 @@ export const revokeShare = async (
 ) => {
   const response = await api.delete(
     `/meetings/${meetingId}/shares/${userId}`
+  )
+
+  return response.data
+}
+
+/** 管理员生成的一次性密码重置链接（明文 token 只返回这一次） */
+export interface PasswordResetIssue {
+  token: string
+  expiresAt: string
+  ttlMinutes: number
+  name: string
+  phone: string
+}
+
+/** 校验重置链接，返回「正在给谁设密码」的脱敏信息 */
+export interface PasswordResetInfo {
+  name: string
+  phone: string
+  expiresAt: string | null
+}
+
+/** 管理员为某人生成一次性重置链接 */
+export const issuePasswordReset = async (
+  userId: number
+): Promise<PasswordResetIssue> => {
+  const response = await api.post<PasswordResetIssue>(
+    `/users/${userId}/password-reset`
+  )
+
+  return response.data
+}
+
+/** 进入重置页时校验令牌，失效能立刻提示 */
+export const inspectPasswordReset = async (
+  token: string
+): Promise<PasswordResetInfo> => {
+  const response = await api.post<PasswordResetInfo>(
+    '/auth/password-reset/inspect',
+    { token }
+  )
+
+  return response.data
+}
+
+/** 用一次性令牌设置新密码（成功后该账号所有旧会话失效） */
+export const confirmPasswordReset = async (
+  token: string,
+  password: string
+): Promise<{ message: string }> => {
+  const response = await api.post<{ message: string }>(
+    '/auth/password-reset/confirm',
+    { token, password }
   )
 
   return response.data

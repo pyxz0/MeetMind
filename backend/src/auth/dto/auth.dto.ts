@@ -53,3 +53,23 @@ export class UpdateProfileDto {
   @MaxLength(72)
   newPassword?: string;
 }
+/** 校验重置令牌（进入重置页时先调，链接失效能立刻提示） */
+export class PasswordResetTokenDto {
+  @IsString()
+  @MinLength(10)
+  @MaxLength(200)
+  token!: string;
+}
+
+/**
+ * 用一次性令牌设置新密码。
+ *
+ * 这里只约束结构；强度规则（至少 8 位、字母 + 数字）由
+ * AuthService.assertPasswordStrength 统一给出中文原因。
+ */
+export class ConfirmPasswordResetDto extends PasswordResetTokenDto {
+  @IsString()
+  @MinLength(8)
+  @MaxLength(72)
+  password!: string;
+}

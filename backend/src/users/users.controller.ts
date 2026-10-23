@@ -84,4 +84,19 @@ export class UsersController {
   ) {
     return this.usersService.impersonate(user, id);
   }
+
+  /**
+   * 生成一次性密码重置链接（管理员及以上）。
+   *
+   * 不让管理员直接设新密码：那样管理员会知道用户的明文密码，
+   * 事后也无法证明是本人操作的。这里只发链接，新密码由本人设置。
+   */
+  @Post(':id/password-reset')
+  @RequirePermissions(PERMISSIONS.USER_MANAGE)
+  issuePasswordReset(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.usersService.issuePasswordReset(user, id);
+  }
 }

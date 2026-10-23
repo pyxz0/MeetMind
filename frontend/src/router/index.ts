@@ -10,6 +10,7 @@ import MeetingDetailView from '../views/MeetingDetailView.vue'
 import DraftsView from '../views/DraftsView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import LoginView from '../views/LoginView.vue'
+import ResetPasswordView from '../views/ResetPasswordView.vue'
 import UsersView from '../views/UsersView.vue'
 import ProfileView from '../views/ProfileView.vue'
 import { authStore, type Permission } from '../stores/auth'
@@ -31,6 +32,18 @@ const router = createRouter({
       path: '/login',
       name: 'login',
       component: LoginView,
+      meta: { requiresAuth: false },
+    },
+
+    {
+      /**
+       * 重置密码：管理员发来的一次性链接落到这里。
+       *
+       * 不需要登录——忘记了密码的人本来就没有会话。
+       */
+      path: '/reset-password',
+      name: 'reset-password',
+      component: ResetPasswordView,
       meta: { requiresAuth: false },
     },
 

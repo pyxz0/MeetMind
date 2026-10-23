@@ -51,7 +51,7 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('未登录或登录状态已失效');
     }
 
-    let payload: { sub?: number; imp?: number };
+    let payload: { sub?: number; imp?: number; tv?: number };
 
     try {
       payload = await this.jwtService.verifyAsync(token);
@@ -86,11 +86,24 @@ export class JwtAuthGuard implements CanActivate {
         name: true,
         role: true,
         isActive: true,
+        tokenVersion: true,
       },
     });
 
     if (!user || !user.isActive) {
       throw new UnauthorizedException('账号不可用，请联系管理员');
+    }
+
+    /**
+     * 令牌版本校验：改密 / 重置密码后 users.token_version 自增，
+     * 此时旧令牌（tv 与库中不一致）立即失效，不必等 JWT 自然过期。
+     *
+     * 历史令牌没有 tv 声明，按 0 处理 —— 与字段默认值一致，不会误伤已登录用户。
+     */
+    const tokenVersion = typeof payload?.tv === 'number' ? payload.tv : 0;
+
+    if (user.tokenVersion !== tokenVersion) {
+      throw new UnauthorizedException('登录状态已失效，请重新登录');
     }
 
     const currentUser: AuthenticatedUser = {

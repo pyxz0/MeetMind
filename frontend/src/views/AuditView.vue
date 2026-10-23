@@ -29,6 +29,8 @@ const ACTION_LABELS: Record<string, string> = {
   'user.self_update': '修改本账号',
   'user.delete': '删除账号',
   'user.impersonate': '切换身份',
+  'user.password_reset_issue': '生成重置链接',
+  'user.password_reset': '重置密码',
   'meeting.delete': '删除会议',
   'meeting.share': '共享会议',
   'meeting.share_revoke': '撤销共享'
@@ -41,6 +43,7 @@ const actionLabel = (action: string) =>
 const actionTagType = (action: string) => {
   if (action.endsWith('.delete') || action.endsWith('.revoke')) return 'danger'
   if (action === 'user.impersonate') return 'warning'
+  if (action === 'user.password_reset_issue') return 'warning'
   if (action.startsWith('meeting.share')) return 'warning'
   return 'info'
 }

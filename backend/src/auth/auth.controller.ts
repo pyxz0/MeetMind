@@ -1,6 +1,12 @@
 import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
 import { AuthService } from './auth.service';
-import { LoginDto, RegisterDto, UpdateProfileDto } from './dto/auth.dto';
+import {
+  ConfirmPasswordResetDto,
+  LoginDto,
+  PasswordResetTokenDto,
+  RegisterDto,
+  UpdateProfileDto,
+} from './dto/auth.dto';
 import { CurrentUser, Public, type AuthenticatedUser } from './auth.decorators';
 
 @Controller('auth')
@@ -19,6 +25,29 @@ export class AuthController {
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
+  }
+
+  /**
+   * 校验密码重置链接（公开）。
+   *
+   * 链接来自管理员在用户管理里生成的一次性令牌，
+   * 页面加载时先调这里，避免用户填完两次密码才被告知链接已过期。
+   */
+  @Public()
+  @Post('password-reset/inspect')
+  inspectPasswordReset(@Body() dto: PasswordResetTokenDto) {
+    return this.authService.inspectPasswordReset(dto.token);
+  }
+
+  /**
+   * 用重置令牌设置新密码（公开）。
+   *
+   * 成功后令牌立即作废，且该账号此前签发的所有会话一并失效。
+   */
+  @Public()
+  @Post('password-reset/confirm')
+  confirmPasswordReset(@Body() dto: ConfirmPasswordResetDto) {
+    return this.authService.confirmPasswordReset(dto.token, dto.password);
   }
 
   /** 当前登录用户信息与权限位，前端据此渲染菜单和按钮 */

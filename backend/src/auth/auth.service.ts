@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { hashResetToken } from './password-reset-token';
 import type { AuthenticatedUser } from './auth.decorators';
 import type { AppRole } from './permissions';
 import { ROLE_PERMISSIONS, ROLE_LABELS } from './permissions';
@@ -77,7 +78,12 @@ export class AuthService {
     });
 
     return {
-      token: await this.signToken(user.id, user.role as AppRole, user.phone),
+      token: await this.signToken(
+        user.id,
+        user.role as AppRole,
+        user.phone,
+        user.tokenVersion,
+      ),
       user: this.toPublicUser(user),
     };
   }
@@ -129,7 +135,12 @@ export class AuthService {
     });
 
     return {
-      token: await this.signToken(user.id, user.role as AppRole, user.phone),
+      token: await this.signToken(
+        user.id,
+        user.role as AppRole,
+        user.phone,
+        user.tokenVersion,
+      ),
       user: this.toPublicUser(user),
     };
   }
@@ -163,7 +174,7 @@ export class AuthService {
       currentPassword?: string;
       newPassword?: string;
     },
-  ): Promise<PublicUser> {
+  ): Promise<PublicUser & { token?: string }> {
     const userId = actor.id;
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
@@ -175,6 +186,7 @@ export class AuthService {
       name?: string;
       passwordHash?: string;
       avatar?: string | null;
+      tokenVersion?: { increment: number };
     } = {};
 
     if (input.name !== undefined) {
@@ -234,6 +246,8 @@ export class AuthService {
         input.newPassword,
         BCRYPT_ROUNDS,
       );
+      /** 改密即作废此前所有会话（守卫比对 tv） */
+      data.tokenVersion = { increment: 1 };
     }
 
     if (Object.keys(data).length === 0) {
@@ -266,7 +280,25 @@ export class AuthService {
       },
     });
 
-    return this.toPublicUser(updated);
+    const view = this.toPublicUser(updated);
+
+    /**
+     * 改密后旧令牌全部失效，这里给当前会话补发一枚新的，
+     * 否则用户刚改完密码，下一个请求就被踢下线。
+     */
+    if (data.passwordHash !== undefined) {
+      return {
+        ...view,
+        token: await this.signToken(
+          updated.id,
+          updated.role as AppRole,
+          updated.phone,
+          updated.tokenVersion,
+        ),
+      };
+    }
+
+    return view;
   }
 
   /** 供其他模块复用：把数据库用户转为不含敏感字段的视图 */
@@ -346,6 +378,12 @@ export class AuthService {
     targetPhone: string,
     operatorId: number,
   ): Promise<string> {
+    /** 代登令牌同样受令牌版本约束：目标账号重置密码后，代登会话一起失效 */
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { tokenVersion: true },
+    });
+
     return this.jwtService.signAsync(
       {
         sub: targetUserId,
@@ -353,16 +391,103 @@ export class AuthService {
         phone: targetPhone,
         // 标记这是代登令牌，并记录真实操作者
         imp: operatorId,
+        tv: target?.tokenVersion ?? 0,
       },
       { expiresIn: '2h' },
     );
   }
 
-  private signToken(userId: number, role: AppRole, phone: string) {
+  /**
+   * 校验重置令牌，返回给前端做「你正在给谁设密码」的确认。
+   *
+   * 放在填密码之前调用：链接过期能立刻告知，不必让用户填完两次再报错。
+   */
+  async inspectPasswordReset(token: string) {
+    const user = await this.findUserByResetToken(token);
+
+    return {
+      name: user.name,
+      /** 手机号脱敏，足够本人确认，也不至于把号码暴露给拿到链接的第三方 */
+      phone: `${user.phone.slice(0, 3)}****${user.phone.slice(-4)}`,
+      expiresAt: user.passwordResetExpiresAt?.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * 用一次性令牌设置新密码。
+   *
+   * 三个后果必须同时发生：令牌作废、旧会话全部失效、留一条审计。
+   * 少任何一个都会留下「链接还能再用一次」或「改了密码别人还登着」的口子。
+   */
+  async confirmPasswordReset(token: string, newPassword: string) {
+    const user = await this.findUserByResetToken(token);
+    this.assertPasswordStrength(newPassword);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: await bcrypt.hash(newPassword, BCRYPT_ROUNDS),
+        passwordResetTokenHash: null,
+        passwordResetExpiresAt: null,
+        tokenVersion: { increment: 1 },
+      },
+    });
+
+    await this.audit.record(
+      { id: user.id },
+      {
+        action: 'user.password_reset',
+        resourceType: 'user',
+        resourceId: user.id,
+        metadata: { via: 'reset_link' },
+      },
+    );
+
+    return { message: '密码已重置，请用新密码登录' };
+  }
+
+  /**
+   * 按令牌反查用户。
+   *
+   * 库里只存 SHA-256，比对的是哈希；令牌不存在与已过期返回同一句话，
+   * 避免把「这个链接是否存在过」变成可探测的信息。
+   */
+  private async findUserByResetToken(token: string) {
+    const normalized = token?.trim();
+
+    if (!normalized) {
+      throw new BadRequestException('重置链接无效或已过期');
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: { passwordResetTokenHash: hashResetToken(normalized) },
+    });
+
+    if (
+      !user?.passwordResetExpiresAt ||
+      user.passwordResetExpiresAt.getTime() < Date.now()
+    ) {
+      throw new BadRequestException('重置链接无效或已过期');
+    }
+
+    return user;
+  }
+
+  private signToken(
+    userId: number,
+    role: AppRole,
+    phone: string,
+    tokenVersion: number,
+  ) {
     return this.jwtService.signAsync({
       sub: userId,
       role,
       phone,
+      /**
+       * 令牌版本：改密 / 重置密码后自增，守卫比对不一致就拒绝。
+       * 老令牌没有 tv 声明，按 0 处理 —— 与迁移默认值一致，不会误伤。
+       */
+      tv: tokenVersion,
     });
   }
 }

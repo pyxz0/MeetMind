@@ -114,6 +114,13 @@ model User {
   /// 收件箱最后一次已读时间；早于该时间的通知算已读
   inboxSeenAt  DateTime? @map("inbox_seen_at") @db.Timestamptz(3)
 
+  /// 密码重置令牌的 SHA-256（只存哈希，不存原文）；为空表示没有待用的重置链接
+  passwordResetTokenHash  String?   @map("password_reset_token_hash") @db.VarChar(64)
+  /// 重置令牌过期时间；与令牌同时写入、同时清除
+  passwordResetExpiresAt  DateTime? @map("password_reset_expires_at") @db.Timestamptz(3)
+  /// 令牌版本：改密或重置密码后自增，令已签发的 JWT 立即失效
+  tokenVersion            Int       @default(0) @map("token_version")
+
   /// 自己创建的会议。
   meetings     Meeting[]       @relation("MeetingOwner")
   /// 由该用户担任负责人的会议。
