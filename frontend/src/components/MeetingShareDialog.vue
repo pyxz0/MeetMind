@@ -163,58 +163,72 @@ const handleRevoke = async (share: MeetingShare) => {
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="共享会议" width="560px">
-    <div class="share-meeting">
-      <span class="share-label">会议：</span>
-      <span class="share-title">{{ meetingTitle }}</span>
-    </div>
+  <el-dialog v-model="visible" title="共享会议" width="min(560px, 92vw)">
+    <!-- 这扇门开给哪份纪要 -->
+    <p class="share-target">
+      <span class="share-target-k">会议</span>
 
-    <!-- 新增共享 -->
-    <div v-if="canPickUsers" class="share-form">
-      <el-select v-model="selectedUserId" placeholder="选择用户" filterable style="flex: 1" :disabled="submitting">
-        <el-option v-for="user in candidates" :key="user.id" :label="`${user.name}（${user.phone}）`"
-          :value="user.id" />
-      </el-select>
+      <span class="share-target-v" :title="meetingTitle">{{ meetingTitle }}</span>
+    </p>
 
-      <el-select v-model="permission" style="width: 110px" :disabled="submitting">
-        <el-option label="只读" value="READ" />
-        <el-option label="可编辑" value="EDIT" />
-      </el-select>
+    <!-- 添加成员：选人 + 选权限 -->
+    <section class="share-sec">
+      <div class="sec-h">
+        <span class="sec-t">添加成员</span>
+        <span class="sec-x">选人，再选只读或可编辑</span>
+      </div>
 
-      <el-button type="primary" :loading="submitting" :disabled="!selectedUserId" @click="handleShare">
-        共享
-      </el-button>
-    </div>
+      <div v-if="canPickUsers" class="share-form">
+        <el-select v-model="selectedUserId" class="share-pick" placeholder="选择同事" filterable :disabled="submitting">
+          <el-option v-for="user in candidates" :key="user.id" :label="`${user.name}（${user.phone}）`"
+            :value="user.id" />
+        </el-select>
 
-    <el-alert v-else type="info" :closable="false" show-icon class="no-pick-tip"
-      title="当前角色无法浏览用户列表" description="共享功能需要管理员及以上角色。你仍可查看下方已有的共享名单。" />
-
-    <!-- 已共享名单 -->
-    <div v-loading="loading" class="share-list">
-      <el-empty v-if="!loading && shares.length === 0" description="该会议尚未共享给任何人" :image-size="70" />
-
-      <div v-for="share in shares" :key="share.id" class="share-item">
-        <div class="share-user">
-          <span class="share-avatar">{{ share.name.slice(0, 1) }}</span>
-
-          <div class="share-user-meta">
-            <div class="share-user-name">{{ share.name }}</div>
-            <div class="share-user-phone">{{ share.phone }}</div>
-          </div>
-        </div>
-
-        <el-select :model-value="share.permission" size="small" style="width: 100px"
-          :loading="changingUserId === share.userId"
-          @change="(v: SharePermission) => changePermission(share, v)">
+        <el-select v-model="permission" class="share-perm" :disabled="submitting">
           <el-option label="只读" value="READ" />
           <el-option label="可编辑" value="EDIT" />
         </el-select>
 
-        <el-button link type="danger" @click="handleRevoke(share)">
-          撤销
+        <el-button type="primary" :loading="submitting" :disabled="!selectedUserId" @click="handleShare">
+          共享
         </el-button>
       </div>
-    </div>
+
+      <p v-else class="share-note">
+        当前角色看不到用户列表。共享需要管理员及以上角色；已有的名单仍可在下面查看。
+      </p>
+    </section>
+
+    <!-- 已共享给谁：台账行 -->
+    <section class="share-sec">
+      <div class="sec-h">
+        <span class="sec-t">已共享给</span>
+        <span class="sec-x num">{{ shares.length }} 人</span>
+      </div>
+
+      <div v-loading="loading" class="share-list">
+        <p v-if="!loading && shares.length === 0" class="share-empty">
+          还没有共享给任何人。选一位同事，给他只读权限。
+        </p>
+
+        <div v-for="share in shares" :key="share.id" class="reg-row share-row">
+          <span class="share-name">{{ share.name }}</span>
+
+          <span class="share-phone num">{{ share.phone }}</span>
+
+          <el-select :model-value="share.permission" size="small" class="share-perm share-perm-row"
+            :loading="changingUserId === share.userId"
+            @change="(v: SharePermission) => changePermission(share, v)">
+            <el-option label="只读" value="READ" />
+            <el-option label="可编辑" value="EDIT" />
+          </el-select>
+
+          <el-button link class="share-revoke" @click="handleRevoke(share)">
+            撤销
+          </el-button>
+        </div>
+      </div>
+    </section>
 
     <template #footer>
       <el-button @click="visible = false">关闭</el-button>
@@ -223,92 +237,146 @@ const handleRevoke = async (share: MeetingShare) => {
 </template>
 
 <style scoped>
-.share-meeting {
-  margin-bottom: 16px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #f5f7fa;
-  font-size: 13px;
-}
-
-.share-label {
-  color: #909399;
-}
-
-.share-title {
-  color: #303133;
-  font-weight: 600;
-}
-
-.share-form {
+/* ---------- 会议 ---------- */
+.share-target {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 10px;
-  margin-bottom: 18px;
+  margin: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule);
 }
 
-.no-pick-tip {
-  margin-bottom: 18px;
-}
-
-.share-list {
-  min-height: 80px;
-  max-height: 320px;
-  overflow-y: auto;
-}
-
-.share-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 4px;
-  border-bottom: 1px solid #f0f2f5;
-}
-
-.share-item:last-child {
-  border-bottom: none;
-}
-
-.share-user {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.share-avatar {
-  width: 28px;
-  height: 28px;
+.share-target-k {
   flex-shrink: 0;
-
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  border-radius: 50%;
-  background: #ecf5ff;
-  color: #409eff;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
 }
 
-.share-user-meta {
+.share-target-v {
   min-width: 0;
-}
 
-.share-user-name {
-  color: #303133;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.share-user-phone {
-  color: #909399;
-  font-size: 12px;
+  font-family: var(--song);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.05em;
+  color: var(--ink);
 
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---------- 两节 ---------- */
+.share-sec {
+  margin-top: 20px;
+}
+
+.share-sec .sec-x {
+  margin-left: auto;
+}
+
+/* ---------- 添加成员 ---------- */
+.share-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.share-pick {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-perm {
+  flex-shrink: 0;
+  width: 104px;
+}
+
+.share-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-left: 2px solid var(--rule);
+  background: var(--paper-2);
+
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+/* ---------- 已共享给 ---------- */
+.share-list {
+  min-height: 56px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.share-empty {
+  padding: 16px 0;
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: var(--ink-3);
+}
+
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+}
+
+.share-name {
+  flex-shrink: 0;
+
+  font-family: var(--song);
+  font-size: 13.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.share-phone {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-3);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.share-perm-row {
+  width: 96px;
+}
+
+.share-revoke {
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .share-form {
+    flex-wrap: wrap;
+  }
+
+  .share-pick {
+    flex: 1 1 100%;
+  }
+
+  .share-form .share-perm {
+    width: 100%;
+  }
+
+  .share-form .el-button {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .share-row {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
 }
 </style>

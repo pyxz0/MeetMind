@@ -2,6 +2,8 @@ import { createApp } from 'vue'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
+// 设计系统放在组件库样式之后，主题变量与组件覆盖才能生效
+import './style.css'
 
 import App from './App.vue'
 import router from './router'

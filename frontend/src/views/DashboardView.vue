@@ -52,10 +52,10 @@ const meetingCompletionSegments = computed(() => {
     }
 
     return [
-        { key: 'NOT_STARTED', label: '未开始', count: s.notStartedMeetings, color: '#909399' },
-        { key: 'IN_PROGRESS', label: '进行中', count: s.inProgressMeetings, color: '#e6a23c' },
-        { key: 'COMPLETED', label: '已完成', count: s.completedMeetings, color: '#67c23a' },
-        { key: 'CANCELLED', label: '已取消', count: s.cancelledMeetings, color: '#f56c6c' },
+        { key: 'NOT_STARTED', label: '未开始', count: s.notStartedMeetings, color: 'var(--status-wait-dot)' },
+        { key: 'IN_PROGRESS', label: '进行中', count: s.inProgressMeetings, color: 'var(--status-live-dot)' },
+        { key: 'COMPLETED', label: '已完成', count: s.completedMeetings, color: 'var(--status-done-dot)' },
+        { key: 'CANCELLED', label: '已取消', count: s.cancelledMeetings, color: 'var(--status-cancel-dot)' },
     ]
 })
 
@@ -169,6 +169,20 @@ const getCompletionStatusText = (
     }
 }
 
+/** 状态 → 视觉修饰词，颜色统一在 style.css 的 .m-status--* 里 */
+const statusKey = (status?: MeetingRecord['completionStatus']) => {
+    switch (status) {
+        case 'IN_PROGRESS':
+            return 'live'
+        case 'COMPLETED':
+            return 'done'
+        case 'CANCELLED':
+            return 'cancel'
+        default:
+            return 'wait'
+    }
+}
+
 /** 点击最近会议进入详情 */
 const openMeeting = (id: number) => {
     router.push(`/history/${id}`)
@@ -178,323 +192,218 @@ onMounted(loadStats)
 </script>
 
 <template>
-    <div class="dashboard-page" v-loading="loading">
-        <div class="dashboard-container">
-
-            <!-- 页面标题 -->
-            <div class="page-header">
+    <div class="page" v-loading="loading">
+        <div class="page-inner">
+            <header class="page-head">
                 <div>
                     <h1>数据看板</h1>
 
-                    <p>
-                        查看 MeetMind 的会议、决策和待办数据
+                    <p class="page-desc">
+                        会议、待办与决策的底账。数字按完成时间统计。
                     </p>
                 </div>
 
-                <el-button :loading="loading" @click="loadStats">
-                    刷新数据
-                </el-button>
-            </div>
+                <div class="page-head-actions">
+                    <el-button :loading="loading" @click="loadStats">
+                        刷新数据
+                    </el-button>
+                </div>
+            </header>
 
             <template v-if="stats">
 
-                <!-- 核心统计 -->
-                <div class="stats-grid">
+                <!-- 汇总条：五个数字用竖线分开，不做五张卡片 -->
+                <div class="totals sheet">
+                    <div class="total">
+                        <span class="total-k">会议总数</span>
+                        <span class="total-v">{{ stats.totalMeetings }}</span>
+                        <span class="total-x">已创建会议</span>
+                    </div>
 
-                    <el-card class="stat-card" shadow="never">
-                        <div class="stat-label">
-                            会议总数
-                        </div>
+                    <div class="total">
+                        <span class="total-k">草稿箱</span>
+                        <span class="total-v">{{ stats.draftMeetings }}</span>
+                        <span class="total-x">待生成纪要</span>
+                    </div>
 
-                        <div class="stat-value">
-                            {{ stats.totalMeetings }}
-                        </div>
+                    <div class="total">
+                        <span class="total-k">已完成会议</span>
+                        <span class="total-v">{{ stats.completedMeetings }}</span>
+                        <span class="total-x">已归档</span>
+                    </div>
 
-                        <div class="stat-description">
-                            已创建会议
-                        </div>
-                    </el-card>
+                    <div class="total">
+                        <span class="total-k">待办事项</span>
+                        <span class="total-v">{{ stats.totalTodos }}</span>
+                        <span class="total-x">会议产生的任务</span>
+                    </div>
 
-                    <el-card class="stat-card" shadow="never">
-                        <div class="stat-label">
-                            草稿箱
-                        </div>
-
-                        <div class="stat-value">
-                            {{ stats.draftMeetings }}
-                        </div>
-
-                        <div class="stat-description">
-                            待重新生成的会议
-                        </div>
-                    </el-card>
-
-                    <el-card class="stat-card" shadow="never">
-                        <div class="stat-label">
-                            已完成会议
-                        </div>
-
-                        <div class="stat-value">
-                            {{ stats.completedMeetings }}
-                        </div>
-
-                        <div class="stat-description">
-                            已完成的会议
-                        </div>
-                    </el-card>
-
-                    <el-card class="stat-card" shadow="never">
-                        <div class="stat-label">
-                            待办事项
-                        </div>
-
-                        <div class="stat-value">
-                            {{ stats.totalTodos }}
-                        </div>
-
-                        <div class="stat-description">
-                            会议产生的任务
-                        </div>
-                    </el-card>
-
-                    <el-card class="stat-card" shadow="never">
-                        <div class="stat-label">
-                            核心决策
-                        </div>
-
-                        <div class="stat-value">
-                            {{ stats.totalDecisions }}
-                        </div>
-
-                        <div class="stat-description">
-                            AI 提取的会议决策
-                        </div>
-                    </el-card>
-
+                    <div class="total">
+                        <span class="total-k">核心决策</span>
+                        <span class="total-v">{{ stats.totalDecisions }}</span>
+                        <span class="total-x">AI 提取</span>
+                    </div>
                 </div>
 
-                <!-- 状态概览 -->
-                <div class="overview-grid">
+                <div class="two-col">
+                    <!-- 会议状态 -->
+                    <section class="sheet block">
+                        <div class="block-head">
+                            <span class="sec-t">会议状态</span>
 
-                    <el-card class="overview-card" shadow="never">
-                        <template #header>
-                            <span>会议状态</span>
-                        </template>
-
-                        <div class="status-row">
-                            <span>未开始</span>
-                            <strong>
-                                {{ stats.notStartedMeetings }}
-                            </strong>
+                            <span class="sec-x">共 {{ stats.totalMeetings }} 场</span>
                         </div>
 
-                        <div class="status-row">
-                            <span>进行中</span>
-                            <strong>
-                                {{ stats.inProgressMeetings }}
-                            </strong>
+                        <ul class="status-list">
+                            <li>
+                                <span class="status-name"><i class="m-dot m-dot--wait" /><span class="status-k">未开始</span></span>
+                                <span class="num status-v">{{ stats.notStartedMeetings }}</span>
+                            </li>
+
+                            <li>
+                                <span class="status-name"><i class="m-dot m-dot--live" /><span class="status-k">进行中</span></span>
+                                <span class="num status-v">{{ stats.inProgressMeetings }}</span>
+                            </li>
+
+                            <li>
+                                <span class="status-name"><i class="m-dot m-dot--done" /><span class="status-k">已完成</span></span>
+                                <span class="num status-v">{{ stats.completedMeetings }}</span>
+                            </li>
+
+                            <li>
+                                <span class="status-name"><i class="m-dot m-dot--cancel" /><span class="status-k">已取消</span></span>
+                                <span class="num status-v">{{ stats.cancelledMeetings }}</span>
+                            </li>
+                        </ul>
+                    </section>
+
+                    <!-- 完成情况 -->
+                    <section class="sheet block">
+                        <div class="block-head">
+                            <span class="sec-t">完成情况</span>
+
+                            <!-- 切换统计维度：待办完成情况 / 会议完成情况 -->
+                            <el-segmented v-model="completionMode" size="small" class="block-seg" :options="[
+                                { label: '待办', value: 'todos' },
+                                { label: '会议', value: 'meeting' }
+                            ]" />
                         </div>
-
-                        <div class="status-row">
-                            <span>已完成</span>
-                            <strong>
-                                {{ stats.completedMeetings }}
-                            </strong>
-                        </div>
-
-                        <div class="status-row">
-                            <span>已取消</span>
-                            <strong>
-                                {{ stats.cancelledMeetings }}
-                            </strong>
-                        </div>
-                    </el-card>
-
-                    <el-card class="overview-card" shadow="never">
-                        <template #header>
-                            <div class="overview-header">
-                                <span>完成情况</span>
-
-                                <!-- 切换统计维度：待办完成情况 / 会议完成情况 -->
-                                <el-segmented
-                                    v-model="completionMode"
-                                    size="small"
-                                    :options="[
-                                        { label: '待办完成情况', value: 'todos' },
-                                        { label: '会议完成情况', value: 'meeting' }
-                                    ]"
-                                />
-                            </div>
-                        </template>
 
                         <!-- 待办完成情况 -->
                         <template v-if="completionMode === 'todos'">
                             <div class="todo-progress">
-                                <el-progress type="dashboard" :percentage="todoCompletionRate" />
-                            </div>
+                                <div class="todo-nums">
+                                    <span class="num todo-done">{{ stats.completedTodos }}</span>
+                                    <span class="todo-slash">/</span>
+                                    <span class="num todo-all">{{ stats.totalTodos }}</span>
+                                    <span class="todo-unit">项待办</span>
+                                </div>
 
-                            <div class="progress-text">
-                                已完成
-                                {{ stats.completedTodos }}
-                                /
-                                {{ stats.totalTodos }}
-                                项
+                                <div class="completion-bar todo-bar" role="img"
+                                    :aria-label="`待办完成率 ${todoCompletionRate}%`">
+                                    <div class="completion-segment"
+                                        :style="{ width: todoCompletionRate + '%', background: 'var(--brand)' }" />
+                                </div>
+
+                                <p class="gauge-text">
+                                    完成率
+                                    <span class="num">{{ todoCompletionRate }}%</span>
+                                </p>
+
+                                <div class="todo-split">
+                                    <div class="todo-split-item">
+                                        <span>已完成</span>
+                                        <b class="num">{{ stats.completedTodos }}</b>
+                                    </div>
+
+                                    <div class="todo-split-item">
+                                        <span>待处理</span>
+                                        <b class="num">{{ Math.max(stats.totalTodos - stats.completedTodos, 0) }}</b>
+                                    </div>
+                                </div>
                             </div>
                         </template>
 
                         <!-- 会议完成情况 -->
                         <template v-else>
-                            <el-empty
-                                v-if="meetingCompletionTotal === 0"
-                                description="暂无可统计的会议"
-                            />
+                            <el-empty v-if="meetingCompletionTotal === 0" description="暂无可统计的会议" />
 
                             <template v-else>
                                 <div class="completion-chart">
-                                    <div
-                                        class="completion-bar"
-                                        role="img"
-                                        :aria-label="`会议完成情况：共 ${meetingCompletionTotal} 场`"
-                                    >
-                                        <div
-                                            v-for="segment in barSegments"
-                                            :key="segment.key"
-                                            class="completion-segment"
+                                    <div class="completion-bar" role="img"
+                                        :aria-label="`会议完成情况：共 ${meetingCompletionTotal} 场`">
+                                        <div v-for="segment in barSegments" :key="segment.key" class="completion-segment"
                                             :style="{
                                                 width: segmentWidth(segment.count),
                                                 background: segment.color
-                                            }"
-                                            :title="`${segment.label} ${segment.count} 场`"
-                                        />
+                                            }" :title="`${segment.label} ${segment.count} 场`" />
                                     </div>
 
                                     <div class="completion-legend">
-                                        <div
-                                            v-for="segment in meetingCompletionSegments"
-                                            :key="segment.key"
-                                            class="legend-item"
-                                        >
-                                            <span
-                                                class="legend-dot"
-                                                :style="{ background: segment.color }"
-                                            />
+                                        <div v-for="segment in meetingCompletionSegments" :key="segment.key"
+                                            class="legend-item">
+                                            <span class="legend-dot" :style="{ background: segment.color }" />
 
                                             <span class="legend-label">
                                                 {{ segment.label }}
                                             </span>
 
-                                            <strong class="legend-value">
+                                            <strong class="legend-value num">
                                                 {{ segment.count }}
                                             </strong>
                                         </div>
                                     </div>
                                 </div>
 
-                                <div class="progress-text">
-                                    共 {{ meetingCompletionTotal }} 场正式会议
-                                    <span class="completion-rate">
-                                        （完成率 {{ meetingCompletionRate }}%）
-                                    </span>
-                                </div>
+                                <p class="gauge-text">
+                                    共 {{ meetingCompletionTotal }} 场正式会议，完成率
+                                    <span class="num">{{ meetingCompletionRate }}%</span>
+                                </p>
                             </template>
                         </template>
-                    </el-card>
-
+                    </section>
                 </div>
 
                 <!-- 最近会议 -->
-                <el-card class="recent-card" shadow="never">
-                    <template #header>
-                        <div class="recent-header">
-                            <span>最近会议</span>
+                <section class="sheet block recent">
+                    <div class="block-head">
+                        <span class="sec-t">最近会议</span>
 
-                            <el-button type="primary" link @click="router.push('/history')">
-                                查看全部
-                            </el-button>
-                        </div>
-                    </template>
+                        <el-button link class="block-more" @click="router.push('/history')">
+                            查看全部
+                        </el-button>
+                    </div>
 
                     <el-empty v-if="!recentMeetings.length" description="暂无会议记录" />
 
                     <div v-else class="recent-list">
-                        <div v-for="meeting in recentMeetings" :key="meeting.id" class="recent-item"
+                        <div v-for="meeting in recentMeetings" :key="meeting.id" class="recent-row"
                             @click="openMeeting(meeting.id)">
-                            <div class="recent-main">
-                                <div class="recent-title">
-                                    {{ meeting.title || `会议 #${meeting.id}` }}
-                                </div>
+                            <span class="num recent-date">{{ formatMeetingDate(meeting.createdAt) }}</span>
 
-                                <div class="recent-meta">
-                                    {{ formatMeetingDate(meeting.createdAt) }}
-                                </div>
-                            </div>
+                            <span class="recent-title">
+                                {{ meeting.title || `会议 #${meeting.id}` }}
+                            </span>
 
-                            <el-tag :type="meeting.completionStatus === 'COMPLETED'
-                                ? 'success'
-                                : meeting.completionStatus === 'CANCELLED'
-                                    ? 'danger'
-                                    : meeting.completionStatus === 'IN_PROGRESS'
-                                        ? 'warning'
-                                        : 'info'
-                                ">
+                            <span class="m-status" :class="`m-status--${statusKey(meeting.completionStatus)}`">
+                                <i class="m-status-dot" />
+
                                 {{ getCompletionStatusText(meeting.completionStatus) }}
-                            </el-tag>
-
-                            <span class="recent-arrow">
-                                →
                             </span>
                         </div>
                     </div>
-                </el-card>
+                </section>
 
-                <div class="draft-entry">
-                    <div>
-                        <strong>草稿箱</strong>
-                        <span>
-                            当前有 {{ stats.draftMeetings }} 条会议需要处理
-                        </span>
-                    </div>
+                <!-- 草稿提醒：有草稿才出现 -->
+                <div v-if="stats.draftMeetings > 0" class="draft-strip">
+                    <span>
+                        草稿箱里有 <strong>{{ stats.draftMeetings }}</strong> 条原文还没生成纪要
+                    </span>
 
-                    <el-button type="warning" plain @click="router.push('/drafts')">
-                        查看草稿箱
+                    <el-button link @click="router.push('/drafts')">
+                        去处理
                     </el-button>
                 </div>
-
-                <!-- 项目数据说明 -->
-                <el-card class="info-card" shadow="never">
-                    <template #header>
-                        <span>MeetMind 数据概览</span>
-                    </template>
-
-                    <div class="info-grid">
-                        <div>
-                            <span>已完成会议</span>
-                            <strong>
-                                {{ stats.completedMeetings }}
-                            </strong>
-                        </div>
-
-                        <div>
-                            <span>待处理任务</span>
-                            <strong>
-                                {{
-                                    Math.max(
-                                        stats.totalTodos -
-                                        stats.completedTodos,
-                                        0
-                                    )
-                                }}
-                            </strong>
-                        </div>
-
-                        <div>
-                            <span>AI 提取决策</span>
-                            <strong>
-                                {{ stats.totalDecisions }}
-                            </strong>
-                        </div>
-                    </div>
-                </el-card>
 
             </template>
 
@@ -505,345 +414,341 @@ onMounted(loadStats)
 </template>
 
 <style scoped>
-.recent-card {
-    margin-top: 18px;
-    border-radius: 12px;
-}
-
-.recent-header {
+/* ---------- 汇总条 ---------- */
+.totals {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
 }
 
-.recent-list {
+.total {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 18px 20px 17px;
+    border-left: 1px solid var(--rule);
+}
+
+.total:first-child {
+    border-left: none;
+}
+
+.total-k {
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+}
+
+/* 数字是宋体：和纪要标题同一副字，落在这套语言里 */
+.total-v {
+    font-family: var(--song);
+    font-size: 30px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+}
+
+.total-x {
+    font-size: 11px;
+    color: var(--ink-3);
+}
+
+/* ---------- 两栏 ---------- */
+.two-col {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    gap: 18px;
+    margin-top: 18px;
+    align-items: stretch;
+}
+
+.block {
+    padding: 18px 22px 20px;
     display: flex;
     flex-direction: column;
 }
 
-.recent-item {
+.block-head {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 16px 4px;
-    border-bottom: 1px solid #f0f2f5;
-    cursor: pointer;
-    transition: background 0.2s;
+    gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
 }
 
-.recent-item:last-child {
+.block-head .sec-x {
+    margin-left: auto;
+}
+
+.block-seg {
+    margin-left: auto;
+}
+
+.block-more {
+    margin-left: auto;
+}
+
+/* 状态：一行一条横线，数字右对齐 */
+.status-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.status-list li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 13px 2px;
+    border-bottom: 1px solid var(--rule-soft);
+}
+
+.status-list li:last-child {
     border-bottom: none;
 }
 
-.recent-item:hover {
-    background: #f8fafc;
-}
-
-.recent-main {
-    flex: 1;
-    min-width: 0;
-}
-
-.recent-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: #303133;
-    font-size: 14px;
-    font-weight: 600;
-}
-
-.recent-meta {
-    margin-top: 6px;
-    color: #909399;
-    font-size: 12px;
-}
-
-.recent-arrow {
-    color: #c0c4cc;
-    font-size: 18px;
-}
-
-.dashboard-page {
-    min-height: 100%;
-    background: #f5f7fa;
-    padding: 40px 20px 60px;
-}
-
-.dashboard-container {
-    max-width: 1100px;
-    margin: 0 auto;
-}
-
-.page-header {
+.status-name {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 20px;
-    margin-bottom: 24px;
+    gap: 8px;
+}
+.status-k {
+    font-size: 13px;
+    color: var(--ink-2);
 }
 
-.page-header h1 {
-    margin: 0 0 8px;
-    font-size: 30px;
-    font-weight: 600;
-    color: #303133;
+.status-v {
+    font-size: 17px;
+    color: var(--ink);
 }
 
-.page-header p {
-    margin: 0;
-    color: #909399;
-    font-size: 14px;
+/* 完成情况：用条，不用仪表盘 */
+.todo-progress {
+    padding: 28px 0 8px;
 }
 
-.stats-grid {
-    display: grid;
-    grid-template-columns:
-        repeat(5, minmax(0, 1fr));
-    gap: 18px;
+.todo-nums {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
 }
 
-.stat-card {
-    border-radius: 12px;
+.todo-done {
+    font-family: var(--song);
+    font-size: 34px;
+    line-height: 1;
+    color: var(--ink);
 }
 
-.stat-label {
-    color: #909399;
-    font-size: 14px;
+.todo-slash {
+    font-size: 15px;
+    color: var(--rule);
 }
 
-.stat-value {
-    margin-top: 10px;
-    font-size: 32px;
-    font-weight: 700;
-    color: #303133;
+.todo-all {
+    font-size: 17px;
+    color: var(--ink-2);
 }
 
-.stat-description {
-    margin-top: 8px;
-    color: #a0a4ab;
-    font-size: 12px;
+.todo-unit {
+    margin-left: 4px;
+    font-size: 11.5px;
+    color: var(--ink-3);
 }
 
-.overview-grid {
-    display: grid;
-    grid-template-columns:
-        1fr 1fr;
-    gap: 18px;
+.todo-bar {
+    height: 10px;
     margin-top: 18px;
 }
 
-.overview-card,
-.info-card {
-    border-radius: 12px;
-}
-
-.status-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 0;
-    border-bottom: 1px solid #f0f2f5;
-    color: #606266;
-}
-
-.status-row:last-child {
-    border-bottom: none;
-}
-
-.status-row strong {
-    color: #303133;
-}
-
-.todo-progress {
-    display: flex;
-    justify-content: center;
-    padding-top: 10px;
-}
-
-.progress-text {
+.gauge-text {
     margin-top: 10px;
-    text-align: center;
-    color: #606266;
-    font-size: 14px;
+    font-size: 12px;
+    color: var(--ink-2);
 }
 
-/* 卡片标题行：标题 + 维度切换 */
-.overview-header {
+/* 已完成 / 待处理：两栏，用竖线分开 */
+.todo-split {
     display: flex;
-    align-items: center;
+    margin-top: 24px;
+    border-top: 1px solid var(--rule-soft);
+}
+
+.todo-split-item {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
     justify-content: space-between;
-    gap: 12px;
+    gap: 10px;
+    padding: 12px 2px 0;
+    border-left: 1px solid var(--rule-soft);
+    padding-left: 16px;
+}
+
+.todo-split-item:first-child {
+    border-left: none;
+    padding-left: 2px;
+}
+
+.todo-split-item span {
+    font-size: 11.5px;
+    color: var(--ink-3);
+}
+
+.todo-split-item b {
+    font-size: 16px;
+    font-weight: 400;
+    color: var(--ink);
+}
+
+.gauge-text .num {
+    font-size: 13px;
+    color: var(--ink);
 }
 
 .completion-chart {
-    padding-top: 6px;
+    padding: 26px 0 6px;
 }
 
-/* 堆叠条形图：用各状态占比表达会议完成情况 */
 .completion-bar {
     display: flex;
+    height: 14px;
     width: 100%;
-    height: 26px;
-    border-radius: 6px;
     overflow: hidden;
-    background: #f0f2f5;
+    background: var(--rule-soft);
+    border: 1px solid var(--rule);
 }
 
 .completion-segment {
     height: 100%;
-    transition: width 0.3s;
-}
-
-/* 没有数据的状态不占位，但仍保留圆角收口 */
-.completion-segment:first-child {
-    border-radius: 6px 0 0 6px;
-}
-
-.completion-segment:last-child {
-    border-radius: 0 6px 6px 0;
 }
 
 .completion-legend {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px 16px;
-    margin-top: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 18px;
 }
 
 .legend-item {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: #606266;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--ink-2);
 }
 
 .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
+    width: 8px;
+    height: 8px;
     flex-shrink: 0;
 }
 
-.legend-label {
-    flex: 1;
-}
-
 .legend-value {
-    color: #303133;
-    font-size: 14px;
+    font-size: 12.5px;
+    color: var(--ink);
 }
 
-.completion-rate {
-    color: #909399;
-}
-
-.info-card {
+/* ---------- 最近会议 ---------- */
+.recent {
     margin-top: 18px;
 }
 
-.info-grid {
-    display: grid;
-    grid-template-columns:
-        repeat(3, 1fr);
-    gap: 20px;
+.recent-list {
+    margin-top: 2px;
 }
 
-.info-grid div {
+.recent-row {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 18px;
-    background: #f8fafc;
-    border-radius: 10px;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--rule-soft);
+    cursor: pointer;
+    transition: background-color 0.16s;
 }
 
-.info-grid span {
-    color: #909399;
-    font-size: 13px;
+.recent-row:last-child {
+    border-bottom: none;
 }
 
-.info-grid strong {
-    color: #303133;
-    font-size: 24px;
+.recent-row:hover {
+    background: var(--paper-2);
 }
 
-.draft-entry {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 18px;
-  padding: 18px 20px;
-  background: #fff8e6;
-  border: 1px solid #f3e2b3;
-  border-radius: 12px;
+.recent-date {
+    flex-shrink: 0;
+    width: 96px;
+    font-size: 11px;
+    color: var(--ink-3);
 }
 
-.draft-entry > div {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.recent-title {
+    flex: 1;
+    min-width: 0;
+
+    font-family: var(--song);
+    font-size: 14.5px;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.draft-entry strong {
-  color: #303133;
-  font-size: 15px;
+/* ---------- 草稿提醒 ---------- */
+.draft-strip {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+
+    margin-top: 18px;
+    padding: 13px 20px;
+
+    background: var(--ochre-wash);
+    border: 1px solid var(--ochre-line);
+
+    font-size: 12.5px;
+    color: var(--ochre-deep);
 }
 
-.draft-entry span {
-  color: #909399;
-  font-size: 13px;
+.draft-strip .el-button {
+    margin-left: auto;
 }
 
-@media (max-width: 600px) {
-  .draft-entry {
-    align-items: stretch;
-    flex-direction: column;
-  }
-}
+@media (max-width: 980px) {
+    .two-col {
+        grid-template-columns: minmax(0, 1fr);
+    }
 
-@media (max-width: 900px) {
-    .stats-grid {
-        grid-template-columns:
-            repeat(2, minmax(0, 1fr));
+    .totals {
+        flex-wrap: wrap;
+    }
+
+    .total {
+        flex: 1 1 33%;
+        border-left: none;
+        border-bottom: 1px solid var(--rule-soft);
     }
 }
 
-@media (max-width: 600px) {
-
-    .recent-item {
-        gap: 10px;
+@media (max-width: 640px) {
+    .page {
+        padding: 22px 14px 48px;
     }
 
-    .recent-arrow {
-        display: none;
+    .total {
+        flex: 1 1 50%;
     }
 
-    .dashboard-page {
-        padding: 24px 12px 40px;
+    .total-v {
+        font-size: 26px;
     }
 
-    .page-header {
-        align-items: stretch;
-        flex-direction: column;
-    }
-
-    .page-header h1 {
-        font-size: 24px;
-    }
-
-    .stats-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .overview-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .info-grid {
-        grid-template-columns: 1fr;
+    .recent-date {
+        width: 78px;
     }
 }
 </style>

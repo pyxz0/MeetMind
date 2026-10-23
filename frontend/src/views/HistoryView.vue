@@ -45,48 +45,35 @@ const pinnedCount = ref(0)
 const completionStatusOptions: Array<{
   label: string
   value: MeetingCompletionStatusValue
-  type: 'info' | 'warning' | 'success' | 'danger'
 }> = [
-    { label: '未开始', value: 'NOT_STARTED', type: 'info' },
-    { label: '进行中', value: 'IN_PROGRESS', type: 'warning' },
-    { label: '已完成', value: 'COMPLETED', type: 'success' },
-    { label: '已取消', value: 'CANCELLED', type: 'danger' },
+    { label: '未开始', value: 'NOT_STARTED' },
+    { label: '进行中', value: 'IN_PROGRESS' },
+    { label: '已完成', value: 'COMPLETED' },
+    { label: '已取消', value: 'CANCELLED' },
   ]
 
 /**
- * 各完成状态对应的颜色，与下方下拉选项的 `.status-option--*` 保持一致。
+ * 状态 → 视觉修饰词。
  *
- * 下拉选项是自绘内容，用的是固定色值；而选中后的显示值由
- * Element Plus 通过 --el-input-text-color 控制，因此这里把同一个色值
- * 以 CSS 变量形式注入到显示值上，做到「选中什么颜色，显示值就是什么颜色」。
+ * 四种状态共用一套「圆点 + 文字 + 底色」的标记（见 style.css 的 .m-status），
+ * 这里只负责把业务枚举翻成修饰词，颜色不在页面里写死。
  */
-const completionStatusColors: Record<
-  MeetingCompletionStatusValue,
-  string
-> = {
-  NOT_STARTED: '#909399',
-  IN_PROGRESS: '#e6a23c',
-  COMPLETED: '#67c23a',
-  CANCELLED: '#f56c6c',
-}
-
-/** 把当前状态色注入显示值；状态缺失（如筛选的「全部状态」）时回退到「未开始」的颜色。 */
-const completionStatusStyle = (
-  status?: MeetingCompletionStatusValue | null | string
-) => {
-  const key = (status || 'NOT_STARTED') as MeetingCompletionStatusValue
-
-  const color =
-    completionStatusColors[key] ?? completionStatusColors.NOT_STARTED
-
-  return {
-    // 有值时 Element Plus 取这个变量作为文字色
-    '--el-input-text-color': color,
-    // 尚未选择时走的是「占位符」变量，一并覆盖，避免空态落回默认浅灰
-    '--el-text-color-placeholder': color,
-    color,
+const statusKey = (status?: MeetingCompletionStatusValue | null) => {
+  switch (status) {
+    case 'IN_PROGRESS':
+      return 'live'
+    case 'COMPLETED':
+      return 'done'
+    case 'CANCELLED':
+      return 'cancel'
+    default:
+      return 'wait'
   }
 }
+
+/** 状态的中文名：任何地方都从同一份选项取，避免两处枚举漂移 */
+const statusLabel = (status?: MeetingCompletionStatusValue | null) =>
+  completionStatusOptions.find(option => option.value === status)?.label ?? '未开始'
 
 /** 正在提交状态修改的会议 ID，避免重复提交 */
 const completionUpdatingId = ref<number | null>(null)
@@ -377,220 +364,212 @@ const formatDate = (date?: string) => {
   })
 }
 
+/** 文号：用会议 ID 补足三位，像档案编号 */
+const refNo = (id: number) => String(id).padStart(3, '0')
+
 onMounted(() => {
   loadMeetings()
 })
 </script>
 
 <template>
-  <div class="history-page">
-    <div class="page-container">
-
-      <div class="page-header">
+  <div class="page">
+    <div class="page-inner">
+      <header class="page-head">
         <div>
           <h1>历史会议</h1>
-          <p>查看和管理之前生成的会议纪要</p>
+
+          <p class="page-desc">
+            每一份纪要都在册。可检索、可置顶、可回听原文。
+          </p>
         </div>
 
-        <el-button :loading="loading" @click="loadMeetings">
-          刷新
+        <div class="page-head-actions">
+          <el-button :loading="loading" @click="loadMeetings">
+            刷新
+          </el-button>
+        </div>
+      </header>
+
+      <!-- 检索带 -->
+      <div class="filter-bar">
+        <el-input v-model="searchKeyword" class="f-search" placeholder="搜索会议标题" clearable>
+          <template #prefix>
+            <el-icon>
+              <Search />
+            </el-icon>
+          </template>
+        </el-input>
+
+        <el-date-picker v-model="startDate" class="w-date" type="date" placeholder="开始日期" value-format="YYYY-MM-DD"
+          clearable />
+
+        <el-date-picker v-model="endDate" class="w-date" type="date" placeholder="结束日期" value-format="YYYY-MM-DD"
+          clearable />
+
+        <el-select v-model="selectedStatus" class="f-status" placeholder="会议状态" clearable>
+          <el-option label="全部状态" value="" />
+
+          <el-option v-for="option in completionStatusOptions" :key="option.value" :label="option.label"
+            :value="option.value" />
+        </el-select>
+
+        <el-select v-model="sortOrder" class="f-sort" placeholder="排序">
+          <el-option label="最新创建" value="newest" />
+          <el-option label="最早创建" value="oldest" />
+        </el-select>
+
+        <el-button
+          @click="searchKeyword = ''; startDate = ''; endDate = ''; selectedStatus = ''; sortOrder = 'newest'">
+          重置
         </el-button>
+
+        <span class="filter-count">
+          共 {{ totalMeetings }} 份
+          <template v-if="pinnedCount > 0">，置顶 {{ pinnedCount }} 份</template>
+        </span>
       </div>
 
-      <div v-loading="loading" class="history-container">
+      <!-- 登记簿 -->
+      <div v-loading="loading" class="register sheet">
+        <div class="register-head">
+          <span class="register-title">会议登记簿</span>
 
-        <!-- 搜索与日期筛选 -->
-        <div class="search-bar">
-          <el-input v-model="searchKeyword" placeholder="请输入会议标题关键词搜索" clearable style="max-width: 300px">
-            <template #prefix>
-              <el-icon>
-                <Search />
-              </el-icon>
-            </template>
-          </el-input>
+          <span class="register-meta">
+            {{ filteredMeetings.length }} 份显示中
+          </span>
 
-          <el-date-picker v-model="startDate" type="date" placeholder="开始日期" value-format="YYYY-MM-DD" clearable />
-
-          <el-date-picker v-model="endDate" type="date" placeholder="结束日期" value-format="YYYY-MM-DD" clearable />
-
-          <el-select v-model="selectedStatus" placeholder="会议状态" clearable style="width: 140px"
-            :style="completionStatusStyle(selectedStatus)">
-            <el-option label="全部状态" value="" />
-
-            <el-option
-              v-for="option in completionStatusOptions"
-              :key="option.value"
-              :label="option.label"
-              :value="option.value"
-            />
-          </el-select>
-
-          <el-select v-model="sortOrder" placeholder="排序方式" style="width: 140px">
-            <el-option label="最新创建" value="newest" />
-            <el-option label="最早创建" value="oldest" />
-          </el-select>
-
-          <el-button
-            @click="searchKeyword = ''; startDate = ''; endDate = ''; selectedStatus = ''; sortOrder = 'newest'">
-            重置筛选
-          </el-button>
-
-          <el-button
-            :disabled="filteredMeetings.length === 0"
-            @click="toggleAllExpanded"
-          >
+          <el-button link :disabled="filteredMeetings.length === 0" @click="toggleAllExpanded">
             {{ allExpanded ? '全部收起' : '全部展开' }}
           </el-button>
-
-          <span class="search-count">
-            共找到 {{ totalMeetings }} 条会议记录
-            <template v-if="pinnedCount > 0">
-              （已置顶 {{ pinnedCount }} 条）
-            </template>
-          </span>
         </div>
 
         <el-empty v-if="!loading && meetings.length === 0" description="暂时没有会议记录" />
 
-        <el-empty v-else-if="!loading && filteredMeetings.length === 0" description="没有找到匹配的会议记录" />
+        <el-empty v-else-if="!loading && filteredMeetings.length === 0" description="没有找到匹配的会议" />
 
-        <!-- 服务端分页：还有更多时显示"加载更多" -->
-        <div v-if="hasMore" class="load-more">
-          <el-button :loading="loadingMore" @click="loadMeetings(false)">
-            加载更多
-          </el-button>
-        </div>
+        <template v-else>
+          <article v-for="meeting in filteredMeetings" :key="meeting.id" class="reg-row"
+            :class="{ 'reg-open': isExpanded(meeting.id), 'reg-pinned': !!meeting.pinnedAt }">
+            <!-- 行首：文号 + 标题 + 日期；整行是展开开关 -->
+            <header class="reg-head" role="button" tabindex="0" :aria-expanded="isExpanded(meeting.id)"
+              @click="toggleExpanded(meeting.id)" @keydown.enter.prevent="toggleExpanded(meeting.id)"
+              @keydown.space.prevent="toggleExpanded(meeting.id)">
+              <span class="reg-no num">{{ refNo(meeting.id) }}</span>
 
-        <div v-else class="meeting-list">
-          <el-card v-for="meeting in filteredMeetings" :key="meeting.id"
-            :class="['meeting-card', { pinned: !!meeting.pinnedAt, collapsed: !isExpanded(meeting.id) }]"
-            shadow="hover">
-            <!-- 卡片头部即折叠开关；折叠后仅保留标题 -->
-            <div class="meeting-header" @click="toggleExpanded(meeting.id)">
-              <div class="meeting-heading">
-                <h2>
-                  <span v-if="meeting.pinnedAt" class="pin-mark" title="已置顶">
-                    📌
-                  </span>
-
-                  <router-link :to="`/history/${meeting.id}`" class="meeting-title-link" @click.stop>
+              <div class="reg-main">
+                <h2 class="reg-title">
+                  <router-link :to="`/history/${meeting.id}`" @click.stop>
                     {{ meeting.title || `会议 #${meeting.id}` }}
                   </router-link>
                 </h2>
 
-                <span v-if="isExpanded(meeting.id)" class="meeting-time">
+                <span class="reg-sub num">
                   {{ formatDate(meeting.createdAt) }}
                 </span>
               </div>
 
-              <div class="header-tags">
-                <el-tag v-if="meeting.pinnedAt" type="warning" effect="dark">
-                  已置顶
-                </el-tag>
+              <span v-if="meeting.pinnedAt" class="reg-pin">置顶</span>
 
-                <!-- 可直接在此修改会议状态，无需进入详情页；只改状态，不动待办 -->
-                <!--
-                  不加 size="small"：Element Plus 会把 small 选择器的标签字号
-                  压到 12px，而下拉选项固定 14px，会出现“显示值比选项小一号”的不一致。
-                  显示值颜色与选项状态色同步，见 completionStatusStyle。
-                -->
-                <!-- 只读共享者只看到状态文字，不可修改 -->
-                <el-tag
-                  v-if="isExpanded(meeting.id) && !meeting.canEdit"
-                  :style="{ color: completionStatusColors[meeting.completionStatus as MeetingCompletionStatusValue] ?? completionStatusColors.NOT_STARTED }"
-                  size="small"
-                  @click.stop
-                >
-                  {{
-                    completionStatusOptions.find(o => o.value === meeting.completionStatus)?.label
-                    ?? '未开始'
-                  }}
-                </el-tag>
+              <div class="reg-state" @click.stop>
+                <!-- 只读共享者只看到状态标记，不可修改 -->
+                <span v-if="!meeting.canEdit" class="m-status" :class="`m-status--${statusKey(meeting.completionStatus)}`">
+                  <i class="m-status-dot" />
 
-                <el-select
-                  v-else-if="isExpanded(meeting.id)"
-                  :model-value="meeting.completionStatus || 'NOT_STARTED'"
-                  :loading="completionUpdatingId === meeting.id"
-                  class="status-select"
-                  :style="completionStatusStyle(meeting.completionStatus)"
-                  @click.stop
-                  @change="(status: MeetingCompletionStatusValue) =>
-                    handleCompletionStatusChange(meeting, status)"
-                >
-                  <el-option
-                    v-for="option in completionStatusOptions"
-                    :key="option.value"
-                    :label="option.label"
-                    :value="option.value"
-                  >
-                    <span :class="`status-option status-option--${option.type}`">
-                      {{ option.label }}
-                    </span>
-                  </el-option>
-                </el-select>
-
-                <!-- 只显示箭头，不显示「展开/收起」文字 -->
-                <span
-                  class="collapse-toggle"
-                  :title="isExpanded(meeting.id) ? '收起' : '展开'"
-                  :aria-label="isExpanded(meeting.id) ? '收起' : '展开'"
-                >
-                  <el-icon :class="{ rotated: isExpanded(meeting.id) }">
-                    <ArrowDown />
-                  </el-icon>
+                  {{ statusLabel(meeting.completionStatus) }}
                 </span>
+
+                <!-- 能改的人：同一枚标记，点开就是状态菜单 -->
+                <el-dropdown v-else trigger="click" placement="bottom-end"
+                  @command="(status: MeetingCompletionStatusValue) => handleCompletionStatusChange(meeting, status)">
+                  <button type="button" class="m-status"
+                    :class="`m-status--${statusKey(meeting.completionStatus)}`"
+                    :disabled="completionUpdatingId === meeting.id"
+                    :aria-label="`会议状态：${statusLabel(meeting.completionStatus)}，点击修改`">
+                    <i class="m-status-dot" />
+
+                    {{ statusLabel(meeting.completionStatus) }}
+
+                    <span class="m-status-caret" aria-hidden="true" />
+                  </button>
+
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-for="option in completionStatusOptions" :key="option.value"
+                        :command="option.value">
+                        <span class="m-status" :class="`m-status--${statusKey(option.value)}`">
+                          <i class="m-status-dot" />
+
+                          {{ option.label }}
+                        </span>
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </div>
-            </div>
 
-            <div v-show="isExpanded(meeting.id)" class="meeting-body">
-              <div class="summary">
-                <div class="label">📝 会议摘要</div>
+              <span class="reg-toggle" :title="isExpanded(meeting.id) ? '收起' : '展开'"
+                :aria-label="isExpanded(meeting.id) ? '收起' : '展开'">
+                <el-icon :class="{ rotated: isExpanded(meeting.id) }">
+                  <ArrowDown />
+                </el-icon>
+              </span>
+            </header>
 
-                <p>
+            <!-- 展开：正文按「摘要 / 决策 / 待办」三段 -->
+            <div v-show="isExpanded(meeting.id)" class="reg-body">
+              <div class="sec">
+                <div class="sec-h">
+                  <span class="sec-n">一</span>
+                  <span class="sec-t">摘要</span>
+                </div>
+
+                <p class="prose reg-summary">
                   {{ meeting.summary || '暂无会议摘要' }}
                 </p>
               </div>
 
-              <div v-if="detailOf(meeting.id)?.decisions?.length" class="section">
-                <div class="label">🎯 会议决策</div>
+              <div v-if="detailOf(meeting.id)?.decisions?.length" class="sec">
+                <div class="sec-h">
+                  <span class="sec-n">二</span>
+                  <span class="sec-t">核心决策</span>
+                  <span class="sec-x">{{ detailOf(meeting.id)?.decisions?.length }} 条</span>
+                </div>
 
-                <ul>
+                <ol class="reg-decisions">
                   <li v-for="(decision, index) in detailOf(meeting.id)?.decisions ?? []" :key="index">
-                    {{ decision }}
+                    <span class="num dec-no">{{ index + 1 }}</span>
+                    <span>{{ decision }}</span>
                   </li>
-                </ul>
+                </ol>
               </div>
 
-              <div v-if="detailOf(meeting.id)?.todos?.length" class="section">
-                <div class="label">✅ 待办事项</div>
+              <div v-if="detailOf(meeting.id)?.todos?.length" class="sec">
+                <div class="sec-h">
+                  <span class="sec-n">三</span>
+                  <span class="sec-t">待办事项</span>
+                  <span class="sec-x">{{ detailOf(meeting.id)?.todos?.length }} 项</span>
+                </div>
 
-                <div class="todo-list">
-                  <div v-for="(todo, index) in detailOf(meeting.id)?.todos ?? []" :key="index" class="todo-item">
-                    <div class="todo-content">
-                      {{ todo.content }}
-                    </div>
+                <div class="reg-todos">
+                  <div v-for="(todo, index) in detailOf(meeting.id)?.todos ?? []" :key="index" class="reg-todo">
+                    <span class="reg-todo-content">{{ todo.content }}</span>
 
-                    <div class="todo-meta">
-                      <span>负责人：{{ todo.assignee || '未指定' }}</span>
-                      <span>截止：{{ todo.deadline || '未指定' }}</span>
-                    </div>
+                    <span class="reg-todo-meta">
+                      <span class="reg-todo-who">{{ todo.assignee || '未指定' }}</span>
+                      <span class="num reg-todo-when">{{ todo.deadline || '未指定' }}</span>
+                    </span>
                   </div>
                 </div>
               </div>
 
-              <div class="card-actions">
-                <el-button type="primary" plain @click="handleView(meeting.id)">
-                  查看详情
+              <div class="reg-actions">
+                <el-button type="primary" @click="handleView(meeting.id)">
+                  打开纪要
                 </el-button>
 
                 <!-- 置顶属于写操作，只读共享者不可用 -->
-                <el-button
-                  v-if="meeting.canEdit"
-                  :type="meeting.pinnedAt ? 'warning' : 'default'"
-                  :plain="!meeting.pinnedAt"
-                  :loading="pinningId === meeting.id"
-                  @click="handleTogglePin(meeting)"
-                >
+                <el-button v-if="meeting.canEdit" :loading="pinningId === meeting.id" @click="handleTogglePin(meeting)">
                   {{ meeting.pinnedAt ? '取消置顶' : '置顶' }}
                 </el-button>
 
@@ -608,252 +587,149 @@ onMounted(() => {
                 </el-tag>
               </div>
             </div>
-          </el-card>
-        </div>
+          </article>
+        </template>
+      </div>
 
+      <!-- 服务端分页：还有更多时继续加载 -->
+      <div v-if="hasMore" class="load-more">
+        <el-button :loading="loadingMore" @click="loadMeetings(false)">
+          加载更早的会议
+        </el-button>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.history-page {
-  min-height: 100%;
-  background: #f5f7fa;
-  padding: 40px 20px 60px;
-}
+/* 登记簿行结构由全局 style.css 提供（.register / .reg-*），这里只放本页专有的部分 */
 
-.page-container {
-  max-width: 1000px;
-  margin: 0 auto;
-}
-
-.page-header {
+/* ---------- 检索带 ---------- */
+.filter-bar {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
-  margin-bottom: 24px;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
-.page-header h1 {
-  margin: 0 0 8px;
-  font-size: 30px;
-  font-weight: 600;
-  color: #303133;
+.f-search {
+  width: 260px;
 }
 
-.page-header p {
+.f-status,
+.f-sort {
+  width: 132px;
+}
+
+.filter-count {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* ---------- 展开后的正文 ---------- */
+.reg-summary {
+  margin-top: 12px;
+}
+
+.reg-decisions {
   margin: 0;
-  color: #909399;
+  padding: 0;
+  list-style: none;
 }
 
-.history-container {
-  min-height: 300px;
-}
-
-.meeting-list {
+.reg-decisions li {
   display: flex;
-  flex-direction: column;
-  gap: 18px;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule-soft);
+
+  font-family: var(--fang);
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: var(--ink-body);
 }
 
-.meeting-card {
-  border-radius: 12px;
-  border: 1px solid #ebeef5;
+.reg-decisions li:last-child {
+  border-bottom: none;
 }
 
-/* 置顶卡片用左侧色条 + 淡背景区分，避免只靠一个标签识别 */
-.meeting-card.pinned {
-  border-color: #f3d19e;
-  background: #fffdf7;
-  box-shadow: inset 3px 0 0 #e6a23c;
-}
-
-.pin-mark {
-  margin-right: 4px;
-}
-
-.header-tags {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.dec-no {
   flex-shrink: 0;
+  min-width: 14px;
+  padding-top: 3px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.reg-todos {
+  margin-top: 8px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.reg-todo {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.reg-todo-content {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.reg-todo-meta {
+  display: flex;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.reg-todo-who {
+  font-family: var(--song);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.reg-todo-when {
+  font-size: 11px;
+  color: var(--ink-3);
 }
 
 .load-more {
   display: flex;
   justify-content: center;
-  margin-top: 8px;
+  padding: 20px 0 4px;
 }
 
-.status-select {
-  width: 116px;
+@media (max-width: 900px) {
+  .filter-count {
+    margin-left: 0;
+    width: 100%;
+  }
 }
 
-/* 下拉选项按状态着色，与详情页状态含义保持一致 */
-.status-option--info {
-  color: #909399;
-}
-
-.status-option--warning {
-  color: #e6a23c;
-}
-
-.status-option--success {
-  color: #67c23a;
-}
-
-.status-option--danger {
-  color: #f56c6c;
-}
-
-
-.meeting-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid #ebeef5;
-  cursor: pointer;
-}
-
-/* 折叠态没有内容区，头部不需要下边框与内边距 */
-.meeting-card.collapsed .meeting-header {
-  padding-bottom: 0;
-  border-bottom: none;
-}
-
-.meeting-heading {
-  min-width: 0;
-  flex: 1;
-}
-
-/* 标题可直接点进详情，不需要先展开 */
-.meeting-title-link {
-  color: #303133;
-  transition: color 0.2s;
-}
-
-.meeting-title-link:hover {
-  color: #409eff;
-}
-
-.collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  color: #909399;
-  font-size: 15px;
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s;
-}
-
-.collapse-toggle:hover {
-  color: #409eff;
-  background: #f0f2f5;
-}
-
-.collapse-toggle .el-icon {
-  transition: transform 0.2s;
-}
-
-.collapse-toggle .el-icon.rotated {
-  transform: rotate(180deg);
-}
-
-.meeting-header h2 {
-  margin: 0 0 6px;
-  font-size: 18px;
-  color: #303133;
-}
-
-.meeting-time {
-  font-size: 13px;
-  color: #909399;
-}
-
-.summary,
-.section {
-  margin-top: 18px;
-}
-
-.label {
-  margin-bottom: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #606266;
-}
-
-.summary p {
-  margin: 0;
-  line-height: 1.7;
-  color: #606266;
-  white-space: pre-wrap;
-}
-
-.section ul {
-  margin: 0;
-  padding-left: 20px;
-  color: #606266;
-  line-height: 1.8;
-}
-
-.todo-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.todo-item {
-  padding: 12px;
-  background: #f8f9fb;
-  border-radius: 8px;
-}
-
-.todo-content {
-  color: #303133;
-  font-weight: 500;
-}
-
-.todo-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 8px;
-  font-size: 13px;
-  color: #909399;
-}
-
-.card-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #ebeef5;
-}
-
-@media (max-width: 768px) {
-  .history-page {
-    padding: 24px 12px 40px;
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 48px;
   }
 
-  .page-header h1 {
-    font-size: 24px;
+  .f-search,
+  .f-status,
+  .f-sort {
+    width: 100%;
   }
 
-  .meeting-header {
-    gap: 12px;
-  }
-
-  .todo-meta {
+  .reg-todo {
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
   }
 }
 </style>

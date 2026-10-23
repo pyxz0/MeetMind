@@ -102,6 +102,10 @@ model User {
   passwordHash String    @map("password_hash") @db.VarChar(120)
   /// 展示名称。
   name         String    @db.VarChar(80)
+  /// 头像：前端压到 256px 的 JPEG data URL；为空时界面用姓名首字。
+  /// 存 data URL 而不是文件路径，是为了避免再引入一套静态资源与鉴权规则：
+  /// 头像很小（约 15–30KB），随用户接口一起返回即可。
+  avatar       String?   @db.Text
   role         Role      @default(USER)
   /// 停用后无法登录，用于回收权限而不删除数据。
   isActive     Boolean   @default(true) @map("is_active")

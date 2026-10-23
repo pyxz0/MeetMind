@@ -42,6 +42,14 @@ Thumbs.db
 *.sln
 *.sw?
 
+# ---------- 本地工具与工作区数据 ----------
+# .workbuddy：会话记忆与项目技能，属于本机工作区数据
+# .dsh / .dsh-scan：本地设计/扫描工具的临时产物
+.workbuddy/
+.dsh/
+.dsh-scan/
+.scan-tmp/
+
 # ---------- 日志与临时文件 ----------
 *.log
 npm-debug.log*

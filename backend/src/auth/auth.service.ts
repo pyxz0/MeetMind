@@ -30,6 +30,8 @@ export interface PublicUser {
   role: AppRole;
   roleLabel: string;
   isActive: boolean;
+  /** 头像（data URL）；为空时界面用姓名首字 */
+  avatar: string | null;
   permissions: string[];
   createdAt: string;
 }
@@ -157,6 +159,7 @@ export class AuthService {
     actor: Pick<AuthenticatedUser, 'id' | 'impersonatedBy'>,
     input: {
       name?: string;
+      avatar?: string;
       currentPassword?: string;
       newPassword?: string;
     },
@@ -168,7 +171,11 @@ export class AuthService {
       throw new UnauthorizedException('账号不可用');
     }
 
-    const data: { name?: string; passwordHash?: string } = {};
+    const data: {
+      name?: string;
+      passwordHash?: string;
+      avatar?: string | null;
+    } = {};
 
     if (input.name !== undefined) {
       const name = input.name.trim();
@@ -178,6 +185,28 @@ export class AuthService {
       }
 
       data.name = name.slice(0, 80);
+    }
+
+    /**
+     * 头像：只接受 data URL 形式的小图（前端已压到 256px）。
+     * 传空字符串表示移除；不在这里做图像转码，避免引入额外依赖。
+     */
+    if (input.avatar !== undefined) {
+      const avatar = input.avatar.trim();
+
+      if (!avatar) {
+        data.avatar = null;
+      } else {
+        if (!avatar.startsWith('data:image/')) {
+          throw new BadRequestException('头像格式不正确，请上传图片文件');
+        }
+
+        if (avatar.length > 400_000) {
+          throw new BadRequestException('头像太大了，请换一张更小的图片');
+        }
+
+        data.avatar = avatar;
+      }
     }
 
     if (input.newPassword !== undefined) {
@@ -232,6 +261,7 @@ export class AuthService {
       resourceId: updated.id,
       metadata: {
         nameChanged: data.name !== undefined,
+        avatarChanged: data.avatar !== undefined,
         passwordChanged: data.passwordHash !== undefined,
       },
     });
@@ -244,6 +274,7 @@ export class AuthService {
     id: number;
     phone: string;
     name: string;
+    avatar: string | null;
     role: string;
     isActive: boolean;
     createdAt: Date;
@@ -257,6 +288,7 @@ export class AuthService {
       role,
       roleLabel: ROLE_LABELS[role] ?? role,
       isActive: user.isActive,
+      avatar: user.avatar ?? null,
       permissions: ROLE_PERMISSIONS[role] ?? [],
       createdAt: user.createdAt.toISOString(),
     };

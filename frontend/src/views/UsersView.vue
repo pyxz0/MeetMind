@@ -20,6 +20,16 @@ const keyword = ref('')
 
 const currentUser = computed(() => authStore.user)
 
+/**
+ * 返回上一级：用户管理不占侧边栏导航，唯一入口是个人中心。
+ *
+ * 这里直接 push('/profile')，不用 router.back()——用户可能是
+ * 从收藏、刷新或外链直接进来的，没有历史栈可退，back() 会原地不动。
+ */
+const goBackProfile = () => {
+  void router.push('/profile')
+}
+
 /** 只有超级管理员能切换身份（后端同样只放行超管） */
 const canImpersonate = computed(
   () => currentUser.value?.role === 'SUPER_ADMIN'
@@ -69,6 +79,23 @@ const ROLE_TAG: Record<Role, 'info' | 'warning' | 'danger'> = {
   USER: 'info',
   ADMIN: 'warning',
   SUPER_ADMIN: 'danger'
+}
+
+/** 开户时间：列表里只到分钟 */
+const formatDateTime = (value?: string) => {
+  if (!value) return '—'
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) return value
+
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
 }
 
 const loadUsers = async () => {
@@ -302,108 +329,143 @@ onMounted(loadUsers)
 </script>
 
 <template>
-  <div class="users-page">
-    <div class="page-container">
-      <div class="page-header">
+  <div class="page">
+    <div class="page-inner">
+      <header class="page-head">
         <div>
           <h1>用户管理</h1>
-          <p>管理账号与角色分级；超级管理员全局唯一，不可新建、提升或移除</p>
+
+          <p class="page-desc">
+            按角色分级管理账号。超级管理员全局唯一，不可新建或移除。
+          </p>
         </div>
 
-        <div class="header-actions">
-          <el-input v-model="keyword" placeholder="搜索手机号或姓名" clearable style="width: 200px"
-            @keyup.enter="loadUsers" @clear="loadUsers" />
-
-          <el-button :loading="loading" @click="loadUsers">
-            查询
+        <div class="page-head-actions">
+          <!-- 用户管理不占导航栏，入口在个人中心，这里提供原路返回 -->
+          <el-button @click="goBackProfile">
+            返回个人中心
           </el-button>
 
           <el-button v-if="grantableRoles.length" type="primary" @click="openCreate">
-            新建账号
+            新增用户
           </el-button>
+        </div>
+      </header>
+
+      <!-- 检索条 -->
+      <div class="filter-bar">
+        <el-input v-model="keyword" class="f-search" placeholder="搜索手机号或姓名" clearable
+          @keyup.enter="loadUsers" @clear="loadUsers" />
+
+        <el-button :loading="loading" @click="loadUsers">
+          查询
+        </el-button>
+
+        <span class="filter-count">
+          共 {{ users.length }} 个账号
+        </span>
+      </div>
+
+      <!-- 账号台账 -->
+      <div class="sheet">
+        <div class="table-scroll">
+          <el-table v-if="loading || users.length" v-loading="loading" :data="users" class="users-table"
+            style="width: 100%">
+            <el-table-column label="姓名" min-width="150">
+              <template #default="{ row }">
+                <span class="user-cell">
+                  <img v-if="row.avatar" :src="row.avatar" alt="" class="user-avatar" />
+                  <span v-else class="user-initial">{{ (row.name || '?').slice(0, 1) }}</span>
+
+                  <span class="user-name">{{ row.name }}</span>
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="手机号" min-width="150">
+              <template #default="{ row }">
+                <span class="num">{{ row.phone }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="角色" width="170">
+              <template #default="{ row }">
+                <!-- 唯一超管：角色固定，不提供修改入口 -->
+                <el-tooltip v-if="isSoleSuperAdmin(row)" content="超级管理员全局唯一，角色不可修改" placement="top">
+                  <el-tag :type="ROLE_TAG[row.role as Role]" size="small">
+                    {{ ROLE_LABEL[row.role as Role] }}
+                  </el-tag>
+                </el-tooltip>
+
+                <el-select v-else-if="canManage(row)" :model-value="row.role" size="small"
+                  :loading="changingRoleId === row.id" @change="(role: Role) => changeRole(row, role)">
+                  <el-option v-for="role in grantableRoles" :key="role" :label="ROLE_LABEL[role]" :value="role" />
+                </el-select>
+
+                <el-tag v-else :type="ROLE_TAG[row.role as Role]" size="small">
+                  {{ ROLE_LABEL[row.role as Role] }}
+                </el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.isActive ? 'success' : 'info'" size="small">
+                  {{ row.isActive ? '正常' : '已停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="创建时间" width="160">
+              <template #default="{ row }">
+                <span class="num">{{ formatDateTime(row.createdAt) }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="300" fixed="right">
+              <template #default="{ row }">
+                <span class="ops">
+                  <!-- 自己：只能改密码 -->
+                  <template v-if="isSelf(row)">
+                    <el-button link @click="openPasswordDialog">
+                      修改密码
+                    </el-button>
+
+                    <span class="muted">当前账号</span>
+                  </template>
+
+                  <span v-else-if="isSoleSuperAdmin(row)" class="muted">系统唯一超管</span>
+
+                  <template v-else>
+                    <!-- 切换身份：超管专用，直接以该账号视角进入系统 -->
+                    <el-button v-if="canImpersonateRow(row)" link :loading="impersonatingId === row.id"
+                      @click="handleImpersonate(row)">
+                      切换身份
+                    </el-button>
+
+                    <template v-if="canManage(row)">
+                      <el-button link :loading="togglingId === row.id" @click="toggleActive(row)">
+                        {{ row.isActive ? '停用' : '启用' }}
+                      </el-button>
+
+                      <el-button link class="act-del" @click="handleDelete(row)">
+                        删除
+                      </el-button>
+                    </template>
+
+                    <span v-else-if="!canImpersonateRow(row)" class="muted">无管理权限</span>
+                  </template>
+                </span>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-empty v-else description="没有匹配的账号" />
         </div>
       </div>
 
-      <el-card shadow="never" class="table-card">
-        <el-table v-loading="loading" :data="users" style="width: 100%">
-          <el-table-column prop="name" label="姓名" min-width="120" />
-
-          <el-table-column prop="phone" label="手机号" min-width="150" />
-
-          <el-table-column label="角色" width="170">
-            <template #default="{ row }">
-              <!-- 唯一超管：角色固定，不提供修改入口 -->
-              <el-tooltip v-if="isSoleSuperAdmin(row)" content="超级管理员全局唯一，角色不可修改" placement="top">
-                <el-tag :type="ROLE_TAG[row.role as Role]">
-                  {{ ROLE_LABEL[row.role as Role] }}
-                </el-tag>
-              </el-tooltip>
-
-              <el-select v-else-if="canManage(row)" :model-value="row.role" size="small"
-                :loading="changingRoleId === row.id" @change="(role: Role) => changeRole(row, role)">
-                <el-option v-for="role in grantableRoles" :key="role" :label="ROLE_LABEL[role]" :value="role" />
-              </el-select>
-
-              <el-tag v-else :type="ROLE_TAG[row.role as Role]">
-                {{ ROLE_LABEL[row.role as Role] }}
-              </el-tag>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="状态" width="110">
-            <template #default="{ row }">
-              <el-tag :type="row.isActive ? 'success' : 'info'">
-                {{ row.isActive ? '正常' : '已停用' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="操作" width="290" fixed="right">
-            <template #default="{ row }">
-              <!-- 自己：只能改密码 -->
-              <span v-if="isSelf(row)" class="self-actions">
-                <el-button link type="primary" @click="openPasswordDialog">
-                  修改密码
-                </el-button>
-
-                <span class="no-permission">当前账号</span>
-              </span>
-
-              <span v-else-if="isSoleSuperAdmin(row)" class="no-permission">系统唯一超管</span>
-
-              <template v-else>
-                <!-- 切换身份：超管专用，直接以该账号视角进入系统 -->
-                <el-button
-                  v-if="canImpersonateRow(row)"
-                  link
-                  type="warning"
-                  :loading="impersonatingId === row.id"
-                  @click="handleImpersonate(row)"
-                >
-                  切换身份
-                </el-button>
-
-                <template v-if="canManage(row)">
-                  <el-button link type="primary" :loading="togglingId === row.id" @click="toggleActive(row)">
-                    {{ row.isActive ? '停用' : '启用' }}
-                  </el-button>
-
-                  <el-button link type="danger" @click="handleDelete(row)">
-                    删除
-                  </el-button>
-                </template>
-
-                <span v-else-if="!canImpersonateRow(row)" class="no-permission">无管理权限</span>
-              </template>
-            </template>
-          </el-table-column>
-        </el-table>
-
-        <el-empty v-if="!loading && users.length === 0" description="没有匹配的账号" />
-      </el-card>
-
-      <!-- 新建账号 -->
-      <el-dialog v-model="dialogVisible" title="新建账号" width="420px">
+      <!-- 新增用户 -->
+      <el-dialog v-model="dialogVisible" title="新增用户" width="420px">
         <el-form label-width="72px">
           <el-form-item label="姓名">
             <el-input v-model="form.name" maxlength="80" />
@@ -459,57 +521,99 @@ onMounted(loadUsers)
 </template>
 
 <style scoped>
-.users-page {
-  min-height: 100%;
-  background: #f5f7fa;
-  padding: 40px 20px 60px;
-}
-
-.page-container {
-  max-width: 1000px;
-  margin: 0 auto;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 22px;
-  flex-wrap: wrap;
-}
-
-.page-header h1 {
-  margin: 0 0 6px;
-  font-size: 30px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.page-header p {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.table-card {
-  border-radius: 12px;
-}
-
-.no-permission {
-  color: #c0c4cc;
-  font-size: 13px;
-}
-
-.self-actions {
+/* 姓名列：头像（没有就用首字）+ 名字 */
+.user-cell {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.user-avatar,
+.user-initial {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border: 1px solid var(--rule);
+  background: var(--paper-2);
+  font-family: var(--song);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.user-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ---------- 检索条 ---------- */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.f-search {
+  width: 260px;
+}
+
+.filter-count {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* ---------- 账号台账 ---------- */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* 链接按钮之间用 gap 排开，不再叠加默认的相邻外边距 */
+.ops :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+/* 删除是破坏性操作，用朱色标注 */
+.ops .act-del {
+  --el-button-text-color: var(--vermilion);
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 48px;
+  }
+
+  .f-search {
+    width: 100%;
+  }
+
+  .filter-count {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  .users-table {
+    min-width: 860px;
+  }
 }
 </style>

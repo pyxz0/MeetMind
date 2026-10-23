@@ -416,398 +416,418 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="home-page">
-    <div class="page-container">
-
-      <!-- 页面标题 -->
-      <div class="page-header">
+  <div class="page">
+    <div class="page-inner">
+      <header class="page-head">
         <div>
           <h1>智能会议纪要</h1>
 
-          <p>
-            输入会议内容，让 AI 自动提取摘要、决策和待办事项
+          <p class="page-desc">
+            把会议原文写进纸里，或直接开始转写；散会后生成摘要、决策与待办
           </p>
         </div>
-      </div>
 
-      <!-- 输入区域 -->
-      <el-card class="input-card" shadow="never">
-        <template #header>
-          <div class="card-header">
-            <span>会议内容</span>
+        <div class="page-head-actions">
+          <el-button :disabled="loading" @click="handleClear">
+            清空
+          </el-button>
+        </div>
+      </header>
 
-            <el-button text :disabled="loading" @click="handleClear">
-              清空
-            </el-button>
+      <div class="record-grid">
+        <!-- 左：会议原文 -->
+        <section class="sheet record-main">
+          <div class="record-head">
+            <span class="sec-t">会议内容</span>
+
+            <span class="sec-x num">
+              {{ meetingContent.length }} / 10000
+            </span>
           </div>
-        </template>
 
-        <el-input v-model="meetingContent" type="textarea" :rows="12" resize="none" placeholder="请输入会议内容，例如：
+          <el-input v-model="meetingContent" class="record-input" type="textarea" :rows="15" resize="none" placeholder="请输入会议内容，例如：
 
 今天下午召开产品需求讨论会。
 
 张三负责完成首页 UI 设计，本周五之前提交。
 李四负责开发用户登录接口，下周一完成。
 大家决定第一版产品先支持邮箱登录。
-产品经理要求下周三进行第一次内部测试。" maxlength="10000" show-word-limit />
+产品经理要求下周三进行第一次内部测试。" maxlength="10000" />
 
-        <!-- 实时语音转文字 -->
-        <div class="speech-panel">
-          <div class="speech-header">
-            <span class="speech-title">
-              会议实时转写
+          <div v-if="interimTranscript" class="interim">
+            <span class="interim-k">正在识别</span>
+
+            <p class="interim-text">
+              {{ interimTranscript }}
+            </p>
+          </div>
+
+          <div class="record-foot">
+            <span class="record-tip">
+              AI 将自动分析会议内容并生成结构化纪要
             </span>
 
-            <div class="speech-meta">
-              <span v-if="isPaused" class="recording-status paused">
-                ⏸ 已暂停
-              </span>
+            <div class="record-buttons">
+              <el-button :loading="draftSaving" :disabled="loading" @click="handleSaveDraft">
+                加入草稿箱
+              </el-button>
 
-              <span v-else-if="isRecording" class="recording-status">
-                ● 正在会议
-              </span>
-
-              <span v-else class="recording-status stopped">
-                ● 未开始
-              </span>
-
-              <span class="meeting-timer">
-                {{ formatMeetingDuration(meetingDuration) }}
-              </span>
-
-              <span v-if="isRecording && isAudioRecording" class="audio-status">
-                🎧 录音中
-              </span>
-
-              <span v-else-if="isRecording && audioBlocked" class="audio-status blocked">
-                🎧 未录音
-              </span>
+              <el-button type="primary" :loading="loading" :disabled="draftSaving" @click="handleGenerate">
+                生成会议纪要
+              </el-button>
             </div>
           </div>
+        </section>
 
-          <div v-if="interimTranscript" class="interim-text">
-            {{ interimTranscript }}
+        <!-- 右：转写台。全站唯一一个会自己动的方块 -->
+        <aside class="sheet recorder">
+          <div class="recorder-state">
+            <span class="state-dot" :class="{
+              'state-live': isRecording && !isPaused,
+              'state-paused': isRecording && isPaused,
+            }" />
+
+            <span class="state-text">
+              {{ !isRecording ? '未开始' : isPaused ? '已暂停' : '转写中' }}
+            </span>
+
+            <span class="state-audio">
+              {{ isRecording ? (isAudioRecording ? '录音中' : audioBlocked ? '未录音' : '准备中') : '麦克风关闭' }}
+            </span>
           </div>
 
-          <div class="speech-actions">
-            <el-button v-if="!isRecording" type="success" @click="handleStartRecording">
-              🎙 开始会议
+          <div class="recorder-clock num">
+            {{ formatMeetingDuration(meetingDuration) }}
+          </div>
+
+          <p class="recorder-hint">
+            {{
+              !isRecording
+                ? '点击开始后，请允许浏览器访问麦克风'
+                : isPaused
+                  ? '转写与计时都已暂停，点「继续转写」恢复'
+                  : '每分钟自动在原文插入一次时间标记'
+            }}
+          </p>
+
+          <div class="recorder-actions">
+            <el-button v-if="!isRecording" type="primary" size="large" @click="handleStartRecording">
+              开始会议
             </el-button>
 
             <template v-else>
-              <el-button v-if="!isPaused" type="warning" @click="handlePauseRecording">
-                ⏸ 暂停转写
+              <el-button v-if="!isPaused" size="large" class="act" @click="handlePauseRecording">
+                暂停转写
               </el-button>
 
-              <el-button v-else type="success" @click="handleResumeRecording">
-                ▶ 继续转写
+              <el-button v-else type="primary" size="large" class="act" @click="handleResumeRecording">
+                继续转写
+              </el-button>
+
+              <el-button type="danger" size="large" class="act" :loading="loading" @click="handleFinishMeeting">
+                结束并生成纪要
               </el-button>
             </template>
-
-            <el-button v-if="isRecording" type="danger" :loading="loading" @click="handleFinishMeeting">
-              <span v-if="!loading">
-                ⏹ 结束会议并生成纪要
-              </span>
-
-              <span v-else>
-                AI 正在生成纪要...
-              </span>
-            </el-button>
-
-            <span class="speech-tip">
-              <template v-if="isPaused">
-                已暂停转写与计时，点击“继续转写”恢复
-              </template>
-
-              <template v-else>
-                点击开始后，请允许浏览器访问麦克风；录音期间每分钟会自动在原文插入时间标记
-              </template>
-            </span>
           </div>
-        </div>
 
-        <div class="input-footer">
-          <span class="tip">
-            AI 将自动分析会议内容并生成结构化纪要
+          <div class="recorder-foot">
+            <span>转写在本机浏览器完成</span>
+            <span>录音随纪要一起保存</span>
+          </div>
+        </aside>
+      </div>
+
+      <!-- 结果：一张纪要纸 -->
+      <section v-if="result" class="sheet result-sheet">
+        <div class="result-head">
+          <span class="sec-t">会议纪要</span>
+
+          <span class="sec-x num">
+            {{ result.title || '未命名会议' }}
           </span>
-
-          <div class="generate-actions">
-            <el-button size="large" :loading="draftSaving" :disabled="loading" @click="handleSaveDraft">
-              加入草稿箱
-            </el-button>
-
-            <el-button type="primary" size="large" :loading="loading" :disabled="draftSaving" @click="handleGenerate">
-              <span v-if="!loading">
-                生成会议纪要
-              </span>
-
-              <span v-else>
-                AI 正在分析...
-              </span>
-            </el-button>
-          </div>
-        </div>
-      </el-card>
-
-      <!-- AI 结果 -->
-      <div v-if="result" class="result-wrapper">
-        <div class="result-header">
-          <div>
-            <h2>AI 分析结果</h2>
-
-            <p>
-              以下内容由 AI 根据会议记录自动整理
-            </p>
-          </div>
         </div>
 
         <MeetingResultComponent :result="result" />
-      </div>
+      </section>
 
-      <!-- 空状态 -->
-      <div v-else-if="!loading" class="empty-state">
-        <div class="empty-icon">
-          AI
-        </div>
+      <div v-else-if="loading" class="blank">
+        <p class="blank-title">
+          AI 正在整理
+        </p>
 
-        <h3>
-          等待生成会议纪要
-        </h3>
-
-        <p>
-          在上方输入会议内容，然后点击生成按钮
+        <p class="blank-desc">
+          散会后十几秒出稿，请稍等
         </p>
       </div>
 
+      <div v-else class="blank">
+        <p class="blank-title">
+          还没有纪要
+        </p>
+
+        <p class="blank-desc">
+          把会议原文写进上面的纸里，或者直接开始转写
+        </p>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.home-page {
-  min-height: 100%;
-  background: #f5f7fa;
-  padding: 40px 20px 60px;
+/* ---------- 版面：左纸右台 ---------- */
+.record-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+  align-items: start;
 }
 
-.page-container {
-  max-width: 1000px;
-  margin: 0 auto;
+.record-main {
+  padding: 20px 26px 0;
 }
 
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-header h1 {
-  margin: 0 0 8px;
-  font-size: 30px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.page-header p {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.input-card {
-  border-radius: 12px;
-  border: 1px solid #ebeef5;
-}
-
-.card-header {
+.record-head {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-weight: 600;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
 }
 
-.input-footer {
+.record-head .sec-x {
+  margin-left: auto;
+}
+
+/* 原文用仿宋，读起来像稿纸；行高按稿纸排 */
+.record-input {
+  display: block;
+  margin-top: 14px;
+}
+
+.record-input :deep(.el-textarea__inner) {
+  font-family: var(--fang);
+  font-size: 15.5px;
+  line-height: 1.95;
+  color: var(--ink-body);
+  padding: 14px 16px;
+
+  background: var(--field);
+  box-shadow: 0 0 0 1px var(--rule) inset;
+}
+
+.record-input :deep(.el-textarea__inner::placeholder) {
+  font-family: var(--fang);
+  color: var(--ink-3);
+}
+
+.interim {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 18px;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 14px;
+
+  background: var(--paper-2);
+  border-left: 2px solid var(--rule);
 }
 
-.generate-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.tip {
-  color: #909399;
-  font-size: 13px;
-}
-
-.result-wrapper {
-  margin-top: 32px;
-}
-
-.result-header {
-  margin-bottom: 18px;
-}
-
-.result-header h2 {
-  margin: 0 0 6px;
-  font-size: 22px;
-  color: #303133;
-}
-
-.result-header p {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.empty-state {
-  margin-top: 30px;
-  padding: 60px 20px;
-  background: #ffffff;
-  border-radius: 12px;
-  text-align: center;
-  border: 1px solid #ebeef5;
-}
-
-.empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  font-weight: 700;
-}
-
-.empty-state h3 {
-  margin: 0 0 8px;
-  color: #606266;
-}
-
-.empty-state p {
-  margin: 0;
-  color: #909399;
-}
-
-.speech-panel {
-  margin-top: 16px;
-  padding: 16px;
-  background: #f8fafc;
-  border: 1px solid #ebeef5;
-  border-radius: 10px;
-}
-
-.speech-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.speech-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.recording-status {
-  font-size: 13px;
-  color: #f56c6c;
-}
-
-.recording-status.stopped {
-  color: #909399;
-}
-
-.recording-status.paused {
-  color: #e6a23c;
+.interim-k {
+  flex-shrink: 0;
+  padding-top: 2px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
 }
 
 .interim-text {
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  background: #ffffff;
-  border-radius: 8px;
-  color: #909399;
-  font-size: 14px;
-  line-height: 1.6;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--ink-2);
 }
 
-.speech-actions {
+.record-foot {
   display: flex;
   align-items: center;
+  gap: 16px;
+
+  margin-top: 18px;
+  padding: 14px 0 18px;
+  border-top: 1px solid var(--rule);
+}
+
+.record-tip {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.record-buttons {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ---------- 右：转写台 ---------- */
+.recorder {
+  padding: 18px 20px 16px;
+  position: sticky;
+  top: 18px;
+}
+
+.recorder-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule);
+
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rule);
+}
+
+.state-live {
+  background: var(--vermilion);
+  animation: rec-pulse 1.6s ease-in-out infinite;
+}
+
+.state-paused {
+  background: var(--ochre);
+}
+
+.state-text {
+  letter-spacing: 0.04em;
+}
+
+.state-audio {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+  }
+}
+
+/* 计时是这个方块的唯一主角 */
+.recorder-clock {
+  margin: 20px 0 6px;
+  font-size: 40px;
+  line-height: 1;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+.recorder-hint {
+  min-height: 34px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.recorder-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.recorder-actions .el-button {
+  width: 100%;
+  height: 38px;
+  margin-left: 0;
+}
+
+.recorder-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule-soft);
+
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+/* ---------- 结果纸 ---------- */
+.result-sheet {
+  margin-top: 18px;
+  padding: 22px 30px 26px;
+}
+
+.result-head {
+  display: flex;
+  align-items: baseline;
   gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--rule);
 }
 
-.speech-tip {
-  font-size: 12px;
-  color: #909399;
+.result-head .sec-x {
+  margin-left: auto;
 }
 
-.speech-meta {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.meeting-timer {
-  font-family: monospace;
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.audio-status {
-  font-size: 12px;
-  color: #67c23a;
-}
-
-.audio-status.blocked {
-  color: #e6a23c;
-}
-
-@media (max-width: 768px) {
-  .home-page {
-    padding: 24px 12px 40px;
+@media (max-width: 1080px) {
+  .record-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .page-header h1 {
-    font-size: 24px;
+  /* 窄屏把转写台提到原文之前：开始会议是这一页的主操作 */
+  .recorder {
+    position: static;
+    order: -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 48px;
   }
 
-  .input-footer {
+  .record-main {
+    padding: 16px 16px 0;
+  }
+
+  .record-foot {
     flex-direction: column;
     align-items: stretch;
-    gap: 14px;
+    gap: 12px;
   }
 
-  .generate-actions {
-    flex-direction: column;
-    width: 100%;
+  .record-buttons {
+    flex-direction: column-reverse;
   }
 
-  .generate-actions .el-button {
-    width: 100%;
-    margin-left: 0;
-  }
-
-  .input-footer .el-button {
-    width: 100%;
-  }
-
-  /* 三个按钮纵向堆叠会过高，改为换行布局 */
-  .speech-actions {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-
-  .speech-actions .el-button {
-    flex: 1 1 100%;
+  .record-buttons .el-button {
     width: 100%;
     margin-left: 0;
   }
 
-  .speech-actions .speech-tip {
-    flex: 1 1 100%;
+  .recorder {
+    padding: 16px;
+  }
+
+  .recorder-clock {
+    font-size: 34px;
   }
 }
 </style>

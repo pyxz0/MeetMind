@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft } from '@element-plus/icons-vue'
 import {
   getMeeting,
   updateTodoStatus,
@@ -24,6 +23,7 @@ import {
 } from '../api/meeting'
 import { listContacts, type Contact } from '../api/auth'
 import MeetingAudioPlayer from '../components/MeetingAudioPlayer.vue'
+import MeetingResultComponent from '../components/MeetingResult.vue'
 import MeetingShareDialog from '../components/MeetingShareDialog.vue'
 const route = useRoute()
 const router = useRouter()
@@ -235,23 +235,37 @@ const loadContacts = async () => {
   }
 }
 
-/** 负责人选择 */
+/** 参会人员：名单常驻，增删控件按需展开 */
+const attendeesOpen = ref(false)
+
+/** 负责人选择：可一次勾选多位，逐个提交（后端接口按单人添加） */
 const leaderAdding = ref(false)
-const selectedLeaderId = ref<number | null>(null)
+const selectedLeaderIds = ref<number[]>([])
 
 const handleAddLeader = async () => {
-  if (!meeting.value || !selectedLeaderId.value) return
+  if (!meeting.value || !selectedLeaderIds.value.length) return
 
   leaderAdding.value = true
 
+  const ids = [...selectedLeaderIds.value]
+  const added: number[] = []
+  let latest = meeting.value.leaders
+
   try {
-    const leaders = await addMeetingLeader(meeting.value.id, selectedLeaderId.value)
+    for (const id of ids) {
+      latest = await addMeetingLeader(meeting.value.id, id)
+      added.push(id)
+    }
 
-    meeting.value.leaders = leaders
-    selectedLeaderId.value = null
+    meeting.value.leaders = latest
+    selectedLeaderIds.value = []
 
-    ElMessage.success('负责人已添加')
+    ElMessage.success(added.length > 1 ? `已添加 ${added.length} 位负责人` : '负责人已添加')
   } catch (error: any) {
+    // 部分成功：先把已加上的同步进名单，选区里只留没加上的，便于改后重试
+    meeting.value.leaders = latest
+    selectedLeaderIds.value = ids.filter((id) => !added.includes(id))
+
     const message = error?.response?.data?.message ?? '添加负责人失败'
     ElMessage.error(Array.isArray(message) ? message.join('；') : message)
   } finally {
@@ -281,26 +295,33 @@ const leaderCandidates = computed(() => {
   return contacts.value.filter((c) => !existing.has(c.id))
 })
 
-/** 成员选择与增删 */
+/** 成员选择与增删：同样支持一次勾选多位 */
 const memberSelecting = ref(false)
-const selectedMemberId = ref<number | null>(null)
+const selectedMemberIds = ref<number[]>([])
 
 const handleAddMember = async () => {
-  if (!meeting.value || !selectedMemberId.value) return
+  if (!meeting.value || !selectedMemberIds.value.length) return
 
   memberSelecting.value = true
 
+  const ids = [...selectedMemberIds.value]
+  const added: number[] = []
+  let latest = meeting.value.members
+
   try {
-    const members = await addMeetingMember(
-      meeting.value.id,
-      selectedMemberId.value
-    )
+    for (const id of ids) {
+      latest = await addMeetingMember(meeting.value.id, id)
+      added.push(id)
+    }
 
-    meeting.value.members = members
-    selectedMemberId.value = null
+    meeting.value.members = latest
+    selectedMemberIds.value = []
 
-    ElMessage.success('成员已添加')
+    ElMessage.success(added.length > 1 ? `已添加 ${added.length} 位成员` : '成员已添加')
   } catch (error: any) {
+    meeting.value.members = latest
+    selectedMemberIds.value = ids.filter((id) => !added.includes(id))
+
     const message = error?.response?.data?.message ?? '添加成员失败'
     ElMessage.error(Array.isArray(message) ? message.join('；') : message)
   } finally {
@@ -403,7 +424,14 @@ const loadMeeting = async () => {
   loading.value = true
 
   try {
-    meeting.value = await getMeeting(id)
+    const detail = await getMeeting(id)
+
+    // 请求期间用户可能又点了另一份纪要：丢弃过期响应，避免旧内容盖住新页面
+    if (Number(route.params.id) !== id) {
+      return
+    }
+
+    meeting.value = detail
   } catch (error) {
     console.error('会议详情加载失败：', error)
     ElMessage.error('会议详情加载失败，请检查后端服务')
@@ -411,6 +439,32 @@ const loadMeeting = async () => {
     loading.value = false
   }
 }
+
+/**
+ * 在详情页里点另一份纪要时，路由参数变了但组件会被复用，
+ * 不会重新走 onMounted —— 必须显式监听会议编号，否则页面停在上一条。
+ */
+watch(
+  () => route.params.id,
+  async (next, previous) => {
+    if (!next || next === previous) {
+      return
+    }
+
+    // 先清空作者上一条记录，避免旧内容与新的编号混在一起
+    meeting.value = null
+    attendeesOpen.value = false
+
+    await loadMeeting()
+
+    if (canManageMembers.value) {
+      await loadContacts()
+    }
+
+    // 换了一份纪要，回到纸的顶部
+    window.scrollTo({ top: 0, behavior: 'auto' })
+  }
+)
 
 const formatDate = (date?: string) => {
   if (!date) return '暂无时间'
@@ -681,6 +735,145 @@ const goBack = () => {
   router.push('/history')
 }
 
+/* =========================
+   纯展示：页眉、待办台账、原文摘要
+   ========================= */
+
+/** 文号：MM-年份-三位编号，年份取会议的预约或创建时间 */
+const docNo = computed(() => {
+  if (!meeting.value) return '—'
+
+  const source = meeting.value.scheduledAt || meeting.value.createdAt
+  const parsed = source ? new Date(source) : null
+
+  const year =
+    parsed && !Number.isNaN(parsed.getTime())
+      ? String(parsed.getFullYear())
+      : '—'
+
+  return `MM-${year}-${String(meeting.value.id).padStart(3, '0')}`
+})
+
+/** 页眉时间：yyyy-mm-dd hh:mm，取不到时显示 — */
+const formatWhen = (value?: string | null) => {
+  if (!value) return '—'
+
+  const parsed = new Date(value)
+
+  if (Number.isNaN(parsed.getTime())) return '—'
+
+  const pad = (part: number) => String(part).padStart(2, '0')
+
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
+}
+
+/** 参会人数：负责人与成员按账号去重，避免同一个人算两次 */
+const attendeeCount = computed(() => {
+  const seen = new Set<number>()
+
+  for (const person of [
+    ...(meeting.value?.leaders ?? []),
+    ...(meeting.value?.members ?? [])
+  ]) {
+    seen.add(person.id)
+  }
+
+  return seen.size
+})
+
+/** 负责人一行：多位用顿号连起来，取不到显示 — */
+const leadersLine = computed(
+  () =>
+    (meeting.value?.leaders ?? [])
+      .map((leader) => leader.name)
+      .join('、') || '—'
+)
+
+/** 会议状态文字：未开始 / 进行中 / 已完成 / 已取消 */
+const statusText = (status?: string | null) => {
+  switch (status) {
+    case 'COMPLETED':
+      return '已完成'
+    case 'IN_PROGRESS':
+      return '进行中'
+    case 'CANCELLED':
+      return '已取消'
+    default:
+      return '未开始'
+  }
+}
+
+/** 会议状态 → 视觉修饰词，颜色由 style.css 的 .m-status--* 提供 */
+const statusKey = (status?: string | null) => {
+  switch (status) {
+    case 'COMPLETED':
+      return 'done'
+    case 'IN_PROGRESS':
+      return 'live'
+    case 'CANCELLED':
+      return 'cancel'
+    default:
+      return 'wait'
+  }
+}
+
+/** 待办状态文字，取法与 MeetingResult 一致 */
+const todoStatusText = (status?: string) => {
+  switch (status) {
+    case 'COMPLETED':
+      return '已完成'
+    case 'IN_PROGRESS':
+      return '进行中'
+    case 'CANCELLED':
+      return '已取消'
+    default:
+      return '待处理'
+  }
+}
+
+/** 未完成的待办走朱色，完成的走绿色 */
+const todoStatusType = (status?: string) => {
+  switch (status) {
+    case 'COMPLETED':
+      return 'success'
+    case 'IN_PROGRESS':
+      return 'warning'
+    case 'CANCELLED':
+      return 'info'
+    default:
+      return 'danger'
+  }
+}
+
+/** 待办完成度：已完成 / 总数 */
+const todoSummary = computed(() => {
+  const todos = meeting.value?.todos ?? []
+
+  if (!todos.length) return '—'
+
+  const done = todos.filter((todo) => todo.status === 'COMPLETED').length
+
+  return `${done} / ${todos.length} 项已完成`
+})
+
+/** 原文篇幅；有录音时补一句可回听 */
+const contentSummary = computed(() => {
+  const content = meeting.value?.content
+
+  if (!content) return '—'
+
+  return meeting.value?.audioUrl
+    ? `${content.length} 字 · 可回听`
+    : `${content.length} 字`
+})
+
+/** 回听按钮的落点：只是把录音条滚进视野，不触发播放 */
+const audioAnchor = ref<HTMLElement | null>(null)
+
+const scrollToAudio = () => {
+  audioAnchor.value?.scrollIntoView({ block: 'center' })
+}
+
 onMounted(async () => {
   await loadMeeting()
 
@@ -692,329 +885,377 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="detail-page" v-loading="loading">
-    <div class="page-header">
-      <!-- 只保留一个小箭头：回到进入本页之前的那个页面 -->
-      <el-button class="back-arrow" text circle title="返回上一级" aria-label="返回上一级" @click="goBack">
-        <el-icon>
-          <ArrowLeft />
-        </el-icon>
-      </el-button>
-
-      <div class="header-title">
-        <h2>会议详情</h2>
-        <p>查看 AI 生成的完整会议纪要</p>
+  <div v-loading="loading" class="page">
+    <div class="page-narrow">
+      <!-- 回到上一页：一行文字链接，不占一条导航 -->
+      <div class="back-row">
+        <el-button link @click="goBack">
+          ‹ 回到上一页
+        </el-button>
       </div>
-    </div>
 
-    <template v-if="meeting">
-      <!-- 只读共享者会看到这条提示，避免误以为是页面故障 -->
-      <el-alert v-if="isReadOnly" type="info" :closable="false" show-icon class="readonly-tip"
-        title="你对该会议只有只读权限" description="由会议拥有者共享给你。如需修改，请联系拥有者调整权限。" />
+      <template v-if="meeting">
+        <!-- 只读共享者会看到这一条，避免误以为是页面坏了 -->
+        <p v-if="isReadOnly" class="note note-top">
+          这份纪要由会议拥有者共享给你，只能查看。需要修改，请联系拥有者调整权限。
+        </p>
 
-      <el-card class="meeting-card">
-        <template #header>
-          <div class="meeting-header">
-            <div class="title-actions">
-              <h3>{{ meeting.title || `会议 #${meeting.id}` }}</h3>
+        <!-- 一张纪要纸：页眉五栏、操作栏、标题与印、朱线、摘要与决策、待办、原文、人员 -->
+        <article class="sheet minutes">
+          <!-- 页眉：五栏字段，只靠竖栏线分栏 -->
+          <header class="meta-band">
+            <div class="field">
+              <span class="field-k">会议时间</span>
 
-              <el-button v-if="canEdit" type="primary" link @click="openEditTitle">
-                编辑标题
-              </el-button>
+              <span class="field-v num" :title="formatWhen(meeting.scheduledAt || meeting.createdAt)">
+                {{ formatWhen(meeting.scheduledAt || meeting.createdAt) }}
+              </span>
+            </div>
 
-              <!-- 未开始的正式会议可以改全部预约信息（时间、人员、标题） -->
-              <el-button v-if="canEditSchedule" type="primary" link @click="openScheduleDialog">
-                编辑预约信息
-              </el-button>
+            <div class="field">
+              <span class="field-k">参会人数</span>
 
-              <el-button v-if="canShare" type="primary" link @click="shareDialogVisible = true">
-                共享
+              <span class="field-v num">
+                {{ attendeeCount ? attendeeCount + ' 人' : '—' }}
+              </span>
+            </div>
+
+            <div class="field">
+              <span class="field-k">负责人</span>
+
+              <span class="field-v field-name" :title="leadersLine">
+                {{ leadersLine }}
+              </span>
+            </div>
+
+            <div class="field">
+              <span class="field-k">文号</span>
+
+              <span class="field-v num">{{ docNo }}</span>
+            </div>
+
+            <div class="field">
+              <span class="field-k">状态</span>
+
+              <div class="field-v field-status">
+                <span v-if="!canEdit" class="m-status" :class="`m-status--${statusKey(meeting.completionStatus)}`">
+                  <i class="m-status-dot" />
+
+                  {{ statusText(meeting.completionStatus) }}
+                </span>
+
+                <!-- 能改状态的人在这里直接改，与历史登记簿同一套标记 -->
+                <el-dropdown v-else trigger="click" placement="bottom-end"
+                  @command="(status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED') => handleCompletionStatusChange(status)">
+                  <button type="button" class="m-status" :class="`m-status--${statusKey(meeting.completionStatus)}`"
+                    :disabled="completionStatusUpdating"
+                    :aria-label="`会议状态：${statusText(meeting.completionStatus)}，点击修改`">
+                    <i class="m-status-dot" />
+
+                    {{ statusText(meeting.completionStatus) }}
+
+                    <span class="m-status-caret" aria-hidden="true" />
+                  </button>
+
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-for="option in [
+                        { label: '未开始', value: 'NOT_STARTED' },
+                        { label: '进行中', value: 'IN_PROGRESS' },
+                        { label: '已完成', value: 'COMPLETED' },
+                        { label: '已取消', value: 'CANCELLED' }
+                      ]" :key="option.value" :command="option.value">
+                        <span class="m-status" :class="`m-status--${statusKey(option.value)}`">
+                          <i class="m-status-dot" />
+
+                          {{ option.label }}
+                        </span>
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
+            </div>
+          </header>
+
+          <!-- 参会人员与录音开放：放在标题上方，先看人，再看事 -->
+          <section class="sec sec-attendees">
+            <div class="sec-h">
+              <span class="sec-t">参会人员</span>
+
+              <span class="sec-x">
+                负责人 {{ meeting.leaders?.length ?? 0 }} 位，成员 {{ meeting.members?.length ?? 0 }} 位
+              </span>
+
+              <!-- 名单常驻，增删控件收在“管理”里，免得把标题压得太低 -->
+              <el-button v-if="canManageMembers" link class="sec-add" @click="attendeesOpen = !attendeesOpen">
+                {{ attendeesOpen ? '收起' : '管理' }}
               </el-button>
             </div>
 
-            <div class="status-actions">
-              <!-- 置顶：放在会议状态左侧，与状态互不影响 -->
-              <el-button v-if="canEdit" size="small" :type="meeting.pinnedAt ? 'warning' : 'default'"
-                :plain="!meeting.pinnedAt" :loading="pinning" class="pin-button" @click="handleTogglePin">
-                {{ meeting.pinnedAt ? '取消置顶' : '📌 置顶' }}
-              </el-button>
+            <!-- 名单：同一身份排一行，人员以可移除的小签铺在同一区域内 -->
+            <div class="member-line">
+              <span class="member-k">负责人</span>
 
-              <el-tag v-else-if="meeting.pinnedAt" type="warning" size="small" effect="dark">
-                已置顶
+              <div class="member-chips">
+                <!-- × 只在「管理」展开时出现：收起态是只读名单，避免误删 -->
+                <el-tag v-for="leader in meeting.leaders ?? []" :key="`leader-${leader.id}`" type="info" effect="plain"
+                  class="member-chip"
+                  :closable="attendeesOpen && canManageMembers && (meeting.leaders?.length ?? 0) > 1"
+                  @close="handleRemoveLeader(leader)">
+                  <span class="member-name">{{ leader.name }}</span>
+                  <span class="member-phone num">{{ leader.phone }}</span>
+                </el-tag>
+
+                <span v-if="!meeting.leaders?.length" class="chip-empty">
+                  还没有指定负责人
+                </span>
+              </div>
+            </div>
+
+            <div class="member-line">
+              <span class="member-k">成员</span>
+
+              <div class="member-chips">
+                <el-tag v-for="member in meeting.members ?? []" :key="`member-${member.id}`" type="info" effect="plain"
+                  class="member-chip" :closable="attendeesOpen && canManageMembers" @close="handleRemoveMember(member)">
+                  <span class="member-name">{{ member.name }}</span>
+                  <span class="member-phone num">{{ member.phone }}</span>
+                </el-tag>
+
+                <span v-if="!meeting.members?.length" class="chip-empty">
+                  还没有添加参会成员
+                </span>
+              </div>
+            </div>
+
+            <template v-if="attendeesOpen">
+              <div v-if="canManageMembers" class="member-add">
+                <el-select v-model="selectedLeaderIds" multiple collapse-tags collapse-tags-tooltip size="small"
+                  placeholder="添加负责人（可多选）" filterable class="member-select" :loading="contactsLoading"
+                  @focus="loadContacts">
+                  <el-option v-for="c in leaderCandidates" :key="c.id" :label="`${c.name}（${c.phone}）`"
+                    :value="c.id" />
+                </el-select>
+
+                <el-button type="primary" size="small" :loading="leaderAdding" :disabled="!selectedLeaderIds.length"
+                  @click="handleAddLeader">
+                  添加负责人
+                </el-button>
+              </div>
+
+              <div v-if="canManageMembers" class="member-add">
+                <el-select v-model="selectedMemberIds" multiple collapse-tags collapse-tags-tooltip size="small"
+                  placeholder="选择要添加的成员（可多选）" filterable class="member-select" :loading="contactsLoading"
+                  @focus="loadContacts">
+                  <el-option v-for="c in memberCandidates" :key="c.id" :label="`${c.name}（${c.phone}）`"
+                    :value="c.id" />
+                </el-select>
+
+                <el-button type="primary" size="small" :loading="memberSelecting" :disabled="!selectedMemberIds.length"
+                  @click="handleAddMember">
+                  添加成员
+                </el-button>
+              </div>
+            </template>
+
+            <!-- 录音开放：只有负责人 / 创建者 / 超管能改 -->
+            <div v-if="meeting.hasAudio || canToggleAudio" class="audio-open">
+              <div class="audio-open-main">
+                <span class="audio-open-k">录音开放</span>
+
+                <span class="audio-open-d">
+                  关闭后只有负责人、会议创建者与超级管理员可以收听。
+                </span>
+              </div>
+
+              <el-switch v-if="canToggleAudio" :model-value="meeting.audioOpen" :loading="audioOpenUpdating"
+                active-text="开放" inactive-text="不开放" @change="(v: boolean) => handleAudioOpenChange(v)" />
+
+              <el-tag v-else size="small" :type="meeting.audioOpen ? 'success' : 'info'">
+                {{ meeting.audioOpen ? '已开放' : '未开放' }}
               </el-tag>
+            </div>
+          </section>
 
-              <span class="completion-label">
-                会议状态
+          <!-- 操作栏：信息在左、操作在右，放在标题上方方便直接够到 -->
+          <footer class="foot">
+            <div class="foot-meta">
+              <span>创建于 {{ formatDate(meeting.createdAt) }}</span>
+
+              <span v-if="meeting.scheduledAt">
+                预约 {{ formatScheduledAt(meeting.scheduledAt) }}（{{ isUpcoming ? '未开始' : '已到时间' }}）
               </span>
 
-              <!-- 只读用户只看不可改，用只读标签呈现 -->
-              <el-tag v-if="!canEdit" size="small">
-                {{
-                  meeting.completionStatus === 'COMPLETED'
-                    ? '已完成'
-                    : meeting.completionStatus === 'IN_PROGRESS'
-                      ? '进行中'
-                      : meeting.completionStatus === 'CANCELLED'
-                        ? '已取消'
-                        : '未开始'
-                }}
-              </el-tag>
+              <span v-if="!meeting.isOwner">他人共享</span>
 
-              <el-select v-else :model-value="meeting.completionStatus || 'NOT_STARTED'
-                " :loading="completionStatusUpdating" size="small" style="width: 130px" @change="
-      (status:
-        | 'NOT_STARTED'
-        | 'IN_PROGRESS'
-        | 'COMPLETED'
-        | 'CANCELLED') =>
-        handleCompletionStatusChange(status)
-    ">
-                <el-option label="未开始" value="NOT_STARTED" />
+              <span v-if="meeting.pinnedAt" class="foot-pin">已置顶</span>
+            </div>
 
-                <el-option label="进行中" value="IN_PROGRESS" />
+            <div class="foot-actions">
+              <el-button v-if="canListenAudio && meeting.audioUrl" @click="scrollToAudio">
+                回听录音
+              </el-button>
 
-                <el-option label="已完成" value="COMPLETED" />
+              <el-button v-if="canShare" @click="shareDialogVisible = true">
+                共享
+              </el-button>
 
-                <el-option label="已取消" value="CANCELLED" />
-              </el-select>
+              <el-button v-if="canEdit" @click="openEditTitle">
+                编辑标题
+              </el-button>
+
+              <el-button v-if="canEditSchedule" @click="openScheduleDialog">
+                编辑预约信息
+              </el-button>
+
+              <el-button v-if="canEdit" :loading="pinning" @click="handleTogglePin">
+                {{ meeting.pinnedAt ? '取消置顶' : '置顶' }}
+              </el-button>
 
               <el-button v-if="meeting.isDraft && canEdit" type="warning" :loading="regenerating"
                 @click="handleRegenerate">
                 重新生成纪要
               </el-button>
             </div>
-          </div>
-        </template>
+          </footer>
 
-        <div class="meta">
-          <span>会议编号：{{ meeting.id }}</span>
-          <span>创建时间：{{ formatDate(meeting.createdAt) }}</span>
-          <!-- 正式会议显示开会时间与「未开始」提示 -->
-          <span v-if="meeting.scheduledAt" class="scheduled-meta">
-            开会时间：{{ formatScheduledAt(meeting.scheduledAt) }}
-            <el-tag v-if="isUpcoming" type="primary" size="small" effect="plain">未开始</el-tag>
-            <el-tag v-else type="info" size="small" effect="plain">已到时间</el-tag>
-          </span>
-          <span v-if="!meeting.isOwner" class="shared-tag">
-            他人共享
-          </span>
-        </div>
-      </el-card>
+          <!-- 标题行：宋体大字；只有已完成的会议才盖章 -->
+          <div class="title-row">
+            <h1 class="doc-title">
+              {{ meeting.title || `会议 #${meeting.id}` }}
+            </h1>
 
-      <MeetingShareDialog v-if="meeting" v-model="shareDialogVisible" :meeting-id="meeting.id"
-        :meeting-title="meeting.title || `会议 #${meeting.id}`" />
-
-      <!-- 负责人与成员 -->
-      <el-card class="section-card members-card">
-        <template #header>
-          <div class="members-header">
-            <h3>负责人与成员</h3>
-
-            <span class="members-count">
-              {{ (meeting.members?.length ?? 0) }} 名成员
+            <span v-if="meeting.completionStatus === 'COMPLETED'" class="stamp">
+              已归档
             </span>
           </div>
-        </template>
 
-        <div class="member-row member-row--list">
-          <span class="member-label">负责人</span>
+          <div class="red-rule" />
 
-          <div class="member-list">
-            <span v-if="!meeting.leaders?.length" class="member-empty">暂无负责人</span>
+          <!-- 摘要与「一 核心决策」复用 MeetingResult 的排法 -->
+          <div class="minutes-body">
+            <MeetingResultComponent :result="meeting" />
+          </div>
 
-            <span v-for="l in meeting.leaders" :key="l.id" class="member-chip member-chip--leader">
-              <span class="chip-avatar">{{ l.name.slice(0, 1) }}</span>
-              <span>{{ l.name }}</span>
+          <!-- 二 待办事项：能改的人直接改，按台账行排 -->
+          <section class="sec">
+            <div class="sec-h">
+              <span class="sec-n">二</span>
+              <span class="sec-t">待办事项</span>
+              <span class="sec-x">{{ todoSummary }}</span>
 
-              <el-button v-if="canManageMembers && (meeting.leaders?.length ?? 0) > 1" link type="danger" size="small"
-                class="chip-remove" @click="handleRemoveLeader(l)">
-                ×
+              <el-button v-if="canEdit" link class="sec-add" @click="todoDialogVisible = true">
+                新增待办
               </el-button>
-            </span>
-          </div>
-        </div>
-
-        <div v-if="canManageMembers" class="member-add">
-          <el-select v-model="selectedLeaderId" size="small" placeholder="添加负责人" filterable clearable
-            style="width: 200px" :loading="contactsLoading" @focus="loadContacts">
-            <el-option v-for="c in leaderCandidates" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
-          </el-select>
-
-          <el-button type="primary" size="small" :loading="leaderAdding" :disabled="!selectedLeaderId"
-            @click="handleAddLeader">
-            添加负责人
-          </el-button>
-        </div>
-
-        <div class="member-row member-row--list">
-          <span class="member-label">成员</span>
-
-          <div class="member-list">
-            <span v-if="!meeting.members?.length" class="member-empty">暂无成员</span>
-
-            <span v-for="m in meeting.members" :key="m.id" class="member-chip">
-              <span class="chip-avatar">{{ m.name.slice(0, 1) }}</span>
-              <span>{{ m.name }}</span>
-
-              <el-button v-if="canManageMembers" link type="danger" size="small" class="chip-remove"
-                @click="handleRemoveMember(m)">
-                ×
-              </el-button>
-            </span>
-          </div>
-        </div>
-
-        <div v-if="canManageMembers" class="member-add">
-          <el-select v-model="selectedMemberId" size="small" placeholder="选择要添加的成员" filterable clearable
-            style="width: 240px" :loading="contactsLoading" @focus="loadContacts">
-            <el-option v-for="c in memberCandidates" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
-          </el-select>
-
-          <el-button type="primary" size="small" :loading="memberSelecting" :disabled="!selectedMemberId"
-            @click="handleAddMember">
-            添加成员
-          </el-button>
-        </div>
-      </el-card>
-
-      <el-card class="section-card">
-        <template #header>
-          <h3>会议原始内容</h3>
-        </template>
-
-        <div class="content-text">
-          {{ meeting.content || '暂无会议原文' }}
-        </div>
-      </el-card>
-
-      <!-- 录音开关：只有负责人/创建者/超管能改 -->
-      <el-card v-if="meeting.hasAudio || canToggleAudio" class="section-card audio-switch-card">
-        <div class="audio-switch-row">
-          <div class="audio-switch-main">
-            <div class="audio-switch-title">录音开放</div>
-            <div class="audio-switch-desc">
-              关闭后仅负责人、会议创建者与超级管理员可以收听，成员与共享者听不到
             </div>
-          </div>
 
-          <el-switch v-if="canToggleAudio" :model-value="meeting.audioOpen" :loading="audioOpenUpdating"
-            active-text="开放" inactive-text="不开放" @change="(v: boolean) => handleAudioOpenChange(v)" />
+            <template v-if="meeting.todos?.length">
+              <!-- 列头：每栏是什么只在这里说明一次 -->
+              <div class="todo-head">
+                <span class="todo-no" />
 
-          <el-tag v-else :type="meeting.audioOpen ? 'success' : 'info'" size="small">
-            {{ meeting.audioOpen ? '已开放' : '未开放' }}
-          </el-tag>
-        </div>
-      </el-card>
+                <span class="todo-text">任务</span>
+                <span class="todo-owner">负责人</span>
+                <span class="todo-due">截止</span>
+                <span class="todo-state">状态</span>
+                <span v-if="canEdit" class="todo-ops" />
+              </div>
 
-      <!-- 录音放在原文旁边，方便边听边核对转写是否准确 -->
-      <el-alert v-if="audioBlocked" class="audio-blocked-tip" type="info" :closable="false" show-icon
-        title="该会议录音未对成员开放" description="如需收听，请联系会议负责人或创建者开启录音开放。" />
+              <ul class="todo-lines">
+                <li v-for="(todo, index) in meeting.todos ?? []" :key="todo.id ?? index" class="todo-line">
+                  <span class="todo-no num">{{ index + 1 }}</span>
 
-      <MeetingAudioPlayer v-else-if="canListenAudio" :audio-url="meeting.audioUrl"
-        :duration-sec="meeting.audioDurationSec" />
+                  <span class="todo-text">{{ todo.content }}</span>
 
-      <el-card class="section-card">
-        <template #header>
-          <h3>AI 会议摘要</h3>
-        </template>
+                  <span class="todo-owner">{{ todo.assignee || '未指定' }}</span>
 
-        <div class="content-text">
-          {{ meeting.summary || '暂无会议摘要' }}
-        </div>
-      </el-card>
+                  <span class="todo-due num">{{ todo.deadline || '未指定' }}</span>
 
-      <el-card class="section-card">
-        <template #header>
-          <h3>会议决策</h3>
-        </template>
+                  <span class="todo-state">
+                    <!-- 能勾状态的人直接选；只读共享者只看标签 -->
+                    <el-tag v-if="!canEditTodos" size="small" :type="todoStatusType(todo.status)">
+                      {{ todoStatusText(todo.status) }}
+                    </el-tag>
 
-        <el-empty v-if="!meeting.decisions?.length" description="暂无会议决策" />
+                    <el-select v-else :model-value="todo.status || 'OPEN'" size="small" class="todo-select"
+                      @change="(status: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED') => handleTodoStatusChange(todo, status)">
+                      <el-option label="待处理" value="OPEN" />
+                      <el-option label="进行中" value="IN_PROGRESS" />
+                      <el-option label="已完成" value="COMPLETED" />
+                      <el-option label="已取消" value="CANCELLED" />
+                    </el-select>
+                  </span>
 
-        <div v-else class="decision-list">
-          <div v-for="(decision, index) in meeting.decisions" :key="index" class="decision-item">
-            <el-tag type="success">{{ index + 1 }}</el-tag>
-            <span>
-              {{ typeof decision === 'string' ? decision : (decision as any).content }}
-            </span>
-          </div>
-        </div>
-      </el-card>
+                  <span v-if="canEdit" class="todo-ops">
+                    <el-button link @click="handleEditTodo(todo)">
+                      编辑
+                    </el-button>
 
-      <el-card class="section-card">
-        <div class="todo-header">
-          <h3>待办事项</h3>
-
-          <el-button v-if="canEdit" type="primary" @click="todoDialogVisible = true">
-            新增待办
-          </el-button>
-        </div>
-
-        <el-empty v-if="!meeting.todos?.length" description="暂无待办事项" />
-
-        <el-table v-else :data="meeting.todos" stripe>
-          <el-table-column prop="content" label="任务内容" min-width="180" />
-
-          <el-table-column prop="assignee" label="负责人" width="120">
-            <template #default="{ row }">
-              {{ row.assignee || '未指定' }}
+                    <el-button link type="danger" @click="handleDeleteTodo(todo)">
+                      删除
+                    </el-button>
+                  </span>
+                </li>
+              </ul>
             </template>
-          </el-table-column>
 
-          <el-table-column prop="deadline" label="截止时间" min-width="140">
-            <template #default="{ row }">
-              {{ row.deadline || '未指定' }}
-            </template>
-          </el-table-column>
+            <p v-else class="empty-line">
+              {{ canEdit
+                ? '这场会议还没有待办。要做的事，点「新增待办」记一条。'
+                : '这场会议没有留下待办。' }}
+            </p>
+          </section>
 
-          <el-table-column prop="status" label="任务状态" width="160">
-            <template #default="{ row }">
-              <!-- 成员可以勾选状态；只读共享者只能看到文字 -->
-              <el-tag v-if="!canEditTodos" size="small">
-                {{
-                  row.status === 'COMPLETED'
-                    ? '已完成'
-                    : row.status === 'IN_PROGRESS'
-                      ? '进行中'
-                      : row.status === 'CANCELLED'
-                        ? '已取消'
-                        : '待处理'
-                }}
-              </el-tag>
+          <!-- 三 会议原文 -->
+          <section class="sec">
+            <div class="sec-h">
+              <span class="sec-n">三</span>
+              <span class="sec-t">会议原文</span>
+              <span class="sec-x">{{ contentSummary }}</span>
+            </div>
 
-              <el-select v-else :model-value="row.status || 'OPEN'" size="small" style="width: 130px" @change="(status: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED') =>
-                handleTodoStatusChange(row, status)">
-                <el-option label="待处理" value="OPEN" />
-                <el-option label="进行中" value="IN_PROGRESS" />
-                <el-option label="已完成" value="COMPLETED" />
-                <el-option label="已取消" value="CANCELLED" />
-              </el-select>
-            </template>
-          </el-table-column>
+            <p class="prose raw-text">
+              {{ meeting.content || '这场会议没有留下原文。' }}
+            </p>
 
-          <el-table-column v-if="canEdit" label="操作" width="150" align="center">
-            <template #default="{ row }">
-              <el-button type="primary" link @click="handleEditTodo(row)">
-                编辑
-              </el-button>
+            <p v-if="audioBlocked" class="note">
+              录音没有对成员开放，你现在听不到。需要回听，请联系会议负责人或创建者开启录音开放。
+            </p>
 
-              <el-button type="danger" link @click="handleDeleteTodo(row)">
-                删除
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-card>
-    </template>
+            <div v-else-if="canListenAudio" ref="audioAnchor" class="audio-strip">
+              <MeetingAudioPlayer :audio-url="meeting.audioUrl" :duration-sec="meeting.audioDurationSec" />
+            </div>
+          </section>
 
-    <el-empty v-else-if="!loading" description="未找到会议记录">
-      <el-button type="primary" @click="goBack">
-        返回历史记录
-      </el-button>
-    </el-empty>
+        </article>
+      </template>
+
+      <div v-else-if="!loading" class="blank">
+        <!-- 会议不存在或无权查看：说明发生了什么，并给出下一步 -->
+        <p class="blank-title">
+          没有找到这份纪要
+        </p>
+
+        <p class="blank-desc">
+          它可能已被删除，或你对这场会议没有查看权限。回到历史会议再试一次。
+        </p>
+
+        <el-button class="blank-action" type="primary" @click="goBack">
+          回到历史会议
+        </el-button>
+      </div>
+    </div>
   </div>
+
+  <!-- 共享：弹窗外壳由全局样式统一，内容由 MeetingShareDialog 承担 -->
+  <MeetingShareDialog v-if="meeting" v-model="shareDialogVisible" :meeting-id="meeting.id"
+    :meeting-title="meeting.title || `会议 #${meeting.id}`" />
+
   <el-dialog v-model="scheduleDialogVisible" title="编辑预约信息" width="520px">
-    <el-alert class="schedule-tip" type="info" :closable="false" show-icon
-      title="保存后会立即通知全部参会人员" description="会议一旦到达开会时间，将无法再修改时间与人员。" />
+    <p class="note note-flat">
+      保存后会立即通知全部参会人员。会议一旦到达开会时间，就不能再改时间与人员。
+    </p>
 
     <el-form label-width="96px">
       <el-form-item label="会议标题">
@@ -1074,7 +1315,7 @@ onMounted(async () => {
       </el-button>
     </template>
   </el-dialog>
-  <!-- 编辑待办弹窗 -->
+
   <el-dialog v-model="editTodoDialogVisible" title="编辑待办事项" width="500px">
     <el-form :model="editTodoForm" label-width="80px">
       <el-form-item label="任务内容" required>
@@ -1100,7 +1341,7 @@ onMounted(async () => {
       </el-button>
     </template>
   </el-dialog>
-  <!-- 编辑会议标题弹窗 -->
+
   <el-dialog v-model="editTitleDialogVisible" title="编辑会议标题" width="450px">
     <el-form label-width="90px">
       <el-form-item label="会议标题" required>
@@ -1122,272 +1363,577 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.detail-page {
-  max-width: 1000px;
-  margin: 0 auto;
-  padding: 28px 24px 48px;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-/* 返回箭头：小一点、低调，不抢标题的视觉重心 */
-.back-arrow {
-  width: 30px;
-  height: 30px;
-  color: #606266;
-  background: #ffffff;
-  border: 1px solid #ebeef5;
-  transition: color 0.2s, border-color 0.2s;
-}
-
-.back-arrow:hover {
-  color: #409eff;
-  border-color: #a0cfff;
-  background: #ffffff;
-}
-
-.back-arrow .el-icon {
-  font-size: 15px;
-}
-
-.header-title {
-  margin-top: 20px;
-}
-
-.header-title h2 {
-  margin: 0;
-  font-size: 25px;
-  font-weight: 600;
-}
-
-.header-title p {
-  margin: 8px 0 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.meeting-card,
-.section-card {
-  margin-bottom: 20px;
-  border-radius: 12px;
-}
-
-.meeting-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.meeting-header h3,
-.section-card h3 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-}
-
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  color: #909399;
-  font-size: 13px;
-}
-
-.content-text {
-  line-height: 1.9;
-  white-space: pre-wrap;
-  color: #606266;
-  font-size: 14px;
-}
-
-/* 只读提示与「他人共享」标记 */
-.readonly-tip {
-  margin-bottom: 16px;
-  border-radius: 10px;
-}
-
-.shared-tag {
-  color: #e6a23c;
-}
-
-.scheduled-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #409eff;
-}
-
-.schedule-tip {
-  margin-bottom: 16px;
-  border-radius: 8px;
-}
-
-/* ---- 负责人与成员 ---- */
-.members-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.members-count {
-  color: #909399;
-  font-size: 13px;
-  font-weight: 400;
-}
-
-.member-row {
+/* ---------- 回到上一页 ---------- */
+.back-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 0;
+  margin-bottom: 14px;
 }
 
-.member-row--list {
-  align-items: flex-start;
+.back-row .el-button {
+  font-size: 12.5px;
 }
 
-.member-label {
-  flex-shrink: 0;
-  width: 56px;
-  color: #909399;
-  font-size: 13px;
+/* ---------- 批注条：纸上的旁批，不用弹窗色 ---------- */
+.note {
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  border-left: 2px solid var(--rule);
+  background: var(--paper-2);
+
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: var(--ink-2);
 }
 
-.member-list {
+.note-top {
+  margin: 0 0 14px;
+}
+
+.note-flat {
+  margin: 0 0 6px;
+}
+
+/* ---------- 一张纪要纸 ---------- */
+.minutes {
+  padding: 30px 40px 24px;
+}
+
+/* 页眉：五栏字段，只靠竖栏线分栏 */
+.meta-band {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.field {
+  flex: 1 1 0;
   min-width: 0;
+  padding: 9px 14px 10px;
+  border-left: 1px solid var(--rule);
 }
 
-.member-empty {
-  color: #c0c4cc;
+.field:first-child {
+  border-left: none;
+  padding-left: 0;
+}
+
+.field-k {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+}
+
+.field-v {
+  display: block;
+  margin-top: 4px;
+  min-height: 18px;
+
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.field-name {
+  font-family: var(--song);
   font-size: 13px;
+  letter-spacing: 0.04em;
 }
 
-.member-chip {
-  display: inline-flex;
+/* 状态栏：放得下一枚状态标记，不参与省略号截断 */
+.field-status {
+  display: flex;
   align-items: center;
-  gap: 6px;
-
-  padding: 3px 10px 3px 4px;
-  border-radius: 14px;
-  background: #f5f7fa;
-
-  color: #303133;
-  font-size: 13px;
+  min-height: 22px;
+  overflow: visible;
 }
 
-.member-chip--leader {
-  background: #ecf5ff;
+/* 参会人员：移到标题上方，与页眉贴得比正文近一点 */
+.sec-attendees {
+  margin-top: 18px;
 }
 
-.chip-avatar {
-  width: 20px;
-  height: 20px;
+.sec-attendees + .title-row {
+  padding-top: 18px;
+}
 
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* 标题行：宋体大字，右侧一枚朱印 */
+.title-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 22px 0 0;
+}
 
-  border-radius: 50%;
-  background: #ffffff;
-  color: #409eff;
+.doc-title {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: 0.05em;
+  line-height: 1.28;
+  word-break: break-word;
+}
+
+.title-row .stamp {
+  margin-left: auto;
+}
+
+/* 朱线：与 MeetingResult 同一手法 */
+.red-rule {
+  margin-top: 18px;
+  height: 3px;
+  border-top: 1.5px solid var(--vermilion);
+  border-bottom: 1px solid var(--vermilion);
+  opacity: 0.7;
+}
+
+/*
+  纪要正文复用 MeetingResult：摘要与「一 核心决策」由它承担。
+  它自带的第二道朱线与只读待办表在这里隐藏 —— 待办要能改，
+  由本页的「二 待办事项」接管，避免同一张纸上出现两份待办。
+*/
+.minutes-body {
+  margin-top: 18px;
+}
+
+.minutes-body :deep(.result > .red-rule) {
+  display: none;
+}
+
+.minutes-body :deep(.result > .sec:last-of-type) {
+  display: none;
+}
+
+/* ---------- 待办：台账行 ---------- */
+.sec-add {
+  margin-left: 12px;
+  font-size: 12px;
+}
+
+.todo-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 10px 0 8px;
+  border-bottom: 1px solid var(--rule);
 
   font-size: 11px;
-  font-weight: 600;
+  color: var(--ink-3);
+  letter-spacing: 0.05em;
 }
 
-.chip-badge {
-  padding: 0 5px;
-  border-radius: 8px;
-  background: #409eff;
-  color: #ffffff;
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.chip-remove {
-  margin-left: 2px;
+.todo-lines {
+  margin: 0;
   padding: 0;
+  list-style: none;
+}
+
+.todo-line {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.todo-line:last-child {
+  border-bottom: none;
+}
+
+.todo-no {
+  flex-shrink: 0;
+  width: 16px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.todo-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.todo-owner {
+  flex-shrink: 0;
+  width: 84px;
+
+  font-family: var(--song);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-due {
+  flex-shrink: 0;
+  width: 96px;
+
+  font-size: 11px;
+  color: var(--ink-3);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-state {
+  flex-shrink: 0;
+  width: 108px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.todo-select {
+  width: 104px;
+}
+
+.todo-ops {
+  flex-shrink: 0;
+  width: 76px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.todo-ops .el-button {
+  margin-left: 0;
+}
+
+.empty-line {
+  padding: 14px 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-3);
+}
+
+/* ---------- 原文 ---------- */
+.raw-text {
+  margin-top: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.audio-strip {
+  margin-top: 16px;
+}
+
+/* ---------- 人员：栏线行 ---------- */
+.member-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.member-k {
+  flex-shrink: 0;
+  width: 46px;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+
+.member-name {
+  flex-shrink: 0;
+  font-family: var(--song);
   font-size: 14px;
-  line-height: 1;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.member-phone {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-3);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 名单小签：同一身份的所有人铺在一个可换行的区域里 */
+.member-chips {
+  flex: 1;
+  min-width: 0;
+
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 签内要放姓名和手机号，默认 24px 高偏挤，放宽一点 */
+.member-chip {
+  max-width: 100%;
+  height: auto;
+  padding: 4px 9px;
+}
+
+.member-chip .member-phone {
+  flex: none;
+  margin-left: 6px;
+  font-size: 10.5px;
+}
+
+.chip-empty {
+  font-size: 12px;
+  color: var(--ink-3);
 }
 
 .member-add {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 10px;
-  padding-top: 12px;
-  border-top: 1px dashed #ebeef5;
+  padding: 10px 0 0;
 }
 
-/* ---- 录音开放 ---- */
-.audio-switch-row {
+.member-select {
+  /* 多选后要放得下一个折叠标签 + “+N”，比单选时略宽 */
+  width: 260px;
+}
+
+/* ---------- 录音开放 ---------- */
+.audio-open {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.audio-switch-title {
-  color: #303133;
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.audio-switch-desc {
-  color: #909399;
-  font-size: 12px;
-}
-
-.audio-blocked-tip {
-  margin-bottom: 16px;
-  border-radius: 10px;
-}
-
-.decision-list {
-  display: flex;
-  flex-direction: column;
   gap: 14px;
+  margin-top: 6px;
+  padding-top: 0;
 }
 
-.decision-item {
+/* 一行放下：标签 + 一句说明 + 开关 */
+.audio-open-main {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  line-height: 1.8;
-  color: #606266;
+  align-items: baseline;
+  gap: 9px;
 }
 
-@media (max-width: 600px) {
-  .status-actions {
+.audio-open-k {
+  flex-shrink: 0;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.audio-open-d {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-3);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 页脚 ---------- */
+.foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+
+  /* 移到标题上方后：分隔线压在操作栏底下，而不是顶在上面 */
+  margin-bottom: 22px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.foot-meta {
+  flex: 1;
+  min-width: 0;
+
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.foot-pin {
+  color: var(--ochre);
+}
+
+.foot-actions {
+  flex-shrink: 0;
+
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+
+  margin-left: auto;
+}
+
+.foot-actions .el-button {
+  margin-left: 0;
+}
+
+/* ---------- 未找到这份纪要 ---------- */
+.blank-action {
+  margin-top: 18px;
+}
+
+/* ---------- 中等宽度：台账先折行，任务栏不被挤成一条缝 ---------- */
+@media (max-width: 760px) {
+  .todo-head {
+    display: none;
+  }
+
+  .todo-line {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 11px 0;
+  }
+
+  .todo-no {
+    display: none;
+  }
+
+  .todo-text {
+    flex: 1 1 100%;
+  }
+
+  .todo-owner,
+  .todo-due {
+    width: auto;
+  }
+
+  .todo-state {
+    width: auto;
+    margin-left: auto;
+  }
+
+  .todo-ops {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 48px;
+  }
+
+  .minutes {
+    padding: 20px 16px 18px;
+  }
+
+  /* 页眉五栏折成两栏 */
+  .meta-band {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .field {
+    padding: 8px 10px 9px;
+    border-left: 1px solid var(--rule);
+  }
+
+  .field:nth-child(2n + 1) {
+    border-left: none;
+    padding-left: 0;
+  }
+
+  .field:nth-child(n + 3) {
+    border-top: 1px solid var(--rule-soft);
+  }
+
+  /* 第五栏独占一行，页眉不至于出现半截栏线 */
+  .field:last-child {
+    grid-column: 1 / -1;
+    border-left: none;
+    padding-left: 0;
+  }
+
+  .title-row {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding-top: 18px;
+  }
+
+  .doc-title {
+    font-size: 22px;
+  }
+
+  .sec-h {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .sec-add {
+    margin-left: 0;
+  }
+
+  .member-line {
     flex-wrap: wrap;
   }
 
-  .detail-page {
-    padding: 18px 12px 32px;
-  }
-
-  .meta {
+  .member-add {
     flex-direction: column;
-    gap: 8px;
+    align-items: stretch;
   }
-}
 
-.status-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+  .member-select {
+    width: 100%;
+  }
 
-.completion-label {
-  color: #909399;
-  font-size: 13px;
+  .member-add .el-button {
+    width: 100%;
+  }
+
+  .audio-open {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  /* 窄屏把说明放成两行，不截断 */
+  .audio-open-main {
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .audio-open-d {
+    white-space: normal;
+    line-height: 1.7;
+  }
+
+  /* 操作条纵向排列 */
+  .foot {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .foot-actions {
+    flex-direction: column;
+    align-items: stretch;
+
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .foot-actions .el-button {
+    width: 100%;
+  }
 }
 </style>

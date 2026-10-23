@@ -87,44 +87,63 @@ const submit = async () => {
 
 <template>
   <div class="auth-page">
-    <div class="auth-card">
-      <div class="brand">
-        <span class="brand-icon">🧠</span>
-        <h1>MeetMind</h1>
-        <p>AI 智能会议纪要</p>
-      </div>
+    <div class="auth-sheet">
+      <!-- 书口题字：竖排一行，登录页唯一的装饰 -->
+      <aside class="auth-aside" aria-hidden="true">
+        <p class="aside-motto">会议有痕　纪要成卷</p>
+      </aside>
 
-      <el-form class="auth-form" @submit.prevent="submit">
-        <el-form-item v-if="mode === 'register'">
-          <el-input v-model="form.name" size="large" placeholder="姓名" maxlength="80" />
-        </el-form-item>
+      <div class="auth-body">
+        <header class="auth-head">
+          <h1 class="auth-logo">
+            <img src="/meetmind-logo.svg" alt="MeetMind" width="166" height="45" />
+          </h1>
 
-        <el-form-item>
-          <el-input v-model="form.phone" size="large" placeholder="手机号" type="tel" inputmode="numeric"
-            autocomplete="tel" maxlength="20" @keyup.enter="submit" />
-        </el-form-item>
+          <p>
+            {{
+              mode === 'login'
+                ? '登录后继续记录你的会议'
+                : '注册一个账号，开始记录会议'
+            }}
+          </p>
+        </header>
 
-        <el-form-item>
-          <el-input v-model="form.password" size="large" placeholder="密码（至少 8 位，需含字母和数字）" type="password"
-            :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" show-password maxlength="72"
-            @keyup.enter="submit" />
-        </el-form-item>
+        <el-form class="auth-form" @submit.prevent="submit">
+          <el-form-item v-if="mode === 'register'">
+            <el-input v-model="form.name" size="large" placeholder="姓名" maxlength="80" />
+          </el-form-item>
 
-        <el-button class="submit-button" type="primary" size="large" :loading="loading" @click="submit">
-          {{ mode === 'login' ? '登录' : '注册并登录' }}
-        </el-button>
-      </el-form>
+          <el-form-item>
+            <el-input v-model="form.phone" size="large" placeholder="手机号" type="tel" inputmode="numeric"
+              autocomplete="tel" maxlength="20" @keyup.enter="submit" />
+          </el-form-item>
 
-      <div class="switch-row">
-        <span v-if="mode === 'login'">
-          还没有账号？
-          <el-button link type="primary" @click="switchMode">注册一个</el-button>
-        </span>
+          <el-form-item>
+            <el-input v-model="form.password" size="large" placeholder="密码（至少 8 位，需含字母和数字）" type="password"
+              :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" show-password maxlength="72"
+              @keyup.enter="submit" />
+          </el-form-item>
 
-        <span v-else>
-          已有账号？
-          <el-button link type="primary" @click="switchMode">去登录</el-button>
-        </span>
+          <el-button class="submit-button" type="primary" size="large" :loading="loading" @click="submit">
+            {{ mode === 'login' ? '登录' : '注册并登录' }}
+          </el-button>
+        </el-form>
+
+        <div class="switch-row">
+          <span v-if="mode === 'login'">
+            还没有账号？
+            <el-button link type="primary" @click="switchMode">注册一个</el-button>
+          </span>
+
+          <span v-else>
+            已有账号？
+            <el-button link type="primary" @click="switchMode">去登录</el-button>
+          </span>
+        </div>
+
+        <p class="auth-foot">
+          会议原文进，摘要、决策与待办出。纪要会留下文号与时间码。
+        </p>
       </div>
     </div>
   </div>
@@ -133,58 +152,123 @@ const submit = async () => {
 <style scoped>
 .auth-page {
   min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: linear-gradient(160deg, #eef4ff 0%, #f5f7fa 55%, #eaf6ef 100%);
+  display: grid;
+  place-items: center;
+  padding: 28px 20px;
+  background: var(--desk);
 }
 
-.auth-card {
+.auth-sheet {
+  position: relative;
   width: 100%;
-  max-width: 380px;
-  padding: 36px 32px 28px;
-  border-radius: 16px;
-  background: #ffffff;
-  border: 1px solid #ebeef5;
-  box-shadow: 0 12px 32px rgba(31, 45, 61, 0.08);
+  max-width: 720px;
+  display: flex;
+  align-items: stretch;
+
+  background: var(--paper);
+  border: 1px solid var(--rule);
 }
 
-.brand {
-  text-align: center;
-  margin-bottom: 26px;
+/* 与侧栏同一条品牌线，登录页只在上沿留一道 */
+.auth-sheet::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: -1px;
+  height: 3px;
+  background: var(--brand-stripe);
 }
 
-.brand-icon {
-  font-size: 34px;
+/* 书口题字 */
+.auth-aside {
+  width: 150px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+
+  padding: 46px 0 36px;
+  border-right: 1px solid var(--rule);
+  background: var(--brand-wash);
 }
 
-.brand h1 {
-  margin: 8px 0 4px;
-  font-size: 22px;
-  font-weight: 700;
-  color: #303133;
+.aside-motto {
+  writing-mode: vertical-rl;
+  font-family: var(--song);
+  font-size: 15px;
+  line-height: 2.4;
+  letter-spacing: 0.34em;
+  color: var(--ink);
 }
 
-.brand p {
+.auth-body {
+  flex: 1;
+  min-width: 0;
+  padding: 42px 46px 34px;
+}
+
+/* 品牌标识：登录页是唯一可以放大展示它地方 */
+.auth-logo {
   margin: 0;
-  color: #909399;
-  font-size: 13px;
+  line-height: 0;
+}
+
+.auth-logo img {
+  display: block;
+  height: 56px;
+  width: auto;
+}
+
+.auth-head p {
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
 }
 
 .auth-form {
-  margin-top: 4px;
+  margin-top: 28px;
+}
+
+.auth-form :deep(.el-form-item) {
+  margin-bottom: 14px;
 }
 
 .submit-button {
   width: 100%;
+  height: 40px;
   margin-top: 4px;
 }
 
 .switch-row {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-soft);
+
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.auth-foot {
   margin-top: 18px;
-  text-align: center;
-  font-size: 13px;
-  color: #909399;
+  font-family: var(--fang);
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--ink-3);
+}
+
+@media (max-width: 640px) {
+  .auth-aside {
+    display: none;
+  }
+
+  .auth-body {
+    padding: 32px 24px 26px;
+  }
+
+  .auth-logo img {
+    height: 38px;
+  }
 }
 </style>

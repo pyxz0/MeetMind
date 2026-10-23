@@ -79,20 +79,6 @@ const notificationText = (item: InboxNotification) => {
   }
 }
 
-/** 通知图标 */
-const notificationIcon = (item: InboxNotification) => {
-  switch (item.type) {
-    case 'notice':
-      return '📣'
-    case 'leader':
-      return '👑'
-    case 'member':
-      return '👥'
-    default:
-      return '🔗'
-  }
-}
-
 const formatTime = (value: string) => {
   const date = new Date(value)
 
@@ -154,20 +140,25 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="inbox-page">
-    <div class="page-container">
-      <div class="page-header">
+  <div class="page">
+    <div class="page-inner">
+      <header class="page-head">
         <div>
           <h1>收件箱</h1>
-          <p>与你相关的会议通知与待办提醒</p>
+
+          <p class="page-desc">
+            与你相关的会议通知与待办提醒。读完即存档。
+          </p>
         </div>
 
-        <el-button :loading="loading" @click="load">
-          刷新
-        </el-button>
-      </div>
+        <div class="page-head-actions">
+          <el-button :loading="loading" @click="load">
+            刷新
+          </el-button>
+        </div>
+      </header>
 
-      <el-card class="inbox-card" shadow="never">
+      <section class="sheet inbox">
         <el-tabs v-model="activeTab">
           <!-- 通知 -->
           <el-tab-pane name="notifications">
@@ -180,27 +171,30 @@ onMounted(load)
             </template>
 
             <div v-if="notificationCount > 0" class="tab-toolbar">
+              <span class="tab-tip">
+                未读 {{ unreadCount }} 条
+              </span>
+
               <el-button link type="primary" :loading="markingRead" :disabled="unreadCount === 0"
                 @click="handleMarkRead">
                 全部标记已读
               </el-button>
             </div>
 
-            <el-empty v-if="!loading && notificationCount === 0" description="暂无通知" :image-size="70" />
+            <el-empty v-if="!loading && notificationCount === 0" description="暂无通知" />
 
             <ul v-else class="notice-list">
-              <li v-for="item in data.notifications" :key="item.key"
-                :class="['notice-item', { unread: !item.read }]" @click="openNotification(item)">
-                <span class="notice-icon">{{ notificationIcon(item) }}</span>
+              <li v-for="item in data.notifications" :key="item.key" :class="['notice-row', { unread: !item.read }]"
+                @click="openNotification(item)">
+                <span class="notice-flag" />
 
                 <div class="notice-body">
-                  <div class="notice-text">{{ notificationText(item) }}</div>
-                  <div class="notice-time">{{ formatTime(item.createdAt) }}</div>
+                  <p class="notice-text">
+                    {{ notificationText(item) }}
+                  </p>
+
+                  <span class="notice-time num">{{ formatTime(item.createdAt) }}</span>
                 </div>
-
-                <span v-if="!item.read" class="dot" />
-
-                <span class="notice-arrow">→</span>
               </li>
             </ul>
           </el-tab-pane>
@@ -214,76 +208,41 @@ onMounted(load)
               </span>
             </template>
 
-            <el-empty v-if="!loading && todoCount === 0" description="没有需要跟进的待办" :image-size="70" />
+            <el-empty v-if="!loading && todoCount === 0" description="没有需要跟进的待办" />
 
             <ul v-else class="todo-list">
-              <li v-for="item in data.todos" :key="item.id" class="todo-item" @click="openMeeting(item.meetingId)">
+              <li v-for="item in data.todos" :key="item.id" class="todo-row" @click="openMeeting(item.meetingId)">
                 <div class="todo-main">
-                  <div class="todo-content">{{ item.content }}</div>
+                  <p class="todo-content">
+                    {{ item.content }}
+                  </p>
 
                   <div class="todo-meta">
-                    <span>{{ item.meetingTitle }}</span>
-                    <span>·</span>
-                    <span>{{ item.assignee || '未指定负责人' }}</span>
-                    <span v-if="item.deadline">·截止 {{ item.deadline }}</span>
+                    <span class="todo-meeting">{{ item.meetingTitle }}</span>
+                    <span class="todo-who">{{ item.assignee || '未指定负责人' }}</span>
+                    <span v-if="item.deadline" class="num todo-when">截止 {{ item.deadline }}</span>
                   </div>
                 </div>
 
-                <el-tag v-if="item.mine" type="warning" size="small">
-                  指派给我
-                </el-tag>
+                <span v-if="item.mine" class="todo-flag">指派给我</span>
 
-                <el-tag v-else type="info" size="small">
-                  我负责的会议
-                </el-tag>
+                <span v-else class="todo-flag todo-flag-quiet">我负责的会议</span>
 
-                <el-tag :type="item.status === 'IN_PROGRESS' ? 'warning' : 'info'" size="small" effect="plain">
+                <el-tag :type="item.status === 'IN_PROGRESS' ? 'warning' : 'info'" size="small">
                   {{ item.status === 'IN_PROGRESS' ? '进行中' : '待处理' }}
                 </el-tag>
               </li>
             </ul>
           </el-tab-pane>
         </el-tabs>
-      </el-card>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
-.inbox-page {
-  min-height: 100%;
-  background: #f5f7fa;
-  padding: 40px 20px 60px;
-}
-
-.page-container {
-  max-width: 900px;
-  margin: 0 auto;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-.page-header h1 {
-  margin: 0 0 6px;
-  font-size: 30px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.page-header p {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.inbox-card {
-  border-radius: 12px;
+.inbox {
+  padding: 4px 22px 18px;
 }
 
 .tab-label {
@@ -293,33 +252,39 @@ onMounted(load)
 }
 
 .tab-badge {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 16px;
+  padding: 0 4px;
+  line-height: 15px;
 
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  font-family: var(--num);
+  font-size: 10px;
+  text-align: center;
 
-  border-radius: 9px;
-  background: #f56c6c;
-  color: #ffffff;
-
-  font-size: 11px;
-  font-weight: 600;
+  color: var(--vermilion);
+  border: 1px solid currentColor;
 }
 
 .tab-total {
-  color: #c0c4cc;
-  font-size: 12px;
+  font-family: var(--num);
+  font-size: 10.5px;
+  color: var(--ink-3);
 }
 
 .tab-toolbar {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 6px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 2px 6px;
+  border-bottom: 1px solid var(--rule-soft);
 }
 
+.tab-tip {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* ---------- 通知 ---------- */
 .notice-list,
 .todo-list {
   margin: 0;
@@ -327,92 +292,75 @@ onMounted(load)
   list-style: none;
 }
 
-.notice-item {
+.notice-row {
   display: flex;
-  align-items: center;
   gap: 12px;
-
-  padding: 12px 8px;
-  border-bottom: 1px solid #f5f7fa;
+  padding: 14px 4px;
+  border-bottom: 1px solid var(--rule-soft);
   cursor: pointer;
-
-  transition: background 0.15s;
+  transition: background-color 0.16s;
 }
 
-.notice-item:last-child {
+.notice-row:last-child {
   border-bottom: none;
 }
 
-.notice-item:hover {
-  background: #fafcff;
+.notice-row:hover {
+  background: var(--paper-2);
 }
 
-.notice-item.unread .notice-text {
-  font-weight: 600;
-}
-
-.notice-icon {
-  width: 28px;
-  height: 28px;
+.notice-flag {
   flex-shrink: 0;
+  width: 3px;
+  height: 15px;
+  margin-top: 3px;
+  background: var(--rule);
+}
 
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  border-radius: 50%;
-  background: #f0f7ff;
-  font-size: 14px;
+.notice-row.unread .notice-flag {
+  background: var(--vermilion);
 }
 
 .notice-body {
-  flex: 1;
   min-width: 0;
 }
 
 .notice-text {
-  color: #303133;
-  font-size: 14px;
-  margin-bottom: 3px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.notice-row.unread .notice-text {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .notice-time {
-  color: #c0c4cc;
-  font-size: 12px;
+  display: block;
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--ink-3);
 }
 
-.dot {
-  width: 7px;
-  height: 7px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: #f56c6c;
-}
-
-.notice-arrow {
-  flex-shrink: 0;
-  color: #c0c4cc;
-  font-size: 13px;
-}
-
-.todo-item {
+/* ---------- 待办 ---------- */
+.todo-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
 
-  padding: 12px 8px;
-  border-bottom: 1px solid #f5f7fa;
+  padding: 13px 4px;
+  border-bottom: 1px solid var(--rule-soft);
   cursor: pointer;
-
-  transition: background 0.15s;
+  transition: background-color 0.16s;
 }
 
-.todo-item:last-child {
+.todo-row:last-child {
   border-bottom: none;
 }
 
-.todo-item:hover {
-  background: #fafcff;
+.todo-row:hover {
+  background: var(--paper-2);
 }
 
 .todo-main {
@@ -421,16 +369,62 @@ onMounted(load)
 }
 
 .todo-content {
-  color: #303133;
-  font-size: 14px;
-  margin-bottom: 4px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink);
 }
 
 .todo-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  color: #909399;
+  gap: 6px 14px;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.todo-who {
+  font-family: var(--song);
   font-size: 12px;
+  letter-spacing: 0.03em;
+}
+
+.todo-when {
+  font-size: 10.5px;
+}
+
+.todo-flag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+
+  font-size: 10.5px;
+  color: var(--ochre-ink);
+  background: var(--ochre-wash);
+  border: 1px solid var(--ochre-line);
+}
+
+.todo-flag-quiet {
+  color: var(--ink-2);
+  background: var(--paper-2);
+  border-color: var(--rule);
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 48px;
+  }
+
+  .inbox {
+    padding: 4px 14px 14px;
+  }
+
+  .todo-row {
+    flex-wrap: wrap;
+  }
+
+  .todo-flag {
+    order: 3;
+    margin-left: 0;
+  }
 }
 </style>

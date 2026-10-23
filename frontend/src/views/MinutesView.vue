@@ -85,50 +85,54 @@ onMounted(loadContacts)
 </script>
 
 <template>
-  <div class="minutes-page">
-    <div class="page-container">
-      <div class="page-header">
-        <h1>智能纪要</h1>
-        <p>临时会议立即开始；正式会议可预约时间，参会人员会在开会前收到提醒</p>
-      </div>
+  <div class="page">
+    <div class="page-narrow">
+      <header class="page-head">
+        <div>
+          <h1>智能纪要</h1>
 
-      <div class="mode-grid">
+          <p class="page-desc">
+            临时会议立即开始；正式会议可预约时间，参会人员会在开会前收到提醒
+          </p>
+        </div>
+      </header>
+
+      <div class="modes sheet">
         <!-- 临时会议 -->
-        <el-card class="mode-card" shadow="hover">
+        <section class="mode">
           <div class="mode-head">
-            <span class="mode-icon">⚡</span>
-            <h2>临时会议</h2>
+            <span class="mode-t">临时会议</span>
+            <span class="mode-k">现在开始</span>
           </div>
 
-          <p class="mode-desc">
-            现在就开会。点击开始后直接进入实时转写与录音页面，边开会边记录，
-            结束后一键生成纪要。
+          <p class="prose mode-desc">
+            现在就开会。点开始后直接进入实时转写与录音，边开会边记录，结束后一键生成纪要。
           </p>
 
           <ul class="mode-points">
-            <li>实时语音转写，可暂停/继续</li>
+            <li>实时语音转写，可暂停／继续</li>
             <li>同步录音，会后可回听</li>
-            <li>会议结束后生成摘要、决策与待办</li>
+            <li>散会即出摘要、决策与待办</li>
           </ul>
 
           <el-button type="primary" size="large" class="mode-action" @click="startInstant">
             开始临时会议
           </el-button>
-        </el-card>
+        </section>
 
         <!-- 正式会议 -->
-        <el-card class="mode-card" shadow="hover">
+        <section class="mode mode-form">
           <div class="mode-head">
-            <span class="mode-icon">📅</span>
-            <h2>正式会议</h2>
+            <span class="mode-t">正式会议</span>
+            <span class="mode-k">预约</span>
           </div>
 
-          <p class="mode-desc">
+          <p class="mode-desc text">
             预约开会时间并指定参会人员。距离开会不足 20 分钟时，
-            所有参会人员（含负责人）会在收件箱收到提醒。
+            参会人员（含负责人）会在收件箱收到提醒。
           </p>
 
-          <el-form label-position="top" class="mode-form">
+          <el-form label-position="top" class="mode-fields">
             <el-form-item label="会议主题">
               <el-input v-model="form.title" maxlength="200" placeholder="不填则使用「未命名会议」" />
             </el-form-item>
@@ -159,114 +163,123 @@ onMounted(loadContacts)
             创建正式会议
           </el-button>
 
-          <p class="mode-hint">创建后可到会议详情继续补充成员或调整负责人</p>
-        </el-card>
+          <p class="mode-hint">
+            创建后可到会议详情继续补充成员或调整负责人
+          </p>
+        </section>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.minutes-page {
-  min-height: 100%;
-  background: #f5f7fa;
-  padding: 40px 20px 60px;
-}
-
-.page-container {
-  max-width: 1000px;
-  margin: 0 auto;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-header h1 {
-  margin: 0 0 6px;
-  font-size: 30px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.page-header p {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.mode-grid {
+.modes {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-  align-items: start;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  align-items: stretch;
 }
 
-.mode-card {
-  border-radius: 12px;
-  height: 100%;
+.mode {
+  display: flex;
+  flex-direction: column;
+  padding: 28px 30px 30px;
+}
+
+.mode-form {
+  border-left: 1px solid var(--rule);
+  background: var(--paper);
 }
 
 .mode-head {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
 }
 
-.mode-icon {
-  width: 38px;
-  height: 38px;
-
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  border-radius: 10px;
-  background: #f0f7ff;
-  font-size: 19px;
-}
-
-.mode-head h2 {
-  margin: 0;
+.mode-t {
+  font-family: var(--song);
   font-size: 18px;
-  color: #303133;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.mode-k {
+  margin-left: auto;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
 }
 
 .mode-desc {
-  margin: 0 0 12px;
-  color: #606266;
-  font-size: 13px;
-  line-height: 1.7;
+  margin-top: 16px;
 }
 
 .mode-points {
-  margin: 0 0 18px;
-  padding-left: 18px;
-  color: #909399;
-  font-size: 13px;
-  line-height: 1.9;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+
+  font-size: 12.5px;
+  color: var(--ink-2);
 }
 
-.mode-form {
-  margin-bottom: 4px;
+.mode-points li {
+  display: flex;
+  gap: 9px;
+  align-items: baseline;
+}
+
+.mode-points li::before {
+  content: "—";
+  color: var(--rule);
+  flex-shrink: 0;
+}
+
+.mode-fields {
+  margin-top: 18px;
 }
 
 .mode-action {
+  margin-top: auto;
   width: 100%;
-  margin-top: 8px;
+  height: 40px;
 }
 
 .mode-hint {
-  margin: 10px 0 0;
-  color: #c0c4cc;
-  font-size: 12px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--ink-3);
   text-align: center;
 }
 
 @media (max-width: 900px) {
-  .mode-grid {
-    grid-template-columns: 1fr;
+  .modes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mode-form {
+    border-left: none;
+    border-top: 1px solid var(--rule);
+  }
+
+  .mode-action {
+    margin-top: 18px;
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 48px;
+  }
+
+  .mode {
+    padding: 22px 18px 24px;
   }
 }
 </style>

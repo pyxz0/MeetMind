@@ -24,6 +24,16 @@ async function bootstrap() {
     rawBody: true,
   });
 
+  /**
+   * 请求体上限调到 1MB。
+   *
+   * 默认 100KB 放不下「data URL 头像」：前端会把图压到 15–30KB，
+   * 但有人换用原图时，超过限制会抛 PayloadTooLarge，
+   * 最终被异常过滤器包成 500，看起来像服务出错。
+   * 放开到 1MB 后，超限改由 DTO 的长度校验给出 400 与中文提示。
+   */
+  app.useBodyParser('json', { limit: '1mb' });
+
   app.setGlobalPrefix('api');
 
   /**

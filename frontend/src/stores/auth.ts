@@ -23,6 +23,8 @@ export interface CurrentUser {
   /** 手机号，唯一登录标识 */
   phone: string
   name: string
+  /** 头像 data URL；为空时界面用姓名首字 */
+  avatar?: string | null
   role: Role
   roleLabel: string
   isActive: boolean

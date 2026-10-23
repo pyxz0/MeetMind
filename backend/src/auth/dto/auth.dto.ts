@@ -32,6 +32,17 @@ export class UpdateProfileDto {
   @MaxLength(80)
   name?: string;
 
+  /**
+   * 头像：前端已压到 256px 的 JPEG data URL。
+   *
+   * 格式与大小（约 400KB）都在 Service 里校验——
+   * 需要返回中文错误提示，而不是 class-validator 的英文默认文案。
+   * 传空字符串表示「移除头像」。
+   */
+  @IsOptional()
+  @IsString()
+  avatar?: string;
+
   @IsOptional()
   @IsString()
   currentPassword?: string;

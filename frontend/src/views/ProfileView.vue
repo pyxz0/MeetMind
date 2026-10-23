@@ -49,6 +49,137 @@ const nameForm = reactive({
 
 const nameSaving = ref(false)
 
+/* =========================
+   头像
+   ========================= */
+
+const avatarInput = ref<HTMLInputElement | null>(null)
+const avatarSaving = ref(false)
+
+const pickAvatar = () => {
+  avatarInput.value?.click()
+}
+
+/**
+ * 把选中的图片裁成正方形、缩到 256px，再转成 JPEG data URL。
+ *
+ * 在浏览器里压完再上传，后端只存结果：一张 256px 的头像约 15–30KB，
+ * 既不会撑大用户接口，也不用再维护一套静态资源目录与鉴权。
+ */
+const fileToAvatar = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onerror = () => reject(new Error('图片读取失败，请重试'))
+
+    reader.onload = () => {
+      const image = new Image()
+
+      image.onerror = () => reject(new Error('这张图无法识别，请换一张'))
+
+      image.onload = () => {
+        const side = Math.min(image.width, image.height)
+        const canvas = document.createElement('canvas')
+
+        canvas.width = 256
+        canvas.height = 256
+
+        const context = canvas.getContext('2d')
+
+        if (!context) {
+          reject(new Error('当前浏览器不支持图片处理'))
+          return
+        }
+
+        context.imageSmoothingQuality = 'high'
+        context.drawImage(
+          image,
+          (image.width - side) / 2,
+          (image.height - side) / 2,
+          side,
+          side,
+          0,
+          0,
+          256,
+          256
+        )
+
+        resolve(canvas.toDataURL('image/jpeg', 0.85))
+      }
+
+      image.src = String(reader.result)
+    }
+
+    reader.readAsDataURL(file)
+  })
+
+const onAvatarChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+
+  // 清空 value：同一张图重新选择时也要能触发 change
+  input.value = ''
+
+  if (!file) return
+
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('请选择图片文件（PNG / JPEG / WebP）')
+    return
+  }
+
+  if (file.size > 8 * 1024 * 1024) {
+    ElMessage.warning('图片超过 8MB，请换一张小一点的')
+    return
+  }
+
+  avatarSaving.value = true
+
+  try {
+    const avatar = await fileToAvatar(file)
+    const updated = await updateProfile({ avatar })
+
+    authStore.setUser(updated)
+
+    ElMessage.success('头像已更新')
+  } catch (error: any) {
+    const message =
+      error?.response?.data?.message ?? error?.message ?? '头像上传失败，请重试'
+
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    avatarSaving.value = false
+  }
+}
+
+const removeAvatar = async () => {
+  avatarSaving.value = true
+
+  try {
+    const updated = await updateProfile({ avatar: '' })
+
+    authStore.setUser(updated)
+
+    ElMessage.success('已移除头像')
+  } catch (error: any) {
+    const message =
+      error?.response?.data?.message ?? '移除失败，请重试'
+
+    ElMessage.error(message)
+  } finally {
+    avatarSaving.value = false
+  }
+}
+
+/* =========================
+   放大查看
+   ========================= */
+
+const avatarDialogVisible = ref(false)
+
+const openAvatarDialog = () => {
+  avatarDialogVisible.value = true
+}
+
 const saveName = async () => {
   const name = nameForm.name.trim()
 
@@ -171,289 +302,406 @@ const handleLogout = async () => {
 </script>
 
 <template>
-  <div class="profile-page">
-    <div class="page-container">
-      <div class="page-header">
+  <div class="page">
+    <div class="page-inner">
+      <header class="page-head">
         <div>
           <h1>个人中心</h1>
-          <p>管理自己的账号信息与登录密码</p>
+
+          <p class="page-desc">
+            账号信息与登录密码在这里维护，手机号需由管理员修改。
+          </p>
         </div>
-      </div>
+      </header>
 
-      <el-card v-if="user" class="section-card" shadow="never">
-        <template #header>
-          <span>账号信息</span>
-        </template>
+      <div class="account sheet">
+        <!-- 左栏：身份与入口 -->
+        <aside class="side">
+          <div class="ident">
+            <!-- 点头像：放大查看，并在弹窗里更换 / 移除 -->
+            <button type="button" class="ident-avatar" :aria-label="user?.avatar ? '查看或更换头像' : '添加头像'"
+              @click="openAvatarDialog">
+              <img v-if="user?.avatar" :src="user.avatar" alt="" class="ident-avatar-img" />
+              <span v-else class="ident-mark">{{ avatarText }}</span>
 
-        <div class="identity">
-          <div class="identity-avatar">{{ avatarText }}</div>
+              <span class="ident-avatar-hint">点击查看</span>
+            </button>
 
-          <div class="identity-main">
-            <div class="identity-name">{{ user.name }}</div>
+            <div class="ident-main">
+              <h2 class="ident-name">{{ user?.name }}</h2>
 
-            <div class="identity-tags">
-              <el-tag :type="isSoleSuperAdmin ? 'danger' : user.role === 'ADMIN' ? 'warning' : 'info'" size="small">
-                {{ user.roleLabel }}
-              </el-tag>
+              <p class="ident-role">
+                {{ user?.roleLabel }}
 
-              <el-tag v-if="isSoleSuperAdmin" type="danger" effect="plain" size="small">
-                系统唯一超管
-              </el-tag>
+                <span v-if="isSoleSuperAdmin" class="ident-sole">系统唯一超管</span>
+              </p>
+
+              <p class="ident-phone num">{{ user?.phone }}</p>
             </div>
           </div>
-        </div>
 
-        <el-descriptions class="info-list" :column="1" border>
-          <el-descriptions-item label="手机号">
-            {{ user.phone }}
-          </el-descriptions-item>
+          <dl class="ident-rows">
+            <div v-if="user?.roleLabel" class="ident-row">
+              <dt>角色</dt>
+              <dd>{{ user?.roleLabel }}</dd>
+            </div>
 
-          <el-descriptions-item label="角色">
-            {{ user.roleLabel }}
-          </el-descriptions-item>
+            <div v-if="user?.phone" class="ident-row">
+              <dt>手机号</dt>
+              <dd class="num">{{ user?.phone }}</dd>
+            </div>
 
-          <el-descriptions-item label="注册时间">
-            {{ formatDate(user.createdAt) }}
-          </el-descriptions-item>
-        </el-descriptions>
+            <div v-if="user?.createdAt" class="ident-row">
+              <dt>注册时间</dt>
+              <dd class="num">{{ formatDate(user?.createdAt) }}</dd>
+            </div>
+          </dl>
 
-        <el-alert class="phone-tip" type="info" :closable="false" show-icon
-          title="手机号是登录账号，需由管理员修改" description="为避免误操作把自己锁在系统外，手机号不支持自助修改。" />
-      </el-card>
+          <nav v-if="canManageUsers" class="entries">
+            <div class="entries-k">管理入口</div>
 
-      <el-card class="section-card" shadow="never">
-        <template #header>
-          <span>修改姓名</span>
-        </template>
+            <el-button link class="entry" @click="router.push('/users')">
+              用户管理
+            </el-button>
 
-        <div class="form-row">
-          <el-input v-model="nameForm.name" maxlength="80" placeholder="请输入姓名" style="max-width: 280px"
-            @keyup.enter="saveName" />
+            <el-button v-if="canViewAudit" link class="entry" @click="router.push('/audit')">
+              审计日志
+            </el-button>
+          </nav>
+        </aside>
 
-          <el-button type="primary" :loading="nameSaving" @click="saveName">
-            保存
-          </el-button>
-        </div>
-      </el-card>
+        <!-- 右栏：资料、密码、退出 -->
+        <div class="main">
+          <section class="sec">
+            <div class="sec-h">
+              <span class="sec-n">一</span>
+              <span class="sec-t">修改资料</span>
+              <span class="sec-x">姓名显示在顶栏与纪要里</span>
+            </div>
 
-      <el-card class="section-card" shadow="never">
-        <template #header>
-          <span>修改密码</span>
-        </template>
+            <el-form label-position="top" class="fields">
+              <el-form-item label="姓名">
+                <el-input v-model="nameForm.name" maxlength="80" placeholder="请输入姓名" @keyup.enter="saveName" />
+              </el-form-item>
+            </el-form>
 
-        <el-form label-width="90px" class="password-form">
-          <el-form-item label="原密码">
-            <el-input v-model="passwordForm.currentPassword" type="password" show-password maxlength="72"
-              autocomplete="current-password" placeholder="请输入当前密码" />
-          </el-form-item>
+            <el-button type="primary" :loading="nameSaving" @click="saveName">
+              保存
+            </el-button>
+          </section>
 
-          <el-form-item label="新密码">
-            <el-input v-model="passwordForm.newPassword" type="password" show-password maxlength="72"
-              autocomplete="new-password" placeholder="至少 8 位，需含字母和数字" />
-          </el-form-item>
+          <section class="sec">
+            <div class="sec-h">
+              <span class="sec-n">二</span>
+              <span class="sec-t">修改密码</span>
+              <span class="sec-x">下次登录使用新密码</span>
+            </div>
 
-          <el-form-item label="确认新密码">
-            <el-input v-model="passwordForm.confirmPassword" type="password" show-password maxlength="72"
-              autocomplete="new-password" placeholder="再次输入新密码" />
-          </el-form-item>
+            <el-form label-position="top" class="fields">
+              <el-form-item label="原密码">
+                <el-input v-model="passwordForm.currentPassword" type="password" show-password maxlength="72"
+                  autocomplete="current-password" placeholder="请输入当前密码" />
+              </el-form-item>
 
-          <el-form-item>
+              <el-form-item label="新密码">
+                <el-input v-model="passwordForm.newPassword" type="password" show-password maxlength="72"
+                  autocomplete="new-password" placeholder="至少 8 位，需含字母和数字" />
+              </el-form-item>
+
+              <el-form-item label="确认新密码">
+                <el-input v-model="passwordForm.confirmPassword" type="password" show-password maxlength="72"
+                  autocomplete="new-password" placeholder="再次输入新密码" />
+              </el-form-item>
+            </el-form>
+
             <el-button type="primary" :loading="passwordSaving" @click="savePassword">
               修改密码
             </el-button>
-          </el-form-item>
-        </el-form>
-      </el-card>
+          </section>
 
-      <!-- 管理员入口：不再占用侧边栏导航 -->
-      <el-card v-if="canManageUsers" class="section-card" shadow="never">
-        <template #header>
-          <span>管理</span>
-        </template>
-
-        <div class="manage-row">
-          <div class="manage-main">
-            <div class="manage-title">用户管理</div>
-            <div class="manage-desc">
-              查看全部账号、分配角色、启用停用与删除账号
+          <div class="reg-actions">
+            <div class="logout-main">
+              <div class="logout-t">退出登录</div>
+              <p class="logout-x">退出后需重新输入手机号与密码。</p>
             </div>
-          </div>
 
-          <el-button type="primary" plain @click="router.push('/users')">
-            进入用户管理
-          </el-button>
+            <el-button type="danger" plain @click="handleLogout">
+              退出登录
+            </el-button>
+          </div>
         </div>
 
-        <div v-if="canViewAudit" class="manage-row manage-row--divided">
-          <div class="manage-main">
-            <div class="manage-title">审计日志</div>
-            <div class="manage-desc">
-              登录、账号变更、会议删除、共享与切换身份的操作留痕
-            </div>
+        <!-- 头像：放大查看，同时提供更换与移除 -->
+        <el-dialog v-model="avatarDialogVisible" title="头像" width="min(420px, 92vw)" append-to-body>
+          <div class="avatar-view">
+            <img v-if="user?.avatar" :src="user.avatar" alt="" class="avatar-view-img" />
+            <span v-else class="avatar-view-mark">{{ avatarText }}</span>
           </div>
 
-          <el-button type="primary" plain @click="router.push('/audit')">
-            查看审计日志
-          </el-button>
-        </div>
-      </el-card>
+          <p class="avatar-view-hint">
+            图片会按正方形居中裁切并缩到 256px 后保存。支持 PNG / JPEG / WebP，单张不超过 8MB。
+          </p>
 
-      <!-- 退出登录放在个人中心，与账号相关操作集中在一起 -->
-      <el-card class="section-card logout-card" shadow="never">
-        <div class="manage-row">
-          <div class="manage-main">
-            <div class="manage-title">退出登录</div>
-            <div class="manage-desc">
-              退出后需要重新输入手机号与密码才能继续使用
+          <input ref="avatarInput" type="file" accept="image/png,image/jpeg,image/webp" class="avatar-file"
+            @change="onAvatarChange" />
+
+          <template #footer>
+            <div class="avatar-foot">
+              <el-button v-if="user?.avatar" type="danger" plain :disabled="avatarSaving" @click="removeAvatar">
+                移除头像
+              </el-button>
+
+              <span class="avatar-foot-gap" />
+
+              <el-button :disabled="avatarSaving" @click="avatarDialogVisible = false">
+                关闭
+              </el-button>
+
+              <el-button type="primary" :loading="avatarSaving" @click="pickAvatar">
+                {{ user?.avatar ? '更换头像' : '上传头像' }}
+              </el-button>
             </div>
-          </div>
-
-          <el-button type="danger" plain @click="handleLogout">
-            退出登录
-          </el-button>
-        </div>
-      </el-card>
+          </template>
+        </el-dialog>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.profile-page {
-  min-height: 100%;
-  background: #f5f7fa;
-  padding: 40px 20px 60px;
+.account {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
 }
 
-.page-container {
-  max-width: 900px;
-  margin: 0 auto;
+/* ---------- 左栏：身份 ---------- */
+.side {
+  padding: 26px 24px 28px;
+  border-right: 1px solid var(--rule);
 }
 
-.page-header {
-  margin-bottom: 22px;
-}
-
-.page-header h1 {
-  margin: 0 0 6px;
-  font-size: 30px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.page-header p {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.section-card {
-  border-radius: 12px;
-  margin-bottom: 18px;
-}
-
-.identity {
+.ident {
   display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 20px;
+  gap: 14px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--rule);
 }
 
-.identity-avatar {
-  width: 56px;
-  height: 56px;
+/* 头像：方形、2px 直角，和整站的纸面一致；整块可点，点开看大图 */
+.ident-avatar {
+  width: 68px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
 
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ident-avatar-img {
+  width: 68px;
+  height: 68px;
+  object-fit: cover;
+  display: block;
+
+  border: 1px solid var(--rule);
+  background: var(--paper-2);
+  transition: border-color 0.16s;
+}
+
+.ident-avatar:hover .ident-avatar-img,
+.ident-avatar:hover .ident-mark {
+  border-color: var(--brand);
+}
+
+.ident-avatar-hint {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+.ident-avatar:hover .ident-avatar-hint {
+  color: var(--brand-strong);
+}
+
+.ident-mark {
+  width: 68px;
+  height: 68px;
   display: flex;
   align-items: center;
   justify-content: center;
 
-  border-radius: 50%;
-  background: #ecf5ff;
-  color: #409eff;
-
-  font-size: 24px;
-  font-weight: 600;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--song);
+  font-size: 28px;
 }
 
-.identity-name {
-  margin-bottom: 8px;
-  color: #303133;
-  font-size: 18px;
-  font-weight: 600;
+/* ---------- 头像弹窗：放大 + 更换 ---------- */
+.avatar-view {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 18px;
 }
 
-.identity-tags {
+.avatar-view-img,
+.avatar-view-mark {
+  width: min(280px, 100%);
+  aspect-ratio: 1 / 1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+
+  border: 1px solid var(--rule);
+  background: var(--paper-2);
 }
 
-.info-list {
-  margin-bottom: 16px;
+.avatar-view-img {
+  object-fit: cover;
 }
 
-.phone-tip {
-  border-radius: 8px;
+.avatar-view-mark {
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--song);
+  font-size: 120px;
 }
 
-.form-row {
+@media (max-width: 480px) {
+  .avatar-view-mark {
+    font-size: 84px;
+  }
+}
+
+.avatar-view-hint {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.avatar-file {
+  display: none;
+}
+
+.avatar-foot {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
-.password-form {
-  max-width: 420px;
+.avatar-foot-gap {
+  flex: 1;
 }
 
-.manage-row {
+.ident-main {
+  min-width: 0;
+}
+
+.ident-name {
+  font-size: 20px;
+  letter-spacing: 0.06em;
+}
+
+.ident-role,
+.ident-phone {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.ident-sole {
+  margin-left: 6px;
+  color: var(--vermilion);
+}
+
+.ident-rows {
+  margin: 0;
+  padding: 0;
+}
+
+.ident-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 12.5px;
 }
 
-.manage-title {
-  color: #303133;
-  font-size: 14px;
-  font-weight: 600;
+.ident-row dt {
+  flex-shrink: 0;
+  color: var(--ink-3);
+}
+
+.ident-row dd {
+  margin: 0;
+  color: var(--ink);
+  text-align: right;
+}
+
+/* ---------- 左栏：管理入口 ---------- */
+.entries {
+  display: flex;
+  flex-direction: column;
+  margin-top: 22px;
+}
+
+.entries-k {
   margin-bottom: 4px;
+  font-family: var(--song);
+  letter-spacing: 0.1em;
 }
 
-.manage-desc {
-  color: #909399;
+.entries .entry {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 8px 0;
   font-size: 13px;
 }
 
-/* 同一张卡片里的第二个入口，用细分隔线区分 */
-.manage-row--divided {
+/* ---------- 右栏 ---------- */
+.main {
+  padding: 28px 36px 30px;
+}
+
+.fields {
+  max-width: 380px;
   margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid #f5f7fa;
 }
 
-/* 退出登录是破坏性操作，用克制一点的边框区分 */
-.logout-card {
-  border-color: #fbc4c4;
+.logout-main {
+  flex: 1;
+  min-width: 0;
 }
 
-@media (max-width: 768px) {
-  .profile-page {
-    padding: 24px 12px 40px;
-  }
+.logout-t {
+  font-family: var(--song);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+}
 
-  .page-header h1 {
-    font-size: 24px;
-  }
+.logout-x {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
 
-  .form-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
+@media (max-width: 640px) {
+  .page { padding: 22px 14px 48px; }
+  .account { grid-template-columns: minmax(0, 1fr); }
+  .main { padding: 20px 18px 24px; }
+  .fields { max-width: none; }
 
-  .manage-row {
-    flex-direction: column;
-    align-items: stretch;
+  .side {
+    padding: 20px 18px 22px;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
   }
 }
 </style>

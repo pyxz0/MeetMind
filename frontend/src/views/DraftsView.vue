@@ -198,300 +198,115 @@ onMounted(loadDrafts)
 </script>
 
 <template>
-  <div class="draft-page">
-    <div class="page-container">
-
-      <!-- 页面标题 -->
-      <div class="page-header">
+  <div class="page">
+    <div class="page-inner">
+      <header class="page-head">
         <div>
           <h1>草稿箱</h1>
 
-          <p>
-            暂存未成功生成纪要的会议原文，可重新生成或删除
+          <p class="page-desc">
+            暂存了原文但还没生成纪要的会议。可以重新生成，也可以删掉。
           </p>
         </div>
 
-        <el-button :loading="loading" @click="loadDrafts">
-          刷新
-        </el-button>
-      </div>
+        <div class="page-head-actions">
+          <el-button :loading="loading" @click="loadDrafts">
+            刷新
+          </el-button>
+        </div>
+      </header>
 
-      <div v-loading="loading" class="draft-container">
+      <div v-loading="loading" class="register sheet">
+        <div class="register-head">
+          <span class="register-title">草稿登记</span>
+
+          <span class="register-meta">
+            {{ drafts.length }} 份待处理
+          </span>
+        </div>
 
         <!-- 空状态 -->
-        <el-empty v-if="!loading && drafts.length === 0" description="草稿箱为空" />
+        <el-empty v-if="!loading && drafts.length === 0" description="草稿箱是空的" />
 
-        <!-- 草稿列表 -->
-        <div v-else class="draft-list">
-          <el-card v-for="meeting in drafts" :key="meeting.id"
-            :class="['draft-card', { collapsed: !isExpanded(meeting.id) }]" shadow="hover">
-            <!-- 卡片头部即折叠开关；折叠后仅保留标题 -->
-            <div class="draft-header" @click="toggleExpanded(meeting.id)">
-              <div class="draft-main">
-                <h2>
-                  <router-link :to="`/history/${meeting.id}`" class="draft-title-link" @click.stop>
+        <template v-else>
+          <article v-for="meeting in drafts" :key="meeting.id" class="reg-row"
+            :class="{ 'reg-open': isExpanded(meeting.id) }">
+            <header class="reg-head" role="button" tabindex="0" :aria-expanded="isExpanded(meeting.id)"
+              @click="toggleExpanded(meeting.id)" @keydown.enter.prevent="toggleExpanded(meeting.id)"
+              @keydown.space.prevent="toggleExpanded(meeting.id)">
+              <span class="reg-no">{{ String(meeting.id).padStart(3, '0') }}</span>
+
+              <div class="reg-main">
+                <h2 class="reg-title">
+                  <router-link :to="`/history/${meeting.id}`" @click.stop>
                     {{ meeting.title || `会议 #${meeting.id}` }}
                   </router-link>
                 </h2>
 
-                <span v-if="isExpanded(meeting.id)" class="draft-time">
-                  {{ formatDate(meeting.createdAt) }}
-                </span>
+                <span class="reg-sub">{{ formatDate(meeting.createdAt) }}</span>
               </div>
 
-              <div class="draft-head-tags">
-                <el-tag type="warning">
-                  草稿
-                </el-tag>
+              <el-tag size="small" type="warning">
+                草稿
+              </el-tag>
 
-                <!-- 只显示箭头，不显示「展开/收起」文字 -->
-                <span
-                  class="collapse-toggle"
-                  :title="isExpanded(meeting.id) ? '收起' : '展开'"
-                  :aria-label="isExpanded(meeting.id) ? '收起' : '展开'"
-                >
-                  <el-icon :class="{ rotated: isExpanded(meeting.id) }">
-                    <ArrowDown />
-                  </el-icon>
-                </span>
+              <span class="reg-toggle" :title="isExpanded(meeting.id) ? '收起' : '展开'"
+                :aria-label="isExpanded(meeting.id) ? '收起' : '展开'">
+                <el-icon :class="{ rotated: isExpanded(meeting.id) }">
+                  <ArrowDown />
+                </el-icon>
+              </span>
+            </header>
+
+            <div v-show="isExpanded(meeting.id)" class="reg-body">
+              <div class="sec">
+                <div class="sec-h">
+                  <span class="sec-n">原</span>
+                  <span class="sec-t">会议原文</span>
+                  <span class="sec-x">生成纪要后这份原文会留在纪要里</span>
+                </div>
+
+                <p class="prose draft-text">
+                  {{ meeting.content || '暂无会议原文' }}
+                </p>
+              </div>
+
+              <div class="reg-actions">
+                <el-button @click="handleView(meeting.id)">
+                  查看详情
+                </el-button>
+
+                <el-button type="primary" :loading="regeneratingId === meeting.id" @click="handleRegenerate(meeting)">
+                  重新生成纪要
+                </el-button>
+
+                <el-button type="danger" plain :disabled="regeneratingId === meeting.id"
+                  @click="handleDelete(meeting.id)">
+                  删除
+                </el-button>
               </div>
             </div>
-
-            <div v-show="isExpanded(meeting.id)" class="draft-body">
-            <div class="draft-content">
-              <div class="label">
-                📝 会议原文
-              </div>
-
-              <p>
-                {{ meeting.content || '暂无会议原文' }}
-              </p>
-            </div>
-
-            <div class="draft-tip">
-              该会议原文已保存，可以重新生成 AI 会议纪要。
-            </div>
-
-            <div class="card-actions">
-              <el-button @click="handleView(meeting.id)">
-                查看详情
-              </el-button>
-
-              <el-button type="primary" :loading="regeneratingId === meeting.id
-                " @click="
-                  handleRegenerate(meeting)
-                  ">
-                重新生成纪要
-              </el-button>
-
-              <el-button type="danger" plain :disabled="regeneratingId === meeting.id
-                " @click="
-                  handleDelete(meeting.id)
-                  ">
-                删除
-              </el-button>
-            </div>
-            </div>
-          </el-card>
-        </div>
-
+          </article>
+        </template>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.draft-page {
-  min-height: 100%;
-  background: #f5f7fa;
-  padding: 40px 20px 60px;
-}
-
-.page-container {
-  max-width: 1000px;
-  margin: 0 auto;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-
-.page-header h1 {
-  margin: 0 0 8px;
-  font-size: 30px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.page-header p {
-  margin: 0;
-  color: #909399;
-  font-size: 14px;
-}
-
-.draft-container {
-  min-height: 300px;
-}
-
-.draft-list {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.draft-card {
-  border-radius: 12px;
-  border: 1px solid #ebeef5;
-}
-
-.draft-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid #ebeef5;
-  cursor: pointer;
-}
-
-/* 折叠态没有内容区，头部不需要下边框与内边距 */
-.draft-card.collapsed .draft-header {
-  padding-bottom: 0;
-  border-bottom: none;
-}
-
-.draft-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.draft-main h2 {
-  margin: 0 0 6px;
-  font-size: 18px;
-  color: #303133;
-}
-
-/* 折叠时标题没有下方时间，去掉多余留白 */
-.draft-card.collapsed .draft-main h2 {
-  margin-bottom: 0;
-}
-
-/* 标题可直接点进详情，不需要先展开 */
-.draft-title-link {
-  color: #303133;
-  transition: color 0.2s;
-}
-
-.draft-title-link:hover {
-  color: #409eff;
-}
-
-.draft-head-tags {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  color: #909399;
-  font-size: 15px;
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s;
-}
-
-.collapse-toggle:hover {
-  color: #409eff;
-  background: #f0f2f5;
-}
-
-.collapse-toggle .el-icon {
-  transition: transform 0.2s;
-}
-
-.collapse-toggle .el-icon.rotated {
-  transform: rotate(180deg);
-}
-
-.draft-time {
-  font-size: 13px;
-  color: #909399;
-}
-
-.draft-content {
-  margin-top: 18px;
-}
-
-.label {
-  margin-bottom: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #606266;
-}
-
-.draft-content p {
-  margin: 0;
-  max-height: 160px;
-  overflow: hidden;
-  line-height: 1.8;
-  color: #606266;
-  white-space: pre-wrap;
-}
-
-.draft-tip {
+.draft-text {
   margin-top: 14px;
-  padding: 10px 12px;
-  background: #fff8e6;
-  border-radius: 8px;
-  color: #9a6700;
-  font-size: 13px;
+  max-height: 260px;
+  overflow-y: auto;
+
+  padding-right: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.card-actions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #ebeef5;
-}
-
-@media (max-width: 600px) {
-  .draft-page {
-    padding: 24px 12px 40px;
-  }
-
-  .page-header {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 14px;
-  }
-
-  .page-header h1 {
-    font-size: 24px;
-  }
-
-  .draft-header {
-    flex-direction: column;
-  }
-
-  .card-actions {
-    flex-direction: column;
-  }
-
-  .card-actions .el-button {
-    width: 100%;
-    margin-left: 0;
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 48px;
   }
 }
 </style>

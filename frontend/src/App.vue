@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { provideDraftStore } from './composables/draftStore'
@@ -9,23 +9,20 @@ import {
   formatRecordingTime,
 } from './composables/recordingStatus'
 import { authStore } from './stores/auth'
+import {
+  getMeetingsPage,
+  type MeetingRecord,
+  type MeetingCompletionStatusValue,
+} from './api/meeting'
 
 const draftStore = provideDraftStore()
 const inboxStore = useInboxStore()
 
-/** 后台录音时，在其他页面顶部提示，避免忘了还在录 */
-const showRecordingTip = computed(
-  () => recordingStatus.recording && route.path !== '/minutes/instant'
-)
-
-const backToRecording = async () => {
-  await router.push('/minutes/instant')
-}
 const route = useRoute()
 const router = useRouter()
 
 /**
- * 登录页不渲染侧边栏与内容框架。
+ * 登录页不渲染登记簿与内容框架。
  *
  * 用 route.meta.requiresAuth === false 判断，
  * 后续再加公开页面时无需改这里。
@@ -37,6 +34,84 @@ const currentUser = computed(() => authStore.user)
 /** 当前是否处于「以他人身份浏览」状态 */
 const impersonation = computed(() => authStore.state.impersonation)
 
+/** 后台录音时，在其他页面顶部提示，避免忘了还在录 */
+const showRecordingTip = computed(
+  () => recordingStatus.recording && route.path !== '/minutes/instant'
+)
+
+const backToRecording = async () => {
+  await router.push('/minutes/instant')
+}
+
+/* =========================
+   顶部导航
+   ========================= */
+
+const navItems = computed(() => [
+  { path: '/minutes', label: '智能纪要', count: 0 },
+  { path: '/dashboard', label: '数据看板', count: 0 },
+  { path: '/history', label: '历史会议', count: 0 },
+  { path: '/drafts', label: '草稿箱', count: draftStore.count },
+  {
+    path: '/inbox',
+    label: '收件箱',
+    count: inboxStore.unreadCount.value,
+  },
+])
+
+/* =========================
+   左侧登记簿：最近生成的几份纪要
+   ========================= */
+
+const recentMeetings = ref<MeetingRecord[]>([])
+const recentTotal = ref(0)
+
+/** 只取最新的几份，登记簿是索引不是列表页 */
+const RECENT_LIMIT = 6
+
+const loadRecent = async () => {
+  if (!authStore.isAuthenticated.value) return
+
+  try {
+    const page = await getMeetingsPage({ pageSize: RECENT_LIMIT })
+
+    recentMeetings.value = page.items.slice(0, RECENT_LIMIT)
+    recentTotal.value = page.total ?? page.items.length
+  } catch {
+    // 登记簿属于辅助信息，拉取失败时留空，不打断页面
+    recentMeetings.value = []
+    recentTotal.value = 0
+  }
+}
+
+/** 文号：用会议 ID 补足三位，像档案编号 */
+const refNo = (id: number) => String(id).padStart(3, '0')
+
+const toMonthDay = (value?: string | null) => {
+  if (!value) return ''
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) return ''
+
+  const pad = (n: number) => String(n).padStart(2, '0')
+
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const dotClass = (status?: MeetingCompletionStatusValue | null) => {
+  switch (status) {
+    case 'COMPLETED':
+      return 'dot-done'
+    case 'IN_PROGRESS':
+      return 'dot-live'
+    case 'CANCELLED':
+      return 'dot-cancel'
+    default:
+      return 'dot-wait'
+  }
+}
+
 /** 返回自己的账号 */
 const backToMyAccount = async () => {
   authStore.endImpersonation()
@@ -47,289 +122,527 @@ const backToMyAccount = async () => {
   await router.push('/users')
 }
 
+/** 用户名首字，作为登记簿与顶栏的头像 */
+const initial = computed(() => currentUser.value?.name?.slice(0, 1) ?? '·')
+
+const isProfile = computed(() => route.path === '/profile')
+
+/** 当前打开的会议，用于登记簿高亮 */
+const isActiveEntry = (id: number) => route.path === `/history/${id}`
+
 onMounted(async () => {
   // 未登录时（登录页）不拉草稿数量与角标，避免无谓的 401
   if (authStore.isAuthenticated.value) {
-    await Promise.all([
-      draftStore.refresh(),
-      inboxStore.refresh(),
-    ])
+    await Promise.all([draftStore.refresh(), inboxStore.refresh()])
+    await loadRecent()
   }
 })
+
+/** 切换页面后同步登记簿：新生成的纪要要立刻出现在左侧 */
+watch(
+  () => route.fullPath,
+  async (path) => {
+    if (path !== '/login') {
+      await loadRecent()
+    }
+  }
+)
 </script>
 
 <template>
-  <!-- 登录页：整页渲染，不带侧边栏 -->
+  <!-- 登录页：整页渲染，不带侧栏 -->
   <router-view v-if="isPublicPage" />
 
   <div v-else class="app">
-    <!-- 竖向侧边导航：在纪要生成页、数据看板、历史记录和草稿箱之间切换。 -->
-    <aside class="sidebar">
-      <router-link
-        to="/"
-        class="logo"
-        aria-label="MeetMind 首页"
-      >
-        <img
-          src="/meetmind-logo.svg"
-          alt="MeetMind"
-          class="logo-image"
-        />
-      </router-link>
-
-      <nav class="nav">
-        <router-link
-          to="/minutes"
-          class="nav-item"
-        >
-          <span class="nav-icon">📝</span>
-          <span class="nav-label">智能纪要</span>
+    <div class="shell">
+      <!-- 竖向侧栏：品牌 → 五个入口 → 最近登记 → 用户 -->
+      <aside class="side">
+        <router-link to="/" class="brand-row" aria-label="MeetMind 首页">
+          <img class="brand-logo" src="/meetmind-logo.svg" alt="MeetMind" width="111" height="30" />
+          <span class="brand-sub">AI 智能会议纪要</span>
         </router-link>
 
-        <router-link
-          to="/dashboard"
-          class="nav-item"
-        >
-          <span class="nav-icon">📊</span>
-          <span class="nav-label">数据看板</span>
-        </router-link>
-
-        <router-link
-          to="/history"
-          class="nav-item"
-        >
-          <span class="nav-icon">🗂</span>
-          <span class="nav-label">历史会议</span>
-        </router-link>
-
-        <router-link
-          to="/drafts"
-          class="nav-item"
-        >
-          <span class="nav-icon">📥</span>
-          <span class="nav-label">草稿箱</span>
-
-          <span
-            v-if="draftStore.count > 0"
-            class="draft-count"
+        <nav class="nav" aria-label="主导航">
+          <router-link
+            v-for="item in navItems"
+            :key="item.path"
+            :to="item.path"
+            class="nav-item"
           >
-            {{
-              draftStore.count > 99
-                ? '99+'
-                : draftStore.count
-            }}
-          </span>
-        </router-link>
+            <span class="nav-label">{{ item.label }}</span>
 
-        <router-link
-          to="/inbox"
-          class="nav-item"
-        >
-          <span class="nav-icon">📬</span>
-          <span class="nav-label">收件箱</span>
+            <span v-if="item.count > 0" class="nav-count">
+              {{ item.count > 99 ? '99+' : item.count }}
+            </span>
+          </router-link>
+        </nav>
 
-          <span
-            v-if="inboxStore.unreadCount.value > 0"
-            class="draft-count"
-          >
-            {{
-              inboxStore.unreadCount.value > 99
-                ? '99+'
-                : inboxStore.unreadCount.value
-            }}
-          </span>
-        </router-link>
-      </nav>
+        <!-- 登记簿：最近生成的纪要，点一行直接进详情 -->
+        <div class="rail">
+          <div class="rail-head">
+            <span class="rail-title">最近登记</span>
 
-      <!--
-        当前登录用户区，固定在侧边栏底部。
-
-        头像与用户名本身就是「个人中心」的入口 —— 因此导航栏里不再需要
-        个人中心/用户管理这类条目，点这里即可进入。
-        退出登录已移入个人中心页，这里不再放按钮，避免在侧边栏误触退出。
-      -->
-      <div v-if="currentUser" class="user-panel">
-        <router-link
-          to="/profile"
-          class="user-main"
-          :class="{ 'user-active': route.path === '/profile' }"
-          title="进入个人中心"
-        >
-          <span class="user-avatar">
-            {{ currentUser.name.slice(0, 1) }}
-          </span>
-
-          <div class="user-meta">
-            <div class="user-name">
-              {{ currentUser.name }}
-            </div>
-
-            <div class="user-role">
-              {{ currentUser.roleLabel }}
-            </div>
+            <router-link to="/history" class="rail-all">
+              全部 {{ recentTotal }} 份
+            </router-link>
           </div>
 
-          <span class="user-arrow">›</span>
-        </router-link>
-      </div>
-    </aside>
+          <router-link
+            v-for="meeting in recentMeetings"
+            :key="meeting.id"
+            :to="`/history/${meeting.id}`"
+            class="entry"
+            :class="{ 'entry-on': isActiveEntry(meeting.id) }"
+            :title="meeting.title || `会议 #${meeting.id}`"
+          >
+            <span class="entry-meta">
+              <span class="entry-no">{{ refNo(meeting.id) }}</span>
+              <span class="entry-date">{{ toMonthDay(meeting.createdAt) }}</span>
+              <i class="dot" :class="dotClass(meeting.completionStatus)" />
+            </span>
 
-    <main class="main">
-      <!-- 代登身份提示条：始终可见，避免误以为自己就是对方账号 -->
-      <div v-if="impersonation" class="impersonation-bar">
-        <span class="impersonation-icon">👁</span>
+            <span class="entry-title">
+              {{ meeting.title || `会议 #${meeting.id}` }}
+            </span>
+          </router-link>
 
-        <span class="impersonation-text">
-          正在以
-          <strong>{{ currentUser?.name }}</strong>
-          （{{ currentUser?.phone }}）的身份浏览
-        </span>
+          <p v-if="!recentMeetings.length" class="rail-empty">
+            还没有会议记录，去「智能纪要」开始第一场。
+          </p>
 
-        <el-button
-          type="warning"
-          size="small"
-          class="impersonation-back"
-          @click="backToMyAccount"
-        >
-          返回我的账号
-        </el-button>
-      </div>
+          <div class="rail-foot">
+            纪要带文号、时间码与印。<br />
+            原文可回听，纪要只认这一份。
+          </div>
+        </div>
 
-      <!-- 后台录音提示：切到其他页面时仍能看到录音在进行，点击可回到会议 -->
-      <div v-if="showRecordingTip" class="recording-bar">
-        <span class="recording-dot" />
+        <!-- 用户：侧栏底部，点进个人中心 -->
+        <div class="side-foot">
+          <router-link
+            to="/profile"
+            class="who"
+            :class="{ 'who-on': isProfile }"
+            :title="`${currentUser?.name} · ${currentUser?.roleLabel}`"
+          >
+            <span class="who-avatar">
+  <img v-if="currentUser?.avatar" :src="currentUser.avatar" alt="" class="who-avatar-img" />
+  <template v-else>{{ initial }}</template>
+</span>
 
-        <span class="recording-text">
-          {{ recordingStatus.paused ? '会议录音已暂停' : '会议录音与转写进行中' }}
-          <strong>{{ formatRecordingTime(recordingStatus.seconds) }}</strong>
-        </span>
+            <span class="who-meta">
+              <b>{{ currentUser?.name }}</b>
+              <i>{{ currentUser?.roleLabel }}</i>
+            </span>
+          </router-link>
+        </div>
+      </aside>
 
-        <el-button type="primary" size="small" class="recording-back" @click="backToRecording">
-          返回会议
-        </el-button>
-      </div>
+      <main class="main">
+        <!-- 代登身份提示条：始终可见，避免误以为自己就是对方账号 -->
+        <div v-if="impersonation" class="strip strip-impersonation">
+          <span class="strip-text">
+            正在以 <strong>{{ currentUser?.name }}</strong>
+            （{{ currentUser?.phone }}）的身份浏览
+          </span>
 
-      <router-view v-slot="{ Component }">
-        <!--
-          纪要页用 KeepAlive 缓存：切到其他页面时组件不卸载，
-          SpeechRecognition 与 MediaRecorder 就能继续在后台录音转写，
-          回到该页时计时与转写内容都保持原样。
-        -->
-        <keep-alive :include="['MinutesInstant']">
-          <component :is="Component" />
-        </keep-alive>
-      </router-view>
-    </main>
+          <el-button size="small" @click="backToMyAccount">
+            返回我的账号
+          </el-button>
+        </div>
+
+        <!-- 后台录音提示：切到其他页面时仍能看到录音在进行 -->
+        <div v-if="showRecordingTip" class="strip strip-recording">
+          <span class="strip-dot" />
+
+          <span class="strip-text">
+            {{ recordingStatus.paused ? '会议录音已暂停' : '会议录音与转写进行中' }}
+            <strong class="num">{{ formatRecordingTime(recordingStatus.seconds) }}</strong>
+          </span>
+
+          <el-button size="small" type="primary" @click="backToRecording">
+            返回会议
+          </el-button>
+        </div>
+
+        <router-view v-slot="{ Component }">
+          <!--
+            纪要页用 KeepAlive 缓存：切到其他页面时组件不卸载，
+            SpeechRecognition 与 MediaRecorder 就能继续在后台录音转写，
+            回到该页时计时与转写内容都保持原样。
+          -->
+          <keep-alive :include="['MinutesInstant']">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
+      </main>
+    </div>
   </div>
 </template>
 
-<style>
-* {
-  box-sizing: border-box;
-}
-
-html,
-body,
-#app {
-  margin: 0;
-  min-height: 100%;
-}
-
-body {
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    "Microsoft YaHei",
-    sans-serif;
-
-  color: #303133;
-  background: #f5f7fa;
-}
-
-a {
-  text-decoration: none;
-}
-
-/**
- * 竖向侧边栏 + 内容区的两栏布局。
- *
- * 用 min-height 而不是 height，页面变长时由文档整体滚动，
- * 侧边栏是正常文档流的一部分，自然会被拉满整列高度。
- * 这样避免给内容区再加一层独立滚动条（会出现双滚动条）。
- */
+<style scoped>
 .app {
+  min-height: 100vh;
+  background: var(--desk);
+}
+
+.shell {
   display: flex;
   align-items: stretch;
   min-height: 100vh;
 }
 
-.sidebar {
-  width: 200px;
+/* ---------- 左侧竖栏 ---------- */
+
+.side {
+  width: 276px;
+  flex-shrink: 0;
+
+  position: sticky;
+  top: 0;
+  height: 100vh;
 
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 
-  background: #ffffff;
-  border-right: 1px solid #ebeef5;
-
-  /**
-   * 固定定位，脱离文档流。
-   *
-   * 曾用 sticky + 100vh，但 sticky 只在父容器范围内生效：
-   * 页面极长时滚到底部，侧边栏会被父容器边界推出视口，
-   * 左下角的个人中心入口就点不到了。
-   * fixed 让它始终贴住视口，内容区用 margin-left 让出宽度。
-   */
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-
-  overflow-y: auto;
-  z-index: 100;
+  background: var(--paper);
+  border-right: 1px solid var(--rule);
 }
 
-.main {
-  flex: 1;
-  min-width: 0;
-  /* 侧边栏已脱离文档流，这里让出它的宽度 */
-  margin-left: 200px;
-}
-
-/* 后台录音提示条：红点 + 计时，提示录音仍在继续 */
-.recording-bar {
-  position: sticky;
-  top: 0;
-  z-index: 95;
-
+.brand-row {
+  height: 64px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 0 20px;
 
-  padding: 8px 20px;
-
-  background: #fef0f0;
-  border-bottom: 1px solid #fbc4c4;
-
-  color: #c45656;
-  font-size: 13px;
+  border-bottom: 1px solid var(--rule);
 }
 
-/* 呼吸红点，比静态圆点更容易被注意到 */
-.recording-dot {
-  width: 8px;
-  height: 8px;
+.brand-logo {
+  display: block;
+  height: 36px;
+  width: auto;
+  flex-shrink: 0;
+}
+
+.brand-sub {
+  padding-left: 10px;
+  border-left: 1px solid var(--rule);
+
+  font-size: 10.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* ---------- 五个入口：竖向，靠左边墨线与字重区分当前页 ---------- */
+.nav {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  padding: 10px 8px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  height: 36px;
+  padding: 0 10px;
+
+  border-left: 2px solid transparent;
+
+  font-size: 13px;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+
+  transition: background-color 0.16s, color 0.16s, border-color 0.16s;
+}
+
+.nav-item:hover {
+  color: var(--ink);
+  background: var(--paper-2);
+}
+
+.nav-item.router-link-active {
+  color: var(--brand-deep);
+  font-weight: 600;
+  background: var(--brand-soft);
+  border-left-color: var(--brand);
+}
+
+.nav-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-count {
+  margin-left: auto;
   flex-shrink: 0;
 
-  border-radius: 50%;
-  background: #f56c6c;
+  font-family: var(--num);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 2px 4px;
 
-  animation: recording-pulse 1.4s ease-in-out infinite;
+  color: var(--vermilion);
+  border: 1px solid currentColor;
 }
 
-@keyframes recording-pulse {
+/* ---------- 登记簿 ---------- */
+.rail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+
+  padding: 16px 20px 10px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.rail-title {
+  font-family: var(--song);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+}
+
+.rail-all {
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.rail-all:hover {
+  color: var(--brand-strong);
+}
+
+.entry {
+  display: block;
+  padding: 10px 20px 11px 18px;
+
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--rule-soft);
+
+  transition: background-color 0.16s;
+}
+
+.entry:hover {
+  background: var(--paper-2);
+}
+
+.entry-on {
+  border-left-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  font-family: var(--num);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-no {
+  letter-spacing: 0.04em;
+}
+
+.entry-title {
+  display: block;
+  margin-top: 4px;
+
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink);
+
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.dot {
+  width: 5px;
+  height: 5px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--rule);
+}
+
+.dot-done {
+  background: #7d8a7f;
+}
+
+.dot-live {
+  background: var(--vermilion);
+}
+
+.dot-cancel {
+  background: var(--ink-3);
+}
+
+.dot-wait {
+  background: var(--rule);
+}
+
+.rail-empty {
+  padding: 16px 20px;
+  font-size: 11.5px;
+  line-height: 1.8;
+  color: var(--ink-3);
+}
+
+.rail-foot {
+  margin-top: auto;
+  padding: 14px 20px 16px;
+  border-top: 1px solid var(--rule-soft);
+
+  font-family: var(--fang);
+  font-size: 11.5px;
+  line-height: 1.9;
+  color: var(--ink-3);
+}
+
+/* ---------- 用户 ---------- */
+.side-foot {
+  flex-shrink: 0;
+  padding: 10px 8px;
+  border-top: 1px solid var(--rule);
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+
+  padding: 6px 8px;
+  border: 1px solid transparent;
+}
+
+.who:hover,
+.who-on {
+  border-color: var(--rule);
+  background: var(--paper-2);
+}
+
+.who-avatar {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  overflow: hidden;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.who-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.who-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.who-meta b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.who-meta i {
+  font-size: 10.5px;
+  font-style: normal;
+  color: var(--ink-3);
+}
+
+/* ---------- 内容区 ---------- */
+.main {
+  flex: 1;
+  min-width: 0;
+}
+
+.strip {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 22px;
+
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.strip-recording {
+  background: var(--vermilion-wash);
+  color: #7d2a22;
+  border-bottom-color: var(--vermilion-line);
+}
+
+.strip-impersonation {
+  background: var(--ochre-wash);
+  color: var(--ochre-deep);
+  border-bottom-color: var(--ochre-line);
+}
+
+.strip-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.strip-text strong {
+  font-weight: 600;
+}
+
+.strip-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--vermilion);
+  animation: strip-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes strip-pulse {
   0%,
   100% {
     opacity: 1;
@@ -337,274 +650,120 @@ a {
   }
 
   50% {
-    opacity: 0.45;
+    opacity: 0.4;
     transform: scale(0.82);
   }
 }
 
-.recording-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.recording-text strong {
-  margin-left: 6px;
-  font-variant-numeric: tabular-nums;
-}
-
-.recording-back {
-  flex-shrink: 0;
-}
-
-/* 代登身份提示条：用醒目颜色区分「这不是我自己的账号」 */.impersonation-bar {
-  position: sticky;
-  top: 0;
-  z-index: 90;
-
-  display: flex;
-  align-items: center;
-  gap: 10px;
-
-  padding: 10px 20px;
-
-  background: #fdf6ec;
-  border-bottom: 1px solid #f3d19e;
-  color: #b88230;
-  font-size: 13px;
-}
-
-.impersonation-icon {
-  font-size: 14px;
-  line-height: 1;
-}
-
-.impersonation-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.impersonation-text strong {
-  color: #8a5a00;
-}
-
-.impersonation-back {
-  flex-shrink: 0;
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-
-  height: 64px;
-  padding: 0 20px;
-  /* 与导航项左内边距对齐，图标与文字能连成一条竖线 */
-  flex-shrink: 0;
-
-  border-bottom: 1px solid #f2f3f5;
-}
-
-.logo-image {
-  display: block;
-  width: 160px;
-  max-width: 100%;
-  height: auto;
-}
-
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-
-  padding: 12px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-
-  padding: 11px 12px;
-  border-radius: 8px;
-
-  color: #606266;
-  font-size: 14px;
-
-  transition: background 0.2s, color 0.2s;
-}
-
-.nav-item:hover {
-  color: #409eff;
-  background: #f5f7fa;
-}
-
-.nav-item.router-link-active {
-  color: #409eff;
-  font-weight: 600;
-  background: #ecf5ff;
-}
-
-/* 固定宽度让四个图标在竖向上对齐 */
-.nav-icon {
-  width: 18px;
-  flex-shrink: 0;
-  text-align: center;
-  font-size: 15px;
-}
-
-.nav-label {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.draft-count {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-
-  border-radius: 10px;
-
-  background: #f56c6c;
-  color: #ffffff;
-
-  font-size: 11px;
-  line-height: 18px;
-  font-weight: 600;
-}
-
-/* 侧边栏底部的当前用户区 */
-.user-panel {
-  margin-top: auto;
-  padding: 14px 16px 16px;
-  border-top: 1px solid #f2f3f5;
-
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.user-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-
-  /* 整块是「个人中心」入口，做成可点区域并给出悬停反馈 */
-  padding: 6px 8px;
-  margin: -6px -8px;
-  border-radius: 8px;
-
-  color: inherit;
-  transition: background 0.2s;
-}
-
-.user-main:hover {
-  background: #f5f7fa;
-}
-
-/* 进入个人中心时高亮，让用户知道自己当前在哪一页 */
-.user-main.user-active {
-  background: #ecf5ff;
-}
-
-.user-avatar {
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  border-radius: 50%;
-  background: #ecf5ff;
-  color: #409eff;
-
-  font-size: 14px;
-  font-weight: 600;
-}
-
-/* 个人中心页高亮时，头像底色也跟着变深一点 */
-.user-main.user-active .user-avatar {
-  background: #d9ecff;
-}
-
-.user-arrow {
-  margin-left: auto;
-  flex-shrink: 0;
-  color: #c0c4cc;
-  font-size: 16px;
-  line-height: 1;
-}
-
-.user-meta {
-  min-width: 0;
-  flex: 1;
-}
-
-.user-name {
-  color: #303133;
-  font-size: 13px;
-  font-weight: 600;
-
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.user-role {
-  color: #909399;
-  font-size: 12px;
-}
-
-/**
- * 窄屏下改为上下堆叠，重新回到「导航在顶部」的形态，
- * 因为 200px 的侧边栏会挤占过多横向空间。
- */
-@media (max-width: 768px) {
-  .app {
+/* ---------- 窄屏：竖栏折成顶部横条，登记簿收起 ---------- */
+@media (max-width: 1080px) {
+  .shell {
     flex-direction: column;
   }
 
-  .sidebar {
+  /* 顶栏折成横条后，提示条要贴在这条横条下面 */
+  .strip {
+    top: 57px;
+  }
+
+
+  .side {
     width: 100%;
+    height: auto;
+    position: sticky;
+    top: 0;
+    z-index: 60;
+
+    flex-direction: row;
+    align-items: center;
+    overflow: visible;
+
     border-right: none;
-    border-bottom: 1px solid #ebeef5;
-
-    /* 窄屏改成上下堆叠，固定定位会把内容盖住，恢复为普通流式布局 */
-    position: static;
-    overflow-y: visible;
+    border-bottom: 1px solid var(--rule);
+    padding-right: 6px;
   }
 
-  .main {
-    /* 窄屏侧边栏回到文档流，不再需要让出宽度 */
-    margin-left: 0;
-  }
-
-  .logo {
+  .brand-row {
     height: 56px;
+    padding: 0 14px;
+    border-bottom: none;
+  }
+
+  .brand-logo {
+    height: 26px;
+  }
+
+  .brand-sub {
+    display: none;
   }
 
   .nav {
+    flex: 1;
+    min-width: 0;
     flex-direction: row;
+    gap: 0;
+    padding: 0;
+    border-bottom: none;
     overflow-x: auto;
-    padding: 8px 12px;
+    scrollbar-width: none;
+
+    /* 右侧渐隐，提示还能横向滚动 */
+    -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent 100%);
+    mask-image: linear-gradient(90deg, #000 92%, transparent 100%);
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
   }
 
   .nav-item {
-    flex-shrink: 0;
-    padding: 8px 12px;
+    height: 56px;
+    padding: 0 10px;
+
+    border-left: none;
+    border-bottom: 2px solid transparent;
+
+    font-size: 12.5px;
+    white-space: nowrap;
   }
 
-  .nav-label {
-    flex: 0 0 auto;
+  .nav-item.router-link-active {
+    background: transparent;
+    border-bottom-color: var(--ink);
+  }
+
+  .rail {
+    display: none;
+  }
+
+  .side-foot {
+    flex-shrink: 0;
+    padding: 0 4px;
+    border-top: none;
+  }
+
+  .who {
+    padding: 4px;
+    border-color: transparent;
+  }
+
+  .who-meta {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .brand-row {
+    padding: 0 10px;
+  }
+
+  .brand-logo {
+    height: 24px;
+  }
+
+  .nav-item {
+    padding: 0 8px;
+    font-size: 12px;
   }
 }
 </style>

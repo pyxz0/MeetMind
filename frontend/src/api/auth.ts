@@ -46,6 +46,8 @@ export const fetchMe = async (): Promise<CurrentUser> => {
  */
 export const updateProfile = async (data: {
   name?: string
+  /** 头像 data URL；传空字符串表示移除 */
+  avatar?: string
   currentPassword?: string
   newPassword?: string
 }): Promise<CurrentUser> => {
@@ -60,6 +62,8 @@ export interface ManagedUser {
   id: number
   phone: string
   name: string
+  /** 头像 data URL；为空表示未设置 */
+  avatar?: string | null
   role: Role
   isActive: boolean
   createdAt: string

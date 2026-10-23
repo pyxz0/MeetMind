@@ -159,147 +159,138 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-card v-if="hasAudio" class="audio-card" shadow="never">
-    <template #header>
-      <div class="audio-header">
-        <b>🎧 会议录音</b>
+  <!-- 走带条：上下各一道 1px 栏线，没有底色、没有阴影 -->
+  <div v-if="hasAudio" class="tape">
+    <el-button class="tape-btn" :loading="isLoading" :title="isPlaying ? '暂停' : '播放'"
+      :aria-label="isPlaying ? '暂停录音' : '播放录音'" @click="togglePlay">
+      <span v-if="!isLoading" class="tape-glyph" :class="isPlaying ? 'tape-glyph-pause' : 'tape-glyph-play'" />
+    </el-button>
 
-        <span class="audio-meta">
-          {{ formatTime(displayDuration) }}
-        </span>
-      </div>
-    </template>
+    <div class="tape-track" role="slider" :aria-valuenow="Math.round(progressPercent)" aria-valuemin="0"
+      aria-valuemax="100" aria-label="录音播放进度" @click="seekTo">
+      <div class="tape-rail">
+        <div class="tape-fill" :style="{ width: `${progressPercent}%` }" />
 
-    <div class="audio-body">
-      <el-button
-        class="play-button"
-        type="primary"
-        circle
-        :loading="isLoading"
-        @click="togglePlay"
-      >
-        {{ isPlaying ? '⏸' : '▶' }}
-      </el-button>
-
-      <div class="progress-area">
-        <div
-          class="progress-track"
-          role="slider"
-          :aria-valuenow="Math.round(progressPercent)"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          :aria-label="'录音播放进度'"
-          @click="seekTo"
-        >
-          <div
-            class="progress-fill"
-            :style="{ width: `${progressPercent}%` }"
-          />
-        </div>
-
-        <div class="time-row">
-          <span>{{ formatTime(currentTime) }}</span>
-          <span>{{ formatTime(displayDuration) }}</span>
-        </div>
+        <span class="tape-head" :style="{ left: `${progressPercent}%` }" />
       </div>
     </div>
 
+    <span class="tape-clock num">
+      {{ formatTime(currentTime) }} / {{ formatTime(displayDuration) }}
+    </span>
+
     <!--
-      原生 audio 只作为播放引擎使用，界面由上面的自定义控件承担，
-      因为原生控件样式无法与 Element Plus 统一。
+      原生 audio 只作播放引擎，界面由上面的走带条承担，
+      因为原生控件样式无法与纸面统一。
     -->
-    <audio
-      ref="audioElement"
-      class="audio-engine"
-      :src="src"
-      preload="metadata"
-      @loadedmetadata="handleLoadedMetadata"
-      @timeupdate="handleTimeUpdate"
-      @play="handlePlay"
-      @pause="handlePause"
-      @ended="handleEnded"
-      @error="handleError"
-    />
-  </el-card>
+    <audio ref="audioElement" class="tape-engine" :src="src" preload="metadata" @loadedmetadata="handleLoadedMetadata"
+      @timeupdate="handleTimeUpdate" @play="handlePlay" @pause="handlePause" @ended="handleEnded" @error="handleError" />
+  </div>
 
-  <el-card v-else-if="audioUrl" class="audio-card" shadow="never">
-    <template #header>
-      <b>🎧 会议录音</b>
-    </template>
-
-    <el-alert
-      type="warning"
-      :closable="false"
-      show-icon
-      title="录音无法播放"
-      description="录音文件可能已被删除或服务不可用。"
-    />
-  </el-card>
+  <!-- 有地址却打不开：说明发生了什么，并给出下一步 -->
+  <p v-else-if="audioUrl" class="tape-error">
+    这段录音打不开。文件可能已被删除，或服务暂时不可用。可以稍后再试，或请会议负责人重新上传。
+  </p>
 </template>
 
 <style scoped>
-.audio-card {
-  border-radius: 12px;
-}
-
-.audio-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.audio-meta {
-  color: #909399;
-  font-size: 13px;
-  font-family: monospace;
-}
-
-.audio-body {
+.tape {
   display: flex;
   align-items: center;
   gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
 }
 
-.play-button {
-  flex: 0 0 auto;
-  font-size: 16px;
+/* 播放键：2px 直角方块，只靠一道栏线立住 */
+.tape-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
 }
 
-.progress-area {
+.tape-glyph {
+  display: block;
+}
+
+.tape-glyph-play {
+  width: 0;
+  height: 0;
+  margin-left: 2px;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--ink);
+}
+
+.tape-glyph-pause {
+  width: 8px;
+  height: 10px;
+  border-left: 2px solid var(--ink);
+  border-right: 2px solid var(--ink);
+}
+
+/* 进度：2px 轨道，没有圆角 */
+.tape-track {
   flex: 1;
   min-width: 0;
-}
-
-.progress-track {
-  height: 8px;
-  background: #ebeef5;
-  border-radius: 4px;
+  padding: 9px 0;
   cursor: pointer;
-  overflow: hidden;
 }
 
-.progress-track:hover .progress-fill {
-  background: #66b1ff;
+.tape-rail {
+  position: relative;
+  height: 2px;
+  background: var(--rule-soft);
 }
 
-.progress-fill {
+.tape-fill {
   height: 100%;
-  background: #409eff;
-  border-radius: 4px;
+  background: var(--ink);
   transition: width 0.1s linear;
 }
 
-.time-row {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 6px;
-  color: #909399;
-  font-size: 12px;
-  font-family: monospace;
+.tape-head {
+  position: absolute;
+  top: -4px;
+  width: 1px;
+  height: 10px;
+  margin-left: -0.5px;
+  background: var(--ink);
 }
 
-/* 播放引擎不需要可见，界面由自定义控件承担 */
-.audio-engine {
+/* 时间码：唯一用等宽字的地方 */
+.tape-clock {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.tape-error {
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+/* 播放引擎不需要可见，界面由走带条承担 */
+.tape-engine {
   display: none;
+}
+
+@media (max-width: 640px) {
+  .tape {
+    gap: 12px;
+  }
+
+  .tape-clock {
+    font-size: 11px;
+  }
 }
 </style>
