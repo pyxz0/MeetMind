@@ -1,0 +1,29 @@
+# 统一换行符：仓库内一律 LF，Windows 检出也用 LF。
+#
+# 为什么强制 LF：Windows 上 core.autocrlf=true 会让 git archive / 导出包产出 CRLF，
+# 与 git blob 的 sha256 不一致，通过命令通道部署到 Linux 时无法逐字节校验。
+# 2026-10-23 同步事故即由此引起。
+
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.dump binary
+
+# Windows 脚本必须保持 CRLF，否则 cmd / PowerShell 解析异常
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
