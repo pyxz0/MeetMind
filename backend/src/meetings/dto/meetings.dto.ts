@@ -1,7 +1,9 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsDateString,
   IsIn,
   IsInt,
   IsOptional,
@@ -10,6 +12,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
   ValidateNested,
 } from 'class-validator';
 
@@ -20,7 +23,13 @@ const COMPLETION_STATUS = [
   'CANCELLED',
 ] as const;
 
-const TODO_STATUS = ['OPEN', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] as const;
+const TODO_STATUS = [
+  'OPEN',
+  'IN_PROGRESS',
+  'SUBMITTED',
+  'COMPLETED',
+  'CANCELLED',
+] as const;
 
 export class TodoInputDto {
   @IsString()
@@ -146,10 +155,25 @@ export class CreateTodoDto {
   @MaxLength(80)
   assignee?: string;
 
+  /** 结构化负责人；与 assignee 同时给出时以本字段为准 */
+  @IsOptional()
+  @IsInt()
+  assigneeUserId?: number | null;
+
+  /** 验收人；不填表示该待办不需要验收 */
+  @IsOptional()
+  @IsInt()
+  reviewerId?: number | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(80)
   deadline?: string;
+
+  /** ISO 日期或日期时间；解析不了时只保留 deadline 文本 */
+  @IsOptional()
+  @IsDateString()
+  deadlineAt?: string | null;
 }
 
 export class UpdateTodoDto {
@@ -164,14 +188,56 @@ export class UpdateTodoDto {
   assignee?: string;
 
   @IsOptional()
+  @IsInt()
+  assigneeUserId?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  reviewerId?: number | null;
+
+  @IsOptional()
   @IsString()
   @MaxLength(80)
   deadline?: string;
+
+  @IsOptional()
+  @IsDateString()
+  deadlineAt?: string | null;
 }
 
 export class TodoStatusDto {
   @IsIn(TODO_STATUS)
   status!: (typeof TODO_STATUS)[number];
+}
+
+/** 提交交付：说明可选，交付物另行上传 */
+export class SubmitTodoDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
+/** 打回：原因必填，且不能是一两个字 */
+export class RejectSubmissionDto {
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason!: string;
+}
+
+/** 覆盖式设置验收要点：最多 20 条，单条 200 字 */
+export class SetChecklistDto {
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  items!: string[];
+}
+
+export class ToggleCheckItemDto {
+  @IsBoolean()
+  done!: boolean;
 }
 
 export class CreateDraftDto {

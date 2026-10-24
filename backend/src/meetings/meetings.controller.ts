@@ -8,6 +8,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
@@ -21,7 +22,11 @@ import {
   AudioOpenDto,
   MeetingUserDto,
   PinMeetingDto,
+  RejectSubmissionDto,
+  SetChecklistDto,
+  SubmitTodoDto,
   TodoStatusDto,
+  ToggleCheckItemDto,
   UpdateMeetingTitleDto,
   UpdateScheduledMeetingDto,
   UpdateTodoDto,
@@ -269,5 +274,90 @@ export class MeetingsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.meetingsService.removeTodo(id, user);
+  }
+
+  /* =========================
+     验收要点（清单）
+     ========================= */
+
+  /** 覆盖式设置验收要点（待验收期间禁止修改） */
+  @Put('todos/:id/checklist')
+  setTodoChecklist(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetChecklistDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.setTodoChecklist(id, dto.items, user);
+  }
+
+  /** 勾选 / 取消一条验收要点 */
+  @Patch('todos/:id/checklist/:itemId')
+  toggleTodoCheckItem(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('itemId', ParseIntPipe) itemId: number,
+    @Body() dto: ToggleCheckItemDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.toggleTodoCheckItem(id, itemId, dto.done, user);
+  }
+
+  /* =========================
+     待办交付与验收
+     ========================= */
+
+  /** 提交交付：有验收人时进入待验收，否则直接完成 */
+  @Post('todos/:id/submissions')
+  submitTodo(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SubmitTodoDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.submitTodo(id, dto?.note, user);
+  }
+
+  /** 某条待办的提交时间线 */
+  @Get('todos/:id/submissions')
+  listTodoSubmissions(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.listTodoSubmissions(id, user);
+  }
+
+  /** 待办流转时间线 */
+  @Get('todos/:id/events')
+  listTodoEvents(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.listTodoEvents(id, user);
+  }
+
+  /** 撤回提交（仅待验收状态） */
+  @Post('submissions/:id/withdraw')
+  withdrawSubmission(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.withdrawSubmission(id, user);
+  }
+
+  /** 验收通过 */
+  @Post('submissions/:id/accept')
+  acceptSubmission(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.acceptSubmission(id, user);
+  }
+
+  /** 打回，原因必填 */
+  @Post('submissions/:id/reject')
+  rejectSubmission(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RejectSubmissionDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.rejectSubmission(id, dto.reason, user);
   }
 }

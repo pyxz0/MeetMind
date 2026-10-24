@@ -16,12 +16,15 @@ const inboxStore = useInboxStore()
 const loading = ref(false)
 const data = ref<InboxData>({ notifications: [], todos: [], unreadCount: 0, seenAt: null })
 
-/** 当前标签页：通知 / 待办 */
-const activeTab = ref<'notifications' | 'todos'>('notifications')
+/** 当前标签页：通知 / 待办 / 验收 */
+const activeTab = ref<'notifications' | 'todos' | 'reviews'>('notifications')
 
 const unreadCount = computed(() => data.value.unreadCount)
 const notificationCount = computed(() => data.value.notifications.length)
 const todoCount = computed(() => data.value.todos.length)
+const reviewCount = computed(() => data.value.reviews?.length ?? 0)
+const rejectedCount = computed(() => data.value.rejected?.length ?? 0)
+const reviewTotal = computed(() => reviewCount.value + rejectedCount.value)
 
 const load = async () => {
   loading.value = true
@@ -221,6 +224,7 @@ onMounted(load)
                     <span class="todo-meeting">{{ item.meetingTitle }}</span>
                     <span class="todo-who">{{ item.assignee || '未指定负责人' }}</span>
                     <span v-if="item.deadline" class="num todo-when">截止 {{ item.deadline }}</span>
+                    <span v-if="item.overdue" class="overdue-pill">逾期</span>
                   </div>
                 </div>
 
@@ -233,6 +237,70 @@ onMounted(load)
                 </el-tag>
               </li>
             </ul>
+          </el-tab-pane>
+
+          <!-- 验收：待我验收 + 被打回 -->
+          <el-tab-pane name="reviews">
+            <template #label>
+              <span class="tab-label">
+                验收
+                <span v-if="reviewTotal > 0" class="tab-badge">{{ reviewTotal }}</span>
+              </span>
+            </template>
+
+            <el-empty v-if="!loading && reviewTotal === 0" description="没有待验收或被打回的交付" />
+
+            <template v-else>
+              <div v-if="reviewCount > 0" class="review-group">
+                <p class="review-title">待我验收</p>
+
+                <ul class="todo-list">
+                  <li v-for="item in data.reviews" :key="`review-${item.submissionId}`" class="todo-row"
+                    @click="openMeeting(item.meetingId)">
+                    <div class="todo-main">
+                      <p class="todo-content">
+                        {{ item.todoContent }}
+                      </p>
+
+                      <div class="todo-meta">
+                        <span class="todo-meeting">{{ item.meetingTitle }}</span>
+                        <span class="todo-who">{{ item.submitterName }} 提交 · 第 {{ item.attemptNo }} 次</span>
+                        <span v-if="item.overdue" class="overdue-pill">逾期</span>
+                        <span class="num todo-when">{{ formatTime(item.submittedAt) }}</span>
+                      </div>
+                    </div>
+
+                    <el-tag type="warning" size="small">待验收</el-tag>
+                  </li>
+                </ul>
+              </div>
+
+              <div v-if="rejectedCount > 0" class="review-group">
+                <p class="review-title">需重新提交</p>
+
+                <ul class="todo-list">
+                  <li v-for="item in data.rejected" :key="`rejected-${item.submissionId}`" class="todo-row"
+                    @click="openMeeting(item.meetingId)">
+                    <div class="todo-main">
+                      <p class="todo-content">
+                        {{ item.todoContent }}
+                      </p>
+
+                      <p v-if="item.rejectReason" class="review-reason">
+                        打回原因：{{ item.rejectReason }}
+                      </p>
+
+                      <div class="todo-meta">
+                        <span class="todo-meeting">{{ item.meetingTitle }}</span>
+                        <span class="num todo-when">{{ formatTime(item.submittedAt) }}</span>
+                      </div>
+                    </div>
+
+                    <el-tag type="danger" size="small" effect="plain">被打回</el-tag>
+                  </li>
+                </ul>
+              </div>
+            </template>
           </el-tab-pane>
         </el-tabs>
       </section>
@@ -344,6 +412,33 @@ onMounted(load)
 }
 
 /* ---------- 待办 ---------- */
+.review-group {
+  margin-top: 12px;
+}
+
+.review-title {
+  margin: 0;
+  padding: 8px 4px 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+
+.review-reason {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #a33;
+}
+
+.overdue-pill {
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  color: #a33;
+  border: 1px solid currentColor;
+}
+
 .todo-row {
   display: flex;
   align-items: center;

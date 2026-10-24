@@ -2,12 +2,23 @@
 import { computed, reactive, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { UploadUserFile } from 'element-plus'
 import {
   getMeeting,
   updateTodoStatus,
   createTodo,
   deleteTodo,
   updateTodo,
+  submitTodo,
+  listTodoSubmissions,
+  acceptSubmission,
+  rejectSubmission,
+  withdrawSubmission,
+  uploadSubmissionAttachment,
+  downloadSubmissionAttachment,
+  setTodoChecklist,
+  toggleTodoCheckItem,
+  type ChecklistItem,
   updateMeeting,
   regenerateMeeting,
   updateMeetingCompletionStatus,
@@ -20,7 +31,9 @@ import {
   updateScheduledMeeting,
   exportMeetingMarkdown,
   type MeetingRecord,
-  type MemberBrief
+  type MemberBrief,
+  type TodoItem,
+  type TodoSubmissionRecord
 } from '../api/meeting'
 import { listContacts, type Contact } from '../api/auth'
 import MeetingAudioPlayer from '../components/MeetingAudioPlayer.vue'
@@ -72,15 +85,49 @@ const editTitle = ref('')
 const editTodoForm = ref({
   id: 0,
   content: '',
-  assignee: '',
-  deadline: ''
+  assigneeUserId: undefined as number | undefined,
+  reviewerId: undefined as number | undefined,
+  /** 截止日期，YYYY-MM-DD（日历选择） */
+  deadlineAt: '',
+  /** 用户是否动过日期：没动就不改，避免把历史文本截止时间清掉 */
+  deadlineTouched: false,
+  /** 验收要点，每行一条 */
+  checklistText: '',
+  /** 待验收期间不允许改清单，避免移动球门 */
+  checklistLocked: false
 })
 
 const todoForm = ref({
   content: '',
-  assignee: '',
-  deadline: ''
+  assigneeUserId: undefined as number | undefined,
+  reviewerId: undefined as number | undefined,
+  deadlineAt: '',
+  checklistText: ''
 })
+
+/* ---------- 交付与验收 ---------- */
+const submitDialogVisible = ref(false)
+const submitSubmitting = ref(false)
+const submitTarget = ref<TodoItem | null>(null)
+const submitNote = ref('')
+/** 交付物：先选文件，提交成功后逐个上传（最多 5 个，单个 ≤20MB） */
+const submitFiles = ref<UploadUserFile[]>([])
+
+const timelineVisible = ref(false)
+const timelineLoading = ref(false)
+const timelineTodo = ref<TodoItem | null>(null)
+const submissions = ref<TodoSubmissionRecord[]>([])
+
+/** 验收要点弹窗 */
+const checklistVisible = ref(false)
+const checklistTodo = ref<TodoItem | null>(null)
+const checklistSavingId = ref<number | null>(null)
+
+/** 提交详情弹窗：看交付内容，并在同一页完成通过 / 打回 / 撤回 */
+const viewVisible = ref(false)
+const viewLoading = ref(false)
+const viewTodo = ref<TodoItem | null>(null)
+const viewSubmission = ref<TodoSubmissionRecord | null>(null)
 const loading = ref(false)
 const completionStatusUpdating = ref(false)
 const regenerating = ref(false)
@@ -526,13 +573,23 @@ const handleTodoStatusChange = async (
     applyMeetingCompletionStatus(result?.meetingCompletionStatus)
 
     ElMessage.success('待办状态更新成功')
-  } catch (error) {
+  } catch (error: any) {
     todo.status = previousStatus
 
     console.error(error)
-    ElMessage.error('状态更新失败，请重试')
+
+    const message = error?.response?.data?.message ?? '状态更新失败，请重试'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
   }
 }
+
+/** 验收要点按行拆：空行忽略，最多 20 条（后端也会截断） */
+const parseChecklistText = (text: string) =>
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 20)
 
 const handleCreateTodo = async () => {
   if (!meeting.value) return
@@ -545,11 +602,19 @@ const handleCreateTodo = async () => {
   todoSubmitting.value = true
 
   try {
-    await createTodo(meeting.value.id, {
+    const created = await createTodo(meeting.value.id, {
       content: todoForm.value.content.trim(),
-      assignee: todoForm.value.assignee.trim() || undefined,
-      deadline: todoForm.value.deadline.trim() || undefined
+      assigneeUserId: todoForm.value.assigneeUserId ?? null,
+      reviewerId: todoForm.value.reviewerId ?? null,
+      deadline: todoForm.value.deadlineAt || undefined,
+      deadlineAt: todoForm.value.deadlineAt || undefined
     })
+
+    const items = parseChecklistText(todoForm.value.checklistText)
+
+    if (items.length) {
+      await setTodoChecklist(created.id, items)
+    }
 
     ElMessage.success('待办新增成功')
 
@@ -557,8 +622,10 @@ const handleCreateTodo = async () => {
 
     todoForm.value = {
       content: '',
-      assignee: '',
-      deadline: ''
+      assigneeUserId: undefined,
+      reviewerId: undefined,
+      deadlineAt: '',
+      checklistText: ''
     }
 
     await loadMeeting()
@@ -575,11 +642,17 @@ const handleEditTodo = (todo: any) => {
   editTodoForm.value = {
     id: todo.id,
     content: todo.content || '',
-    assignee: todo.assignee || '',
-    deadline: todo.deadline || ''
+    assigneeUserId: todo.assigneeUserId ?? undefined,
+    reviewerId: todo.reviewerId ?? undefined,
+    deadlineAt: todo.deadlineAt ? todo.deadlineAt.slice(0, 10) : '',
+    deadlineTouched: false,
+    checklistText: (todo.checklist ?? []).map((item: ChecklistItem) => item.content).join('\n'),
+    checklistLocked: todo.status === 'SUBMITTED'
   }
 
   editTodoDialogVisible.value = true
+
+  void loadContacts()
 }
 
 /** 提交待办编辑 */
@@ -592,11 +665,28 @@ const handleUpdateTodo = async () => {
   editTodoSubmitting.value = true
 
   try {
+    // 只有用户真的动过日期才提交截止字段：
+    // 老数据可能只有「本周五之前」这种文本、没有 deadline_at，直接回传空值会把它抹掉
+    const deadlinePatch = editTodoForm.value.deadlineTouched
+      ? {
+          deadline: editTodoForm.value.deadlineAt || '',
+          deadlineAt: editTodoForm.value.deadlineAt || null
+        }
+      : {}
+
     await updateTodo(editTodoForm.value.id, {
       content: editTodoForm.value.content.trim(),
-      assignee: editTodoForm.value.assignee,
-      deadline: editTodoForm.value.deadline
+      assigneeUserId: editTodoForm.value.assigneeUserId ?? null,
+      reviewerId: editTodoForm.value.reviewerId ?? null,
+      ...deadlinePatch
     })
+
+    if (!editTodoForm.value.checklistLocked) {
+      await setTodoChecklist(
+        editTodoForm.value.id,
+        parseChecklistText(editTodoForm.value.checklistText)
+      )
+    }
 
     ElMessage.success('待办修改成功')
     editTodoDialogVisible.value = false
@@ -637,6 +727,312 @@ const handleDeleteTodo = async (todo: any) => {
       console.error(error)
       ElMessage.error('删除失败，请重试')
     }
+  }
+}
+
+/* =========================
+   交付与验收
+   ========================= */
+
+const openSubmitDialog = (todo: TodoItem) => {
+  submitTarget.value = todo
+  submitNote.value = ''
+  submitFiles.value = []
+  submitDialogVisible.value = true
+}
+
+const handleSubmitTodo = async () => {
+  if (!submitTarget.value?.id) return
+
+  submitSubmitting.value = true
+
+  try {
+    const result = await submitTodo(
+      submitTarget.value.id,
+      submitNote.value.trim() || undefined
+    )
+
+    applyMeetingCompletionStatus(result?.meetingCompletionStatus)
+
+    // 提交已经成功，附件失败不能把它回滚；失败的文件单独提示，让用户重传
+    let uploaded = 0
+    const failed: string[] = []
+
+    for (const item of submitFiles.value) {
+      if (!item.raw) continue
+
+      try {
+        await uploadSubmissionAttachment(result.id, item.raw)
+        uploaded += 1
+      } catch {
+        failed.push(item.name)
+      }
+    }
+
+    if (failed.length) {
+      ElMessage.warning(
+        `已提交，${uploaded} 个附件上传成功；${failed.join('、')} 上传失败，可在「记录」里重新提交`
+      )
+    } else {
+      ElMessage.success(
+        result?.status === 'ACCEPTED'
+          ? '已提交，验收人是你本人，按通过处理'
+          : uploaded
+            ? `已提交，${uploaded} 个附件已上传，等待验收`
+            : '已提交，等待验收'
+      )
+    }
+
+    submitDialogVisible.value = false
+    submitFiles.value = []
+
+    await loadMeeting()
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '提交失败，请重试'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    submitSubmitting.value = false
+  }
+}
+
+/** 下载交付物：接口要鉴权，走 blob 而不是直接开链接 */
+const handleDownloadAttachment = async (url: string, fileName: string) => {
+  try {
+    await downloadSubmissionAttachment(url, fileName)
+  } catch {
+    ElMessage.error('附件下载失败，请重试')
+  }
+}
+
+/* ---------- 提交详情 ---------- */
+
+const openSubmissionView = async (todo: TodoItem) => {
+  if (!todo.id) return
+
+  viewTodo.value = todo
+  viewSubmission.value = null
+  viewVisible.value = true
+  viewLoading.value = true
+
+  try {
+    const rows = await listTodoSubmissions(todo.id)
+    viewSubmission.value = rows[0] ?? null
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '提交详情加载失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    viewLoading.value = false
+  }
+}
+
+const acceptFromView = () => {
+  if (viewTodo.value) void handleAcceptSubmission(viewTodo.value)
+}
+
+const rejectFromView = () => {
+  if (viewTodo.value) void handleRejectSubmission(viewTodo.value)
+}
+
+const withdrawFromView = () => {
+  if (viewTodo.value) void handleWithdrawSubmission(viewTodo.value)
+}
+
+/** 在「查看」弹窗里直接勾验收要点 */
+const toggleCheckInView = async (item: ChecklistItem, done: boolean) => {
+  const todo = viewTodo.value
+
+  if (!todo?.id) return
+
+  checklistSavingId.value = item.id
+
+  try {
+    await toggleTodoCheckItem(todo.id, item.id, done)
+    await loadMeeting()
+
+    const fresh = meeting.value?.todos?.find((row) => row.id === todo.id)
+
+    if (fresh) viewTodo.value = fresh
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '更新验收要点失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    checklistSavingId.value = null
+  }
+}
+
+/* ---------- 验收要点 ---------- */
+
+const openChecklist = (todo: TodoItem) => {
+  checklistTodo.value = todo
+  checklistVisible.value = true
+}
+
+const handleToggleCheckItem = async (item: ChecklistItem, done: boolean) => {
+  const todo = checklistTodo.value
+
+  if (!todo?.id) return
+
+  checklistSavingId.value = item.id
+
+  try {
+    await toggleTodoCheckItem(todo.id, item.id, done)
+
+    // 重新拉一次，保证行上的「3/5」与弹窗里的勾选状态一致
+    await loadMeeting()
+    checklistTodo.value = meeting.value?.todos?.find((row) => row.id === todo.id) ?? null
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '更新验收要点失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    checklistSavingId.value = null
+  }
+}
+
+/** 验收通过 */
+const handleAcceptSubmission = async (todo: TodoItem) => {
+  const submissionId = todo.latestSubmission?.id
+
+  if (!submissionId) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确认「${todo.content}」的交付已符合要求？通过后这条待办将标记为已完成。`,
+      '验收通过',
+      {
+        confirmButtonText: '确认通过',
+        cancelButtonText: '再看看',
+        type: 'success'
+      }
+    )
+
+    const result = await acceptSubmission(submissionId)
+
+    applyMeetingCompletionStatus(result?.meetingCompletionStatus)
+
+    ElMessage.success(
+      result?.uncheckedChecklist
+        ? `已验收通过，另有 ${result.uncheckedChecklist} 条验收要点未勾选`
+        : '已验收通过'
+    )
+
+    viewVisible.value = false
+
+    await loadMeeting()
+  } catch (error: any) {
+    if (error === 'cancel' || error === 'close') return
+
+    const message = error?.response?.data?.message ?? '验收失败，请重试'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  }
+}
+
+/** 打回：原因必填 */
+const handleRejectSubmission = async (todo: TodoItem) => {
+  const submissionId = todo.latestSubmission?.id
+
+  if (!submissionId) return
+
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `打回「${todo.content}」并说明原因（至少 5 个字）。待办会退回「进行中」。`,
+      '打回交付',
+      {
+        confirmButtonText: '确认打回',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '例如：缺少接口联调记录，请补充后重新提交',
+        inputValidator: (input: string) =>
+          (input ?? '').trim().length >= 5 || '请填写至少 5 个字的原因'
+      }
+    )
+
+    const result = await rejectSubmission(submissionId, value.trim())
+
+    applyMeetingCompletionStatus(result?.meetingCompletionStatus)
+    ElMessage.success('已打回，待办退回进行中')
+
+    viewVisible.value = false
+
+    await loadMeeting()
+  } catch (error: any) {
+    if (error === 'cancel' || error === 'close') return
+
+    const message = error?.response?.data?.message ?? '打回失败，请重试'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  }
+}
+
+/** 撤回提交 */
+const handleWithdrawSubmission = async (todo: TodoItem) => {
+  const submissionId = todo.latestSubmission?.id
+
+  if (!submissionId) return
+
+  try {
+    await ElMessageBox.confirm('撤回后待办回到「进行中」，可以修改后重新提交。', '撤回提交', {
+      confirmButtonText: '确认撤回',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+
+    const result = await withdrawSubmission(submissionId)
+
+    applyMeetingCompletionStatus(result?.meetingCompletionStatus)
+    ElMessage.success('已撤回')
+
+    viewVisible.value = false
+
+    await loadMeeting()
+  } catch (error: any) {
+    if (error === 'cancel' || error === 'close') return
+
+    const message = error?.response?.data?.message ?? '撤回失败，请重试'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  }
+}
+
+/** 打开提交历史时间线 */
+const openTimeline = async (todo: TodoItem) => {
+  if (!todo.id) return
+
+  timelineTodo.value = todo
+  timelineVisible.value = true
+  timelineLoading.value = true
+  submissions.value = []
+
+  try {
+    submissions.value = await listTodoSubmissions(todo.id)
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '提交记录加载失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    timelineLoading.value = false
+  }
+}
+
+const submissionStatusText = (status: string) => {
+  switch (status) {
+    case 'ACCEPTED':
+      return '已通过'
+    case 'REJECTED':
+      return '已打回'
+    case 'WITHDRAWN':
+      return '已撤回'
+    default:
+      return '待验收'
+  }
+}
+
+const submissionStatusType = (status: string) => {
+  switch (status) {
+    case 'ACCEPTED':
+      return 'success'
+    case 'REJECTED':
+      return 'danger'
+    case 'WITHDRAWN':
+      return 'info'
+    default:
+      return 'warning'
   }
 }
 
@@ -825,6 +1221,8 @@ const todoStatusText = (status?: string) => {
       return '已完成'
     case 'IN_PROGRESS':
       return '进行中'
+    case 'SUBMITTED':
+      return '待验收'
     case 'CANCELLED':
       return '已取消'
     default:
@@ -832,29 +1230,55 @@ const todoStatusText = (status?: string) => {
   }
 }
 
-/** 未完成的待办走朱色，完成的走绿色 */
-const todoStatusType = (status?: string) => {
+/**
+ * 待办状态色与会议状态共用一套调色板（style.css 的 --status-*）：
+ * 待处理=wait、进行中/待验收=live、已完成=done、已取消=cancel。
+ */
+const todoStatusKey = (status?: string) => {
   switch (status) {
-    case 'COMPLETED':
-      return 'success'
     case 'IN_PROGRESS':
-      return 'warning'
+      return 'live'
+    case 'SUBMITTED':
+      return 'review'
+    case 'COMPLETED':
+      return 'done'
     case 'CANCELLED':
-      return 'info'
+      return 'cancel'
     default:
-      return 'danger'
+      return 'wait'
   }
 }
 
-/** 待办完成度：已完成 / 总数 */
+/** 负责人能选的状态：有验收人时不能直接勾完成 */
+const todoStatusOptions = (todo: TodoItem) => {
+  const options: Array<{ value: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'; label: string }> = [
+    { value: 'OPEN', label: '待处理' },
+    { value: 'IN_PROGRESS', label: '进行中' },
+  ]
+
+  if (!todo.reviewerId) {
+    options.push({ value: 'COMPLETED', label: '已完成' })
+  }
+
+  options.push({ value: 'CANCELLED', label: '已取消' })
+
+  return options
+}
+
+/** 待办完成度：已完成 / 总数，另标注待验收 */
 const todoSummary = computed(() => {
   const todos = meeting.value?.todos ?? []
 
   if (!todos.length) return '—'
 
   const done = todos.filter((todo) => todo.status === 'COMPLETED').length
+  const pending = todos.filter(
+    (todo) => todo.status === 'SUBMITTED'
+  ).length
 
-  return `${done} / ${todos.length} 项已完成`
+  return pending
+    ? `${done} / ${todos.length} 项已完成 · ${pending} 项待验收`
+    : `${done} / ${todos.length} 项已完成`
 })
 
 /** 原文篇幅；有录音时补一句可回听 */
@@ -1192,43 +1616,112 @@ onMounted(async () => {
 
                 <span class="todo-text">任务</span>
                 <span class="todo-owner">负责人</span>
+                <span class="todo-reviewer">验收人</span>
                 <span class="todo-due">截止</span>
                 <span class="todo-state">状态</span>
-                <span v-if="canEdit" class="todo-ops" />
+                <span class="todo-ops" />
               </div>
 
               <ul class="todo-lines">
                 <li v-for="(todo, index) in meeting.todos ?? []" :key="todo.id ?? index" class="todo-line">
                   <span class="todo-no num">{{ index + 1 }}</span>
 
-                  <span class="todo-text">{{ todo.content }}</span>
+                  <span class="todo-text">
+                    <span class="todo-title">
+                      {{ todo.content }}
+                      <el-tooltip v-if="todo.latestSubmission?.status === 'REJECTED'"
+                        :content="todo.latestSubmission.rejectReason || '交付被打回'" placement="top">
+                        <el-tag size="small" type="danger" effect="plain" class="todo-flag">
+                          被打回
+                        </el-tag>
+                      </el-tooltip>
 
-                  <span class="todo-owner">{{ todo.assignee || '未指定' }}</span>
+                      <el-button v-if="(todo.checklistTotal ?? 0) > 0" link class="checklist-link"
+                        @click="openChecklist(todo)">
+                        验收要点 {{ todo.checklistDone }}/{{ todo.checklistTotal }}
+                      </el-button>
+                    </span>
 
-                  <span class="todo-due num">{{ todo.deadline || '未指定' }}</span>
-
-                  <span class="todo-state">
-                    <!-- 能勾状态的人直接选；只读共享者只看标签 -->
-                    <el-tag v-if="!canEditTodos" size="small" :type="todoStatusType(todo.status)">
-                      {{ todoStatusText(todo.status) }}
-                    </el-tag>
-
-                    <el-select v-else :model-value="todo.status || 'OPEN'" size="small" class="todo-select"
-                      @change="(status: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED') => handleTodoStatusChange(todo, status)">
-                      <el-option label="待处理" value="OPEN" />
-                      <el-option label="进行中" value="IN_PROGRESS" />
-                      <el-option label="已完成" value="COMPLETED" />
-                      <el-option label="已取消" value="CANCELLED" />
-                    </el-select>
-                  </span>
-
-                  <span v-if="canEdit" class="todo-ops">
-                    <el-button link @click="handleEditTodo(todo)">
+                    <!-- 编辑贴着任务右侧，和任务文字同一行垂直居中 -->
+                    <el-button v-if="canEdit" link class="todo-edit" @click="handleEditTodo(todo)">
                       编辑
                     </el-button>
+                  </span>
 
-                    <el-button link type="danger" @click="handleDeleteTodo(todo)">
-                      删除
+                  <span class="todo-owner">{{ todo.assigneeName || todo.assignee || '未指定' }}</span>
+
+                  <span class="todo-reviewer">{{ todo.reviewerName || '未指定' }}</span>
+
+                  <span class="todo-due num" :class="{ overdue: todo.overdue }">
+                    {{ todo.deadline || '未指定' }}
+                    <span v-if="todo.overdue" class="due-flag">逾期</span>
+                  </span>
+
+                  <span class="todo-state">
+                    <!-- 待验收：状态由验收动作决定，不允许手动改 -->
+                    <el-tooltip v-if="todo.status === 'SUBMITTED'" placement="top"
+                      :content="todo.reviewerName ? `等待 ${todo.reviewerName} 验收` : '等待验收'">
+                      <span class="m-status" :class="`m-status--${todoStatusKey(todo.status)}`">
+                        <i class="m-status-dot" />
+                        待验收
+                      </span>
+                    </el-tooltip>
+
+                    <!-- 能改状态的只有负责人；其他人只看标签 -->
+                    <span v-else-if="!todo.canChangeStatus" class="m-status"
+                      :class="`m-status--${todoStatusKey(todo.status)}`">
+                      <i class="m-status-dot" />
+                      {{ todoStatusText(todo.status) }}
+                    </span>
+
+                    <!-- 负责人：同一枚标记，点开就是状态菜单 -->
+                    <el-dropdown v-else trigger="click" placement="bottom-end"
+                      @command="(status: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED') => handleTodoStatusChange(todo, status)">
+                      <button type="button" class="m-status" :class="`m-status--${todoStatusKey(todo.status)}`"
+                        :aria-label="`待办状态：${todoStatusText(todo.status)}，点击修改`">
+                        <i class="m-status-dot" />
+                        {{ todoStatusText(todo.status) }}
+                        <span class="m-status-caret" aria-hidden="true" />
+                      </button>
+
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item v-for="option in todoStatusOptions(todo)" :key="option.value"
+                            :command="option.value">
+                            <span class="m-status" :class="`m-status--${todoStatusKey(option.value)}`">
+                              <i class="m-status-dot" />
+                              {{ option.label }}
+                            </span>
+                          </el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </span>
+
+                  <span class="todo-ops">
+                    <!-- 通过 / 打回放在「查看」弹窗里；只有相关人才能看提交内容 -->
+                    <el-button v-if="todo.latestSubmission && todo.canViewSubmissionContent" link type="primary"
+                      @click="openSubmissionView(todo)">
+                      查看
+                    </el-button>
+
+                    <el-button v-if="todo.canSubmit" link type="primary" @click="openSubmitDialog(todo)">
+                      提交
+                    </el-button>
+
+                    <el-button v-if="todo.canWithdraw" link @click="handleWithdrawSubmission(todo)">
+                      撤回
+                    </el-button>
+
+                    <!-- 记录对每条待办都可见；没有提交时弹窗里显示「暂无提交」 -->
+                    <el-button link @click="openTimeline(todo)">
+                      记录
+                    </el-button>
+
+                    <!-- 删除收成一个 ×，放在最末，避免和常用操作抢注意力 -->
+                    <el-button v-if="canEdit" link class="todo-remove" title="删除待办" aria-label="删除待办"
+                      @click="handleDeleteTodo(todo)">
+                      ×
                     </el-button>
                   </span>
                 </li>
@@ -1332,11 +1825,27 @@ onMounted(async () => {
       </el-form-item>
 
       <el-form-item label="负责人">
-        <el-input v-model="todoForm.assignee" placeholder="请输入负责人" />
+        <el-select v-model="todoForm.assigneeUserId" placeholder="选择负责人（可不填）" clearable filterable
+          :loading="contactsLoading" style="width: 100%" @focus="loadContacts">
+          <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+        </el-select>
       </el-form-item>
 
-      <el-form-item label="截止时间">
-        <el-input v-model="todoForm.deadline" placeholder="例如：下周一" />
+      <el-form-item label="验收人">
+        <el-select v-model="todoForm.reviewerId" placeholder="不填则不需要验收，可直接完成" clearable filterable
+          :loading="contactsLoading" style="width: 100%" @focus="loadContacts">
+          <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+        </el-select>
+      </el-form-item>
+
+      <el-form-item label="截止日期">
+        <el-date-picker v-model="todoForm.deadlineAt" type="date" value-format="YYYY-MM-DD"
+          placeholder="选择截止日期" style="width: 100%" />
+      </el-form-item>
+
+      <el-form-item label="验收要点">
+        <el-input v-model="todoForm.checklistText" type="textarea" :rows="3"
+          placeholder="每行一条，验收时逐条勾选（可不填）&#10;例如：接口返回结构与文档一致" />
       </el-form-item>
     </el-form>
 
@@ -1358,11 +1867,32 @@ onMounted(async () => {
       </el-form-item>
 
       <el-form-item label="负责人">
-        <el-input v-model="editTodoForm.assignee" placeholder="请输入负责人" />
+        <el-select v-model="editTodoForm.assigneeUserId" placeholder="选择负责人（可不填）" clearable filterable
+          :loading="contactsLoading" style="width: 100%" @focus="loadContacts">
+          <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+        </el-select>
       </el-form-item>
 
-      <el-form-item label="截止时间">
-        <el-input v-model="editTodoForm.deadline" placeholder="例如：2026-10-05" />
+      <el-form-item label="验收人">
+        <el-select v-model="editTodoForm.reviewerId" placeholder="不填则不需要验收" clearable filterable
+          :loading="contactsLoading" style="width: 100%" @focus="loadContacts">
+          <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
+        </el-select>
+      </el-form-item>
+
+      <el-form-item label="截止日期">
+        <el-date-picker v-model="editTodoForm.deadlineAt" type="date" value-format="YYYY-MM-DD"
+          placeholder="选择截止日期" style="width: 100%" @change="editTodoForm.deadlineTouched = true" />
+      </el-form-item>
+
+      <el-form-item label="验收要点">
+        <el-input v-model="editTodoForm.checklistText" type="textarea" :rows="3"
+          :disabled="editTodoForm.checklistLocked"
+          placeholder="每行一条，验收时逐条勾选（可不填）" />
+
+        <p v-if="editTodoForm.checklistLocked" class="field-hint">
+          待验收期间不能修改验收要点，验收或撤回后再改。
+        </p>
       </el-form-item>
     </el-form>
 
@@ -1394,6 +1924,171 @@ onMounted(async () => {
         保存修改
       </el-button>
     </template>
+  </el-dialog>
+
+  <el-dialog v-model="viewVisible" title="提交详情" width="600px">
+    <div v-loading="viewLoading" class="view-wrap">
+      <p class="view-todo">{{ viewTodo?.content }}</p>
+
+      <template v-if="viewSubmission">
+        <div class="view-head">
+          <el-tag size="small" :type="submissionStatusType(viewSubmission.status)">
+            {{ submissionStatusText(viewSubmission.status) }}
+          </el-tag>
+
+          <span class="view-meta">
+            {{ viewSubmission.submitter?.name ?? '提交人' }} · 第 {{ viewSubmission.attemptNo }} 次提交 · {{ formatDate(viewSubmission.createdAt) }}
+          </span>
+        </div>
+
+        <section class="view-block">
+          <h4 class="view-label">交付说明</h4>
+          <p v-if="viewSubmission.note" class="view-note">{{ viewSubmission.note }}</p>
+          <p v-else class="view-empty">没有填写说明</p>
+        </section>
+
+        <section class="view-block">
+          <h4 class="view-label">交付物</h4>
+          <div v-if="viewSubmission.attachments.length" class="view-files">
+            <el-button v-for="file in viewSubmission.attachments" :key="file.id" link type="primary"
+              @click="handleDownloadAttachment(file.url, file.fileName)">
+              {{ file.fileName }}
+            </el-button>
+          </div>
+          <p v-else class="view-empty">没有上传附件</p>
+        </section>
+
+        <section v-if="(viewTodo?.checklistTotal ?? 0) > 0" class="view-block">
+          <h4 class="view-label">
+            验收要点 {{ viewTodo?.checklistDone }} / {{ viewTodo?.checklistTotal }}
+          </h4>
+
+          <ul class="view-checks">
+            <li v-for="item in viewTodo?.checklist ?? []" :key="item.id">
+              <el-checkbox :model-value="item.done"
+                :disabled="!canEditTodos || checklistSavingId === item.id"
+                @change="(value: any) => toggleCheckInView(item, Boolean(value))">
+                {{ item.content }}
+              </el-checkbox>
+            </li>
+          </ul>
+        </section>
+
+        <p v-if="viewSubmission.rejectReason" class="view-reject">
+          打回原因：{{ viewSubmission.rejectReason }}
+        </p>
+      </template>
+
+      <el-empty v-else-if="!viewLoading" description="暂无提交" :image-size="72" />
+    </div>
+
+    <template #footer>
+      <el-button @click="viewVisible = false">关闭</el-button>
+
+      <el-button v-if="viewTodo?.canWithdraw" @click="withdrawFromView">撤回</el-button>
+
+      <el-button v-if="viewTodo?.canReview" type="danger" @click="rejectFromView">打回</el-button>
+
+      <el-button v-if="viewTodo?.canReview" type="success" @click="acceptFromView">通过</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="checklistVisible" width="520px"
+    :title="`验收要点 · ${checklistTodo?.content ?? ''}`">
+    <p class="checklist-summary">
+      已勾选 {{ checklistTodo?.checklistDone ?? 0 }} / {{ checklistTodo?.checklistTotal ?? 0 }}
+    </p>
+
+    <ul class="checklist">
+      <li v-for="item in checklistTodo?.checklist ?? []" :key="item.id" class="checklist-item">
+        <el-checkbox :model-value="item.done" :disabled="!canEditTodos || checklistSavingId === item.id"
+          @change="(value: any) => handleToggleCheckItem(item, Boolean(value))">
+          {{ item.content }}
+        </el-checkbox>
+
+        <span v-if="item.done && item.doneByName" class="checklist-meta">
+          {{ item.doneByName }}<template v-if="item.doneAt"> · {{ formatDate(item.doneAt) }}</template>
+        </span>
+      </li>
+    </ul>
+
+    <template #footer>
+      <el-button @click="checklistVisible = false">关闭</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="submitDialogVisible" title="提交交付" width="520px">
+    <p class="submit-hint">
+      提交后待办进入「待验收」，验收人确认通过才算完成；被打回会退回「进行中」。
+    </p>
+
+    <el-form label-width="80px">
+      <el-form-item label="交付说明">
+        <el-input v-model="submitNote" type="textarea" :rows="4" maxlength="1000" show-word-limit
+          placeholder="做了什么、怎么验证、有什么需要对方注意的（可不填）" />
+      </el-form-item>
+
+      <el-form-item label="交付物">
+        <el-upload v-model:file-list="submitFiles" :auto-upload="false" :limit="5" multiple class="submit-upload">
+          <el-button>选择文件</el-button>
+
+          <template #tip>
+            <div class="el-upload__tip">
+              最多 5 个，单个不超过 20MB（PDF / 文档 / 表格 / 压缩包 / 图片）
+            </div>
+          </template>
+        </el-upload>
+      </el-form-item>
+    </el-form>
+
+    <template #footer>
+      <el-button @click="submitDialogVisible = false">取消</el-button>
+
+      <el-button type="primary" :loading="submitSubmitting" @click="handleSubmitTodo">
+        确认提交
+      </el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="timelineVisible" width="560px"
+    :title="`提交记录 · ${timelineTodo?.content ?? ''}`">
+    <div v-loading="timelineLoading" class="timeline-wrap">
+      <el-empty v-if="!timelineLoading && !submissions.length" description="暂无提交" :image-size="72" />
+
+      <ul v-else class="timeline">
+        <li v-for="item in submissions" :key="item.id" class="timeline-item">
+          <div class="timeline-head">
+            <el-tag size="small" :type="submissionStatusType(item.status)">
+              {{ submissionStatusText(item.status) }}
+            </el-tag>
+
+            <span class="timeline-meta">
+              <template v-if="item.submitter">{{ item.submitter.name }} · </template>
+              第 {{ item.attemptNo }} 次提交 · {{ formatDate(item.createdAt) }}
+            </span>
+          </div>
+
+          <p v-if="item.canViewContent === false" class="timeline-muted">
+            仅相关人员可查看提交内容
+          </p>
+
+          <p v-if="item.note" class="timeline-note">{{ item.note }}</p>
+
+          <p v-if="item.rejectReason" class="timeline-reject">
+            打回原因：{{ item.rejectReason }}
+          </p>
+
+          <div v-if="item.attachments?.length" class="timeline-files">
+            <span>附件：</span>
+
+            <el-button v-for="file in item.attachments" :key="file.id" link type="primary"
+              @click="handleDownloadAttachment(file.url, file.fileName)">
+              {{ file.fileName }}
+            </el-button>
+          </div>
+        </li>
+      </ul>
+    </div>
   </el-dialog>
 </template>
 
@@ -1592,20 +2287,39 @@ onMounted(async () => {
 .todo-text {
   flex: 1;
   min-width: 0;
+
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
   font-size: 13px;
   line-height: 1.7;
   color: var(--ink);
 }
 
-.todo-owner {
+.todo-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.todo-edit {
   flex-shrink: 0;
-  width: 84px;
+  margin-left: 0;
+  font-size: 11px;
+}
+
+.todo-owner,
+.todo-reviewer {
+  flex-shrink: 0;
+  width: 76px;
 
   font-family: var(--song);
   font-size: 13px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
 
+  /* 居中而不是左对齐：列内两侧留白相等，列与列的间隔看起来才均匀 */
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1618,32 +2332,289 @@ onMounted(async () => {
   font-size: 11px;
   color: var(--ink-3);
 
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.todo-state {
-  flex-shrink: 0;
-  width: 108px;
-  display: flex;
-  justify-content: flex-end;
+.todo-due.overdue {
+  color: #a33;
 }
 
-.todo-select {
-  width: 104px;
+.due-flag {
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 14px;
+  border: 1px solid currentColor;
+}
+
+.todo-state {
+  flex-shrink: 0;
+  width: 80px;
+  display: flex;
+  justify-content: center;
+}
+
+/* 表格里用紧凑版状态标记，和会议列表同一套配色 */
+.todo-state .m-status {
+  justify-content: center;
+  box-sizing: border-box;
+  width: 72px;
+  height: 22px;
+  padding: 0 4px;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.todo-state .m-status-caret {
+  margin-left: 0;
 }
 
 .todo-ops {
   flex-shrink: 0;
-  width: 76px;
+  /* 刚好放下 5 个双字按钮（查看/提交/撤回/记录/删除），不留空白 */
+  width: 156px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
+  align-items: center;
+  gap: 4px 8px;
 }
 
 .todo-ops .el-button {
   margin-left: 0;
+}
+
+/* 删除：一个低调的 ×，悬停才变红 */
+.todo-remove {
+  margin-left: 2px;
+  padding: 0 2px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--ink-3);
+  text-decoration: none;
+}
+
+.todo-remove:hover {
+  color: var(--status-cancel-dot);
+  text-decoration: none;
+}
+
+.todo-flag {
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.checklist-link {
+  margin-left: 8px;
+  font-size: 11px;
+  vertical-align: 1px;
+}
+
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.checklist-summary {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.checklist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.checklist-item:last-child {
+  border-bottom: none;
+}
+
+.checklist-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* ---------- 提交详情 ---------- */
+.view-wrap {
+  min-height: 120px;
+}
+
+.view-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+
+  margin-top: 10px;
+  padding-bottom: 2px;
+}
+
+.view-meta {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.view-todo {
+  margin: 12px 0 0;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--ink);
+}
+
+.view-block {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.view-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+.view-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.view-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.view-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+.view-files .el-button {
+  margin-left: 0;
+  font-size: 12.5px;
+}
+
+.view-checks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.view-checks li {
+  padding: 4px 0;
+}
+
+.view-reject {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: #a33;
+}
+
+/* ---------- 交付与验收 ---------- */
+.submit-hint {
+  margin: 0 0 16px;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-3);
+}
+
+.timeline-wrap {
+  min-height: 80px;
+}
+
+.timeline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.timeline-item:last-child {
+  border-bottom: none;
+}
+
+.timeline-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.timeline-meta {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.timeline-muted {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.timeline-note {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.timeline-reject {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: #a33;
+}
+
+.timeline-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.timeline-files .el-button {
+  margin-left: 0;
+  font-size: 11.5px;
+}
+
+.submit-upload {
+  width: 100%;
 }
 
 .empty-line {
@@ -1801,8 +2772,14 @@ onMounted(async () => {
   color: var(--ink-3);
 }
 
+/* 与历史会议列表的「置顶」徽标同一套：琥珀字、纸底、琥珀描边 */
 .foot-pin {
-  color: var(--ochre);
+  padding: 1px 6px;
+
+  font-weight: 600;
+  color: var(--ochre-deep);
+  background: var(--ochre-wash);
+  border: 1px solid var(--ochre-line);
 }
 
 .foot-actions {
@@ -1847,6 +2824,7 @@ onMounted(async () => {
   }
 
   .todo-owner,
+  .todo-reviewer,
   .todo-due {
     width: auto;
   }

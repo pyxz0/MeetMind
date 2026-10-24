@@ -49,6 +49,7 @@
   --ochre-line: #e4d3b0;
   --ochre-deep: #7a5410;
   --ochre-wash: #f7f1e4;
+  --ochre-wash-hover: #f1e7d0;
   --moss: #4c7a5e;
   --moss-ink: #3c6149;
 
@@ -72,6 +73,12 @@
   --status-cancel-bg: #f8e0db;
   --status-cancel-line: #d9978d;
   --status-cancel-dot: #c23b28;
+
+  /* 待验收：会议状态里没有对应语义，单独给一档蓝，和琥珀色的进行中区分开 */
+  --status-review: #1f4b73;
+  --status-review-bg: #e4eef8;
+  --status-review-line: #a8c3dc;
+  --status-review-dot: #3a74a8;
 
   /* 正文墨色与输入底色：比主墨稍柔和，白得干净 */
   --ink-body: #232838;
@@ -526,6 +533,16 @@ button.m-status:disabled {
 
 .m-status--cancel .m-status-dot {
   background: var(--status-cancel-dot);
+}
+
+.m-status--review {
+  color: var(--status-review);
+  background: var(--status-review-bg);
+  border-color: var(--status-review-line);
+}
+
+.m-status--review .m-status-dot {
+  background: var(--status-review-dot);
 }
 
 /* 只想要一个圆点时用这个 */
@@ -1164,9 +1181,9 @@ button.m-status:disabled {
   border-bottom: none;
 }
 
-/* 置顶：一道琥珀色左标条，而不是再加一个标签 */
+/* 置顶：琥珀标条加粗到 3px，配合行内淡琥珀底，扫一眼就能和普通行分开 */
 .reg-pinned {
-  box-shadow: inset 2px 0 0 var(--ochre);
+  box-shadow: inset 3px 0 0 var(--ochre);
 }
 
 .reg-head {
@@ -1184,6 +1201,16 @@ button.m-status:disabled {
 
 .reg-open .reg-head {
   background: var(--paper-2);
+}
+
+/* 置顶行：淡琥珀底盖过普通行的悬停 / 展开底色，保证任何状态下都能认出来 */
+.reg-pinned .reg-head {
+  background: var(--ochre-wash);
+}
+
+.reg-pinned .reg-head:hover,
+.reg-pinned.reg-open .reg-head {
+  background: var(--ochre-wash-hover);
 }
 
 .reg-no {
@@ -1224,15 +1251,29 @@ button.m-status:disabled {
   color: var(--ink-3);
 }
 
-/* 「置顶」不占状态色：琥珀留给进行中，置顶由左侧标条表达 */
+/* 「置顶」徽标：琥珀字 + 纸底描边，前面一枚小方点当图钉，不抢状态色 */
 .reg-pin {
   flex-shrink: 0;
-  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
 
   font-size: 10.5px;
-  color: var(--ink-2);
-  background: var(--paper-2);
-  border: 1px solid var(--rule);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--ochre-deep);
+  background: var(--paper);
+  border: 1px solid var(--ochre-line);
+}
+
+.reg-pin::before {
+  content: "";
+
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  background: var(--ochre);
 }
 
 .reg-state {
@@ -1262,6 +1303,16 @@ button.m-status:disabled {
   margin-top: 20px;
   padding-top: 15px;
   border-top: 1px solid var(--rule);
+}
+
+/* 动作条放在详情顶端时：不再压顶线，分隔线改压在按钮下方 */
+.reg-actions--top {
+  margin-top: 0;
+  margin-bottom: 18px;
+  padding-top: 0;
+  padding-bottom: 15px;
+  border-top: none;
+  border-bottom: 1px solid var(--rule);
 }
 
 @media (max-width: 640px) {

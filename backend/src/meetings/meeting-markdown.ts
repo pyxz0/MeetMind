@@ -12,6 +12,7 @@ const COMPLETION_LABELS: Record<MeetingCompletionStatus, string> = {
 const TODO_LABELS: Record<TodoStatus, string> = {
   OPEN: '未开始',
   IN_PROGRESS: '进行中',
+  SUBMITTED: '待验收',
   COMPLETED: '已完成',
   CANCELLED: '已取消',
 };

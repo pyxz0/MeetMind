@@ -23,12 +23,26 @@ enum MeetingCompletionStatus {
   CANCELLED
 }
 
-/// 行动项的跟踪状态，供后续待办管理功能使用。
+/// 行动项的跟踪状态。
+///
+/// SUBMITTED 表示「已提交、等待验收」，**不属于完成**：
+/// 会议完成判定只认 COMPLETED / CANCELLED，因此待验收期间会议保持进行中。
 enum TodoStatus {
   OPEN
   IN_PROGRESS
+  SUBMITTED
   COMPLETED
   CANCELLED
+}
+
+/// 单次交付的验收结果。
+///
+/// PENDING 同时最多一条（部分唯一索引保证），避免同一待办被重复提交。
+enum SubmissionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
 }
 
 /// 用户角色，三级分级。
@@ -144,6 +158,19 @@ model User {
   sharedWithMe MeetingShare[]  @relation("ShareRecipient")
   /// 该用户做过的共享操作（用于追溯是谁授的权）。
   sharesGiven  MeetingShare[]  @relation("ShareGrantor")
+
+  /// 指派给该用户的待办。
+  todosAssigned Todo[] @relation("TodoAssignee")
+  /// 由该用户验收的待办。
+  todosToReview Todo[] @relation("TodoReviewer")
+  /// 该用户提交过的交付。
+  todoSubmissions TodoSubmission[] @relation("SubmissionSubmitter")
+  /// 该用户验收过的交付。
+  todoReviews     TodoSubmission[] @relation("SubmissionReviewer")
+  /// 该用户产生的待办流转记录。
+  todoEvents      TodoEvent[]      @relation("TodoEventActor")
+  /// 该用户勾选过的验收要点。
+  todoCheckItems  TodoCheckItem[]  @relation("TodoCheckDoneBy")
 
   @@index([role])
   @@map("users")
@@ -370,8 +397,15 @@ model Todo {
   content   String     @db.Text
   /// 负责人可能未被会议原文明确指定。
   assignee  String?    @db.VarChar(120)
+  /// 结构化的负责人。文本 assignee 保留做展示与历史兼容，
+  /// 归属判定与「谁能提交」一律以本字段为准（文本匹配会把张三丰认成张三）。
+  assigneeUserId Int?  @map("assignee_user_id")
+  /// 验收人；为空表示该待办不需要验收，保持旧的一键完成行为。
+  reviewerId     Int?  @map("reviewer_id")
   /// 保留自然语言截止时间，例如“下周一”，避免丢失模型原始表达。
   deadline  String?    @db.VarChar(120)
+  /// 结构化的截止时间。自然语言解析不了就留空，只保留 deadline 文本。
+  deadlineAt DateTime? @map("deadline_at") @db.Timestamptz(3)
   /// 待办处理状态，默认处于未开始状态。
   status    TodoStatus @default(OPEN)
   /// 同一会议内的展示顺序。
@@ -379,10 +413,116 @@ model Todo {
   /// 删除所属会议时级联删除此待办。
   meeting   Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
 
+  assigneeUser User?            @relation("TodoAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
+  reviewer     User?            @relation("TodoReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  submissions  TodoSubmission[]
+  events       TodoEvent[]
+  checkItems   TodoCheckItem[]
+
   /// 加速会议内排序查询和按状态筛选待办。
   @@index([meetingId, sortOrder])
   @@index([status])
+  @@index([assigneeUserId, status])
+  @@index([reviewerId, status])
   @@map("meeting_todos")
+}
+
+/// 待办的每一次交付。
+///
+/// 「提交」是一件事，不是待办的一个属性：需要记录谁、何时、交了什么、谁验的、为什么打回。
+/// 只改 todos.status 能跑通流程，但答不了返工次数、验收时长、谁的交付老被打回。
+model TodoSubmission {
+  id           Int              @id @default(autoincrement())
+  todoId       Int              @map("todo_id")
+  submitterId  Int              @map("submitter_id")
+  /// 提交时的验收人快照；验收人后续被换掉，不影响这条记录的责任归属
+  reviewerId   Int?             @map("reviewer_id")
+  /// 交付说明
+  note         String?          @db.Text
+  status       SubmissionStatus @default(PENDING)
+  /// 第几次提交（打回后递增），用于统计返工次数
+  attemptNo    Int              @default(1) @map("attempt_no")
+  /// 打回原因；打回时必填，其余情况为空
+  rejectReason String?          @map("reject_reason") @db.Text
+  reviewedAt   DateTime?        @map("reviewed_at") @db.Timestamptz(3)
+  /// 24 小时未验收催办的发送时间；为空表示还没催过。
+  /// 用时间戳而不是布尔值：能看出催办发生的时刻，也方便将来做多级催办。
+  reminderSentAt DateTime?      @map("reminder_sent_at") @db.Timestamptz(3)
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  todo        Todo             @relation(fields: [todoId], references: [id], onDelete: Cascade)
+  submitter   User             @relation("SubmissionSubmitter", fields: [submitterId], references: [id], onDelete: Cascade)
+  reviewer    User?            @relation("SubmissionReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  attachments TodoAttachment[]
+
+  @@index([todoId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("todo_submissions")
+}
+
+/// 交付物附件。
+///
+/// 文件落 uploads 卷，下载必须走鉴权接口 —— 静态目录直出会让「看不到详情」形同虚设。
+model TodoAttachment {
+  id           Int      @id @default(autoincrement())
+  submissionId Int      @map("submission_id")
+  fileName     String   @map("file_name") @db.VarChar(255)
+  mimeType     String   @map("mime_type") @db.VarChar(128)
+  sizeBytes    Int      @map("size_bytes")
+  /// 相对 backend 运行目录的存储路径（uploads/todos/xxx）
+  storedPath   String   @map("stored_path") @db.VarChar(255)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  submission TodoSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@map("todo_attachments")
+}
+
+/// 待办流转流水：谁在什么时候把待办从什么状态改成了什么。
+///
+/// 不复用 audit_logs：审计是管理员视角、门槛是 audit:read；
+/// 待办时间线是业务视角，任何能看这场会议的人都该看到。
+model TodoEvent {
+  id           Int         @id @default(autoincrement())
+  todoId       Int         @map("todo_id")
+  /// 操作者；账号删除后置空，历史记录保留
+  actorId      Int?        @map("actor_id")
+  /// created / assigned / submitted / accepted / rejected / withdrawn / status_changed / reopened
+  type         String      @db.VarChar(32)
+  fromStatus   TodoStatus? @map("from_status")
+  toStatus     TodoStatus? @map("to_status")
+  submissionId Int?        @map("submission_id")
+  metadata     Json?
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  todo  Todo  @relation(fields: [todoId], references: [id], onDelete: Cascade)
+  actor User? @relation("TodoEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([todoId, createdAt])
+  @@map("todo_events")
+}
+
+/// 验收要点：把「怎样算通过」提前写下来，验收时逐条勾选。
+///
+/// 只是清单，不改变待办状态机；未勾完也能验收，但接口会把未勾数量带回去，
+/// 前端在确认框里提示 —— 用清单约束质量，而不是用清单卡流程。
+model TodoCheckItem {
+  id        Int       @id @default(autoincrement())
+  todoId    Int       @map("todo_id")
+  content   String    @db.VarChar(200)
+  done      Boolean   @default(false)
+  doneById  Int?      @map("done_by_id")
+  doneAt    DateTime? @map("done_at") @db.Timestamptz(3)
+  sortOrder Int       @default(0) @map("sort_order")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  todo   Todo  @relation(fields: [todoId], references: [id], onDelete: Cascade)
+  doneBy User? @relation("TodoCheckDoneBy", fields: [doneById], references: [id], onDelete: SetNull)
+
+  @@index([todoId, sortOrder])
+  @@map("todo_check_items")
 }
 
 

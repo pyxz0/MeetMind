@@ -24,14 +24,38 @@ export interface InboxTodo {
   content: string
   assignee: string | null
   deadline: string | null
+  /** 结构化截止时间 */
+  deadlineAt?: string | null
+  /** 已过截止时间且未完成 */
+  overdue?: boolean
   status: 'OPEN' | 'IN_PROGRESS'
   mine: boolean
   leaderOwned: boolean
 }
 
+export interface InboxReview {
+  submissionId: number
+  todoId: number
+  meetingId: number
+  meetingTitle: string
+  todoContent: string
+  assignee: string | null
+  submitterName: string
+  attemptNo: number
+  submittedAt: string
+  rejectReason: string | null
+  /** 过了截止时间还在等验收 */
+  deadlineAt?: string | null
+  overdue?: boolean
+}
+
 export interface InboxData {
   notifications: InboxNotification[]
   todos: InboxTodo[]
+  /** 待我验收的提交 */
+  reviews?: InboxReview[]
+  /** 被我打回、需要重新提交的 */
+  rejected?: InboxReview[]
   unreadCount: number
   seenAt: string | null
 }

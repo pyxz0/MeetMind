@@ -316,11 +316,35 @@ onMounted(loadStats)
                                         <b class="num">{{ stats.completedTodos }}</b>
                                     </div>
 
+                                    <div v-if="stats.pendingReviewTodos > 0" class="todo-split-item">
+                                        <span>待验收</span>
+                                        <b class="num">{{ stats.pendingReviewTodos }}</b>
+                                    </div>
+
+                                    <div v-if="stats.overdueTodos > 0" class="todo-split-item">
+                                        <span>逾期</span>
+                                        <b class="num overdue-num">{{ stats.overdueTodos }}</b>
+                                    </div>
+
                                     <div class="todo-split-item">
                                         <span>待处理</span>
-                                        <b class="num">{{ Math.max(stats.totalTodos - stats.completedTodos, 0) }}</b>
+                                        <b class="num">
+                                            {{ Math.max(stats.totalTodos - stats.completedTodos - stats.pendingReviewTodos, 0) }}
+                                        </b>
                                     </div>
                                 </div>
+
+                                <p v-if="stats.avgReviewHours !== null || stats.reworkCount > 0" class="todo-extra">
+                                    <template v-if="stats.avgReviewHours !== null">
+                                        平均验收 <span class="num">{{ stats.avgReviewHours }}</span> 小时
+                                    </template>
+
+                                    <template v-if="stats.avgReviewHours !== null && stats.reworkCount > 0"> · </template>
+
+                                    <template v-if="stats.reworkCount > 0">
+                                        返工 <span class="num">{{ stats.reworkCount }}</span> 次
+                                    </template>
+                                </p>
                             </div>
                         </template>
 
@@ -600,6 +624,16 @@ onMounted(loadStats)
     font-size: 16px;
     font-weight: 400;
     color: var(--ink);
+}
+
+.todo-split-item b.overdue-num {
+    color: #a33;
+}
+
+.todo-extra {
+    margin: 12px 0 0;
+    font-size: 11.5px;
+    color: var(--ink-3);
 }
 
 .gauge-text .num {

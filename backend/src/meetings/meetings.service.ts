@@ -2,6 +2,8 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
 } from '@nestjs/common';
 import {
   Meeting,
@@ -10,6 +12,9 @@ import {
   MeetingCompletionStatus,
 } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+import { unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { isOverdue, parseDeadlineAt } from './deadline';
 import { mapMeetingSummary } from './meeting.mapper';
 import { buildMeetingMarkdown, markdownFilename } from './meeting-markdown';
 import { MeetingAudioService } from './meeting-audio.service';
@@ -42,14 +47,97 @@ export interface CreateMeetingInput {
   todos?: Array<{
     content: string;
     assignee?: string | null;
+    /** 结构化负责人；AI 只给姓名，落库前按「唯一同名」解析 */
+    assigneeUserId?: number | null;
+    reviewerId?: number | null;
     deadline?: string | null;
+    /** ISO 日期；解析不了的自然语言只保留 deadline 文本 */
+    deadlineAt?: string | null;
   }>;
+}
+
+/** 截止日期解析放在 deadline.ts（纯函数、可单测），这里只负责调用 */
+
+/**
+ * 把「姓名文本」解析成唯一用户 ID。
+ *
+ * 只认唯一同名：重名一律返回 null，交人工指定 —— 现在的 includes 匹配
+ * 会把「张三丰」认成「张三」，这是要修掉的核心问题，不能用同样的猜法替代。
+ */
+async function resolveUniqueUserIds(
+  prisma: PrismaService,
+  names: string[],
+): Promise<Map<string, number>> {
+  const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+
+  if (!unique.length) return new Map();
+
+  const users = await prisma.user.findMany({
+    where: { name: { in: unique }, isActive: true },
+    select: { id: true, name: true },
+  });
+
+  const counts = new Map<string, number>();
+
+  for (const user of users) {
+    counts.set(user.name, (counts.get(user.name) ?? 0) + 1);
+  }
+
+  const result = new Map<string, number>();
+
+  for (const user of users) {
+    if (counts.get(user.name) === 1) {
+      result.set(user.name, user.id);
+    }
+  }
+
+  return result;
 }
 
 // 所有读取接口都按录入顺序返回决策和待办，避免数据库默认顺序不确定。
 const meetingInclude = {
   decisions: { orderBy: { sortOrder: 'asc' as const } },
-  todos: { orderBy: { sortOrder: 'asc' as const } },
+  todos: {
+    orderBy: { sortOrder: 'asc' as const },
+    include: {
+      assigneeUser: { select: { id: true, name: true } },
+      reviewer: { select: { id: true, name: true } },
+      // 验收要点：勾选进度随待办一起返回，详情页不用再发一次请求
+      checkItems: {
+        orderBy: { sortOrder: 'asc' as const },
+        select: {
+          id: true,
+          content: true,
+          done: true,
+          doneById: true,
+          doneAt: true,
+          doneBy: { select: { id: true, name: true } },
+        },
+      },
+      /**
+       * 只带最近一次提交。
+       * 详情页只需要展示「待验收 / 被打回」，完整时间线走独立接口，
+       * 否则每场会议的待办都会把全部历史提交查出来。
+       */
+      submissions: {
+        orderBy: { createdAt: 'desc' as const },
+        take: 1,
+        select: {
+          id: true,
+          status: true,
+          note: true,
+          attemptNo: true,
+          submitterId: true,
+          reviewerId: true,
+          rejectReason: true,
+          reviewedAt: true,
+          createdAt: true,
+          submitter: { select: { id: true, name: true } },
+          _count: { select: { attachments: true } },
+        },
+      },
+    },
+  },
   // 负责人（可多位）与成员随会议一起返回
   leaders: {
     select: { user: { select: { id: true, name: true, phone: true } } },
@@ -106,6 +194,17 @@ export class MeetingsService {
 
   /** 创建会议并通过嵌套写入原文、摘要、决策和待办，保证一次提交完成。 */
   async create(input: CreateMeetingInput, user: AuthenticatedUser) {
+    const todos = input.todos ?? [];
+
+    /**
+     * AI 只给「负责人姓名」，这里按唯一同名解析成 userId。
+     * 重名不猜，留空由人工指定 —— 猜错比留空更难发现。
+     */
+    const nameToId = await resolveUniqueUserIds(
+      this.prisma,
+      todos.map((todo) => todo.assignee ?? ''),
+    );
+
     const meeting = await this.prisma.meeting.create({
       data: {
         title: input.title?.trim() || '未命名会议',
@@ -124,10 +223,17 @@ export class MeetingsService {
           })),
         },
         todos: {
-          create: (input.todos ?? []).map((todo, sortOrder) => ({
+          create: todos.map((todo, sortOrder) => ({
             content: todo.content,
             assignee: todo.assignee ?? null,
+            assigneeUserId:
+              todo.assigneeUserId ??
+              (todo.assignee ? nameToId.get(todo.assignee.trim()) ?? null : null),
+            reviewerId: todo.reviewerId ?? null,
             deadline: todo.deadline ?? null,
+            deadlineAt: todo.deadlineAt
+              ? parseDeadlineAt(todo.deadlineAt)
+              : parseDeadlineAt(todo.deadline),
             sortOrder,
           })),
         },
@@ -628,7 +734,10 @@ export class MeetingsService {
     data: {
       content?: string
       assignee?: string
+      assigneeUserId?: number | null
+      reviewerId?: number | null
       deadline?: string
+      deadlineAt?: string | null
     },
     user: AuthenticatedUser,
   ) {
@@ -643,19 +752,122 @@ export class MeetingsService {
     // 待办本身没有归属字段，权限跟着所属会议走
     await assertCanWrite(this.prisma, user, todo.meetingId);
 
-    return this.prisma.todo.update({
-      where: { id },
-      data: {
-        ...(data.content !== undefined && {
-          content: data.content
-        }),
-        ...(data.assignee !== undefined && {
-          assignee: data.assignee
-        }),
-        ...(data.deadline !== undefined && {
-          deadline: data.deadline
+    // 负责人的文本与 ID 必须同时变，否则会出现「显示张三、实际指派给李四」
+    let assignee: string | null | undefined = data.assignee
+    let assigneeUserId = todo.assigneeUserId
+
+    if (data.assigneeUserId !== undefined) {
+      assigneeUserId = data.assigneeUserId
+
+      if (data.assigneeUserId === null) {
+        assignee = null
+      } else {
+        const target = await this.prisma.user.findUnique({
+          where: { id: data.assigneeUserId },
+          select: { name: true, isActive: true },
+        })
+
+        if (!target) throw new NotFoundException('指定的负责人不存在')
+        if (!target.isActive) throw new BadRequestException('该账号已停用，不能担任负责人')
+
+        assignee = target.name
+      }
+    }
+
+    if (data.reviewerId) {
+      const reviewer = await this.prisma.user.findUnique({
+        where: { id: data.reviewerId },
+        select: { isActive: true },
+      })
+
+      if (!reviewer) throw new NotFoundException('指定的验收人不存在')
+      if (!reviewer.isActive) throw new BadRequestException('该账号已停用，不能担任验收人')
+    }
+
+    // 截止时间：优先用显式 deadlineAt，否则尝试从文本解析
+    let deadlineAt = todo.deadlineAt
+    if (data.deadlineAt !== undefined) {
+      deadlineAt = data.deadlineAt === null ? null : parseDeadlineAt(data.deadlineAt)
+    } else if (data.deadline !== undefined) {
+      deadlineAt = parseDeadlineAt(data.deadline)
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.todo.update({
+        where: { id },
+        data: {
+          ...(data.content !== undefined && {
+            content: data.content
+          }),
+          ...(assignee !== undefined && {
+            assignee
+          }),
+          ...(data.assigneeUserId !== undefined && {
+            assigneeUserId
+          }),
+          ...(data.reviewerId !== undefined && {
+            reviewerId: data.reviewerId
+          }),
+          ...(data.deadline !== undefined && {
+            deadline: data.deadline
+          }),
+          ...(data.deadlineAt !== undefined || data.deadline !== undefined
+            ? { deadlineAt }
+            : {}),
+        }
+      })
+
+      // 换了负责人或验收人，都要保证对方能打开这场会议，否则只会拿到 404
+      const memberIds = [updated.assigneeUserId, updated.reviewerId].filter(
+        (userId): userId is number => !!userId,
+      )
+
+      for (const userId of [...new Set(memberIds)]) {
+        await tx.meetingMember.upsert({
+          where: {
+            meetingId_userId: {
+              meetingId: todo.meetingId,
+              userId,
+            },
+          },
+          create: {
+            meetingId: todo.meetingId,
+            userId,
+          },
+          update: {},
         })
       }
+
+      await tx.todoEvent.create({
+        data: {
+          todoId: id,
+          actorId: user.id,
+          type:
+            data.assigneeUserId !== undefined || data.reviewerId !== undefined
+              ? 'assigned'
+              : data.deadline !== undefined || data.deadlineAt !== undefined
+                ? 'deadline_changed'
+                : 'updated',
+          fromStatus: todo.status,
+          toStatus: updated.status,
+          metadata: {
+            before: {
+              assignee: todo.assignee,
+              assigneeUserId: todo.assigneeUserId,
+              reviewerId: todo.reviewerId,
+              deadline: todo.deadline,
+            },
+            after: {
+              assignee: updated.assignee,
+              assigneeUserId: updated.assigneeUserId,
+              reviewerId: updated.reviewerId,
+              deadline: updated.deadline,
+            },
+          } as Prisma.InputJsonValue,
+        },
+      })
+
+      return updated
     })
   }
 
@@ -690,6 +902,10 @@ export class MeetingsService {
       cancelledMeetings,
       totalTodos,
       completedTodos,
+      pendingReviewTodos,
+      overdueTodos,
+      reworkCount,
+      acceptedSamples,
       totalDecisions,
     ] = await Promise.all([
       // 正式会议总数：排除手动草稿和 AI 生成失败记录
@@ -721,8 +937,55 @@ export class MeetingsService {
         where: { AND: [visibleTodo, { status: 'COMPLETED' }] },
       }),
 
+      // 待验收：不计入完成率，但要在看板上单独露出，否则「完成率」会被误读
+      this.prisma.todo.count({
+        where: { AND: [visibleTodo, { status: 'SUBMITTED' }] },
+      }),
+
+      // 逾期：过了截止时间且仍未完成（含待验收，提交了但没验收也算没交付完）
+      this.prisma.todo.count({
+        where: {
+          AND: [
+            visibleTodo,
+            { deadlineAt: { not: null, lt: new Date() } },
+            { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+          ],
+        },
+      }),
+
+      // 返工次数：被打回的提交数
+      this.prisma.todoSubmission.count({
+        where: { status: 'REJECTED', todo: { meeting: visible } },
+      }),
+
+      // 平均验收时长：只取最近 500 条，避免统计把整张表拖进来
+      this.prisma.todoSubmission.findMany({
+        where: {
+          status: 'ACCEPTED',
+          reviewedAt: { not: null },
+          todo: { meeting: visible },
+        },
+        select: { createdAt: true, reviewedAt: true },
+        orderBy: { reviewedAt: 'desc' },
+        take: 500,
+      }),
+
       this.prisma.decision.count({ where: visibleDecision }),
     ])
+
+    const reviewHours = acceptedSamples
+      .map((row) => {
+        if (!row.reviewedAt) return null
+
+        const hours = (row.reviewedAt.getTime() - row.createdAt.getTime()) / 3_600_000
+
+        return hours >= 0 ? hours : null
+      })
+      .filter((hours): hours is number => hours !== null)
+
+    const avgReviewHours = reviewHours.length
+      ? Math.round((reviewHours.reduce((sum, h) => sum + h, 0) / reviewHours.length) * 10) / 10
+      : null
 
     return {
       totalMeetings,
@@ -733,6 +996,10 @@ export class MeetingsService {
       cancelledMeetings,
       totalTodos,
       completedTodos,
+      pendingReviewTodos,
+      overdueTodos,
+      reworkCount,
+      avgReviewHours,
       totalDecisions,
     }
   }
@@ -1077,6 +1344,9 @@ export class MeetingsService {
     // 录音是磁盘文件，不参与外键级联，必须在删除记录前单独清理。
     await this.audioService.removeAudioByMeetingId(id);
 
+    // 交付物附件同理：删除记录后文件会变成孤儿
+    await this.removeTodoAttachmentFiles(id);
+
     await this.prisma.meeting.delete({ where: { id } });
 
     await this.audit.record(user, {
@@ -1191,6 +1461,7 @@ export class MeetingsService {
     const allowedStatuses: TodoStatus[] = [
       'OPEN',
       'IN_PROGRESS',
+      'SUBMITTED',
       'COMPLETED',
       'CANCELLED',
     ];
@@ -1207,8 +1478,42 @@ export class MeetingsService {
       throw new NotFoundException('待办事项不存在');
     }
 
-    // 成员允许勾选待办状态；修改待办内容仍走 assertCanWrite
-    await assertCanEditTodos(this.prisma, user, todo.meetingId);
+    /**
+     * 状态只能由「会议负责人」「该待办的提交对象」或「超级管理员」修改。
+     *
+     * 负责人包含创建者与负责人（不含共享编辑者）；
+     * 提交对象指 assignee_user_id 指向的人。
+     * 超管是唯一的全局例外：它本来就拥有全部数据的处置权。
+     */
+    const access = await assertCanRead(this.prisma, user, todo.meetingId);
+
+    const isMeetingLeader =
+      access.access === 'owner' || access.leaderIds.includes(user.id);
+
+    const isAssignee = todo.assigneeUserId === user.id;
+
+    if (!isMeetingLeader && !isAssignee && user.role !== 'SUPER_ADMIN') {
+      throw new ForbiddenException(
+        '只有会议负责人、该待办的负责人或超级管理员可以修改状态',
+      );
+    }
+
+    /**
+     * 两个后门必须在这里堵死，否则验收流程形同虚设：
+     * - 不能直接把状态改成 SUBMITTED（必须走提交，才能留下交付记录）
+     * - 有待验收流程的待办不能直接被勾成 COMPLETED（必须走验收）
+     */
+    if (status === 'SUBMITTED') {
+      throw new BadRequestException('请通过「提交」操作进入待验收');
+    }
+
+    if (todo.status === 'SUBMITTED') {
+      throw new ConflictException('该待办正在等待验收，请先验收或撤回');
+    }
+
+    if (status === 'COMPLETED' && todo.reviewerId) {
+      throw new ConflictException('该待办需要验收，请由验收人确认后再完成');
+    }
 
     // 待办状态与会议状态必须一起变，否则会出现
     // “待办全完成但会议仍显示进行中”的不一致状态。
@@ -1218,6 +1523,18 @@ export class MeetingsService {
           where: { id },
           data: { status },
         });
+
+        await tx.todoEvent.create({
+          data: {
+            todoId: id,
+            actorId: user.id,
+            type: status === 'IN_PROGRESS' && todo.status === 'COMPLETED'
+              ? 'reopened'
+              : 'status_changed',
+            fromStatus: todo.status,
+            toStatus: status,
+          },
+        })
 
         return [
           next,
@@ -1231,12 +1548,852 @@ export class MeetingsService {
       meetingId: updated.meetingId,
       content: updated.content,
       assignee: updated.assignee,
+      assigneeUserId: updated.assigneeUserId,
+      reviewerId: updated.reviewerId,
       deadline: updated.deadline,
+      deadlineAt: updated.deadlineAt?.toISOString() ?? null,
       status: updated.status,
       /** 同步后的会议完成状态，供前端立即刷新表头，无需重新拉取整个会议。 */
       meetingCompletionStatus: completionStatus,
     };
   }
+  /* =========================
+     待办交付与验收
+     ========================= */
+
+  /**
+   * 提交交付。
+   *
+   * 权限：负责人本人，或会议负责人代为提交。
+   * 有验收人时进入 SUBMITTED；验收人就是提交人时自动通过（不制造自己审自己的假流程）。
+   */
+  async submitTodo(todoId: number, note: string | undefined, user: AuthenticatedUser) {
+    const todo = await this.prisma.todo.findUnique({
+      where: { id: todoId },
+      select: {
+        id: true,
+        meetingId: true,
+        content: true,
+        status: true,
+        assigneeUserId: true,
+        reviewerId: true,
+        // 没有验收人时要通知会议负责人
+        meeting: { select: { leaders: { select: { userId: true } } } },
+      },
+    })
+
+    if (!todo) throw new NotFoundException('待办事项不存在')
+
+    // 读权限校验放在前面：与会议无关的人统一 404
+    await assertCanRead(this.prisma, user, todo.meetingId)
+
+    /**
+     * 提交是负责人的动作，负责人也不能代交。
+     * 代交会让「谁承诺的、谁交付的」错位；需要别人接手时，先改派负责人。
+     */
+    if (todo.assigneeUserId !== user.id) {
+      throw new ForbiddenException(
+        todo.assigneeUserId
+          ? '只有该待办的负责人可以提交'
+          : '该待办还没有指定负责人，请先指派后再提交',
+      )
+    }
+
+    if (todo.status !== 'OPEN' && todo.status !== 'IN_PROGRESS') {
+      throw new ConflictException('只有未完成的待办可以提交')
+    }
+
+    const autoAccept = todo.reviewerId === user.id
+    const nextStatus: TodoStatus = autoAccept ? 'COMPLETED' : 'SUBMITTED'
+
+    const [submission, completionStatus] = await this.prisma.$transaction(
+      async (tx) => {
+        const attemptNo =
+          (await tx.todoSubmission.count({ where: { todoId } })) + 1
+
+        const created = await tx.todoSubmission.create({
+          data: {
+            todoId,
+            submitterId: user.id,
+            reviewerId: todo.reviewerId,
+            note: note?.trim() || null,
+            status: autoAccept ? 'ACCEPTED' : 'PENDING',
+            attemptNo,
+            reviewedAt: autoAccept ? new Date() : null,
+          },
+        })
+
+        const moved = await tx.todo.updateMany({
+          where: { id: todoId, status: { in: ['OPEN', 'IN_PROGRESS'] } },
+          data: { status: nextStatus },
+        })
+
+        if (!moved.count) {
+          throw new ConflictException('待办状态已变化，请刷新后重试')
+        }
+
+        await tx.todoEvent.create({
+          data: {
+            todoId,
+            actorId: user.id,
+            type: 'submitted',
+            fromStatus: todo.status,
+            toStatus: nextStatus,
+            submissionId: created.id,
+            metadata: { attemptNo, autoAccepted: autoAccept } as Prisma.InputJsonValue,
+          },
+        })
+
+        if (autoAccept) {
+          await tx.todoEvent.create({
+            data: {
+              todoId,
+              actorId: user.id,
+              type: 'accepted',
+              fromStatus: 'SUBMITTED',
+              toStatus: 'COMPLETED',
+              submissionId: created.id,
+              metadata: { autoAccepted: true } as Prisma.InputJsonValue,
+            },
+          })
+        } else {
+          // 没有验收人时通知会议负责人，避免提交后无人处理
+          const recipients = todo.reviewerId
+            ? [todo.reviewerId]
+            : todo.meeting.leaders.map((l) => l.userId)
+
+          await this.notifyTodo(
+            tx,
+            todo.meetingId,
+            recipients.filter((id) => id !== user.id),
+            'todo_submitted',
+            `待办「${todo.content ?? ''}」已提交，等待验收`,
+          )
+        }
+
+        return [
+          created,
+          await this.syncMeetingCompletionStatus(tx, todo.meetingId),
+        ] as const
+      },
+    )
+
+    return {
+      id: submission.id,
+      todoId,
+      status: submission.status,
+      attemptNo: submission.attemptNo,
+      meetingCompletionStatus: completionStatus,
+    }
+  }
+
+  /** 撤回提交：仅待验收状态、仅提交人（或会议负责人） */
+  async withdrawSubmission(submissionId: number, user: AuthenticatedUser) {
+    const submission = await this.loadSubmission(submissionId)
+
+    // 先做读权限校验：与会议无关的人统一 404，不泄露提交是否存在
+    await assertCanRead(this.prisma, user, submission.todo.meetingId)
+
+    /**
+     * 撤回是提交人的动作，负责人也不能代撤。
+     * 负责人要反悔验收流程，应该用「打回」而不是替提交人撤回。
+     */
+    if (submission.submitterId !== user.id) {
+      throw new ForbiddenException('只有提交人本人可以撤回')
+    }
+
+    const [updated, completionStatus] = await this.prisma.$transaction(
+      async (tx) => {
+        const claimed = await tx.todoSubmission.updateMany({
+          where: { id: submissionId, status: 'PENDING' },
+          data: { status: 'WITHDRAWN' },
+        })
+
+        if (!claimed.count) {
+          throw new ConflictException('该提交已处理，无法撤回')
+        }
+
+        await tx.todo.updateMany({
+          where: { id: submission.todoId, status: 'SUBMITTED' },
+          data: { status: 'IN_PROGRESS' },
+        })
+
+        await tx.todoEvent.create({
+          data: {
+            todoId: submission.todoId,
+            actorId: user.id,
+            type: 'withdrawn',
+            fromStatus: 'SUBMITTED',
+            toStatus: 'IN_PROGRESS',
+            submissionId,
+          },
+        })
+
+        return [
+          await tx.todoSubmission.findUniqueOrThrow({ where: { id: submissionId } }),
+          await this.syncMeetingCompletionStatus(tx, submission.todo.meetingId),
+        ] as const
+      },
+    )
+
+    return { id: updated.id, status: updated.status, meetingCompletionStatus: completionStatus }
+  }
+
+  /** 验收通过：提交人不能验自己（提交时已自动通过），负责人可代验收并留审计 */
+  async acceptSubmission(submissionId: number, user: AuthenticatedUser) {
+    const submission = await this.loadSubmission(submissionId)
+    await this.assertCanReview(submission, user, 'accept')
+
+    const [updated, completionStatus, uncheckedChecklist] = await this.prisma.$transaction(
+      async (tx) => {
+        const claimed = await tx.todoSubmission.updateMany({
+          where: { id: submissionId, status: 'PENDING' },
+          data: { status: 'ACCEPTED', reviewedAt: new Date() },
+        })
+
+        if (!claimed.count) {
+          throw new ConflictException('该提交已处理，请刷新后重试')
+        }
+
+        const moved = await tx.todo.updateMany({
+          where: { id: submission.todoId, status: 'SUBMITTED' },
+          data: { status: 'COMPLETED' },
+        })
+
+        if (!moved.count) {
+          throw new ConflictException('待办状态已变化，请刷新后重试')
+        }
+
+        await tx.todoEvent.create({
+          data: {
+            todoId: submission.todoId,
+            actorId: user.id,
+            type: 'accepted',
+            fromStatus: 'SUBMITTED',
+            toStatus: 'COMPLETED',
+            submissionId,
+            metadata: {
+              forced: submission.reviewerId !== user.id,
+            } as Prisma.InputJsonValue,
+          },
+        })
+
+        await this.notifyTodo(
+          tx,
+          submission.todo.meetingId,
+          [submission.submitterId],
+          'todo_accepted',
+          `待办「${submission.todo.content}」已验收通过`,
+        )
+
+        // 清单只是提示：未勾完也允许通过，但把未勾数量带回去让前端说明
+        const uncheckedChecklist = await tx.todoCheckItem.count({
+          where: { todoId: submission.todoId, done: false },
+        })
+
+        return [
+          await tx.todoSubmission.findUniqueOrThrow({ where: { id: submissionId } }),
+          await this.syncMeetingCompletionStatus(tx, submission.todo.meetingId),
+          uncheckedChecklist,
+        ] as const
+      },
+    )
+
+    if (submission.reviewerId !== user.id) {
+      await this.audit.record(user, {
+        action: 'todo.accept_forced',
+        resourceType: 'meeting',
+        resourceId: submission.todo.meetingId,
+        metadata: { todoId: submission.todoId, submissionId },
+      })
+    }
+
+    return {
+      id: updated.id,
+      status: updated.status,
+      meetingCompletionStatus: completionStatus,
+      /** 还有几条验收要点没勾；前端据此提示「未勾完也通过了」 */
+      uncheckedChecklist,
+    }
+  }
+
+  /** 打回：原因必填（≥5 字），待办退回进行中 */
+  async rejectSubmission(
+    submissionId: number,
+    reason: string,
+    user: AuthenticatedUser,
+  ) {
+    const text = (reason ?? '').trim()
+
+    if (text.length < 5) {
+      throw new BadRequestException('请填写至少 5 个字的打回原因')
+    }
+
+    const submission = await this.loadSubmission(submissionId)
+    await this.assertCanReview(submission, user, 'reject')
+
+    const [updated, completionStatus] = await this.prisma.$transaction(
+      async (tx) => {
+        const claimed = await tx.todoSubmission.updateMany({
+          where: { id: submissionId, status: 'PENDING' },
+          data: {
+            status: 'REJECTED',
+            rejectReason: text,
+            reviewedAt: new Date(),
+          },
+        })
+
+        if (!claimed.count) {
+          throw new ConflictException('该提交已处理，请刷新后重试')
+        }
+
+        await tx.todo.updateMany({
+          where: { id: submission.todoId, status: 'SUBMITTED' },
+          data: { status: 'IN_PROGRESS' },
+        })
+
+        await tx.todoEvent.create({
+          data: {
+            todoId: submission.todoId,
+            actorId: user.id,
+            type: 'rejected',
+            fromStatus: 'SUBMITTED',
+            toStatus: 'IN_PROGRESS',
+            submissionId,
+            metadata: { reason: text } as Prisma.InputJsonValue,
+          },
+        })
+
+        await this.notifyTodo(
+          tx,
+          submission.todo.meetingId,
+          [submission.submitterId],
+          'todo_rejected',
+          `待办「${submission.todo.content}」被打回：${text}`,
+        )
+
+        return [
+          await tx.todoSubmission.findUniqueOrThrow({ where: { id: submissionId } }),
+          await this.syncMeetingCompletionStatus(tx, submission.todo.meetingId),
+        ] as const
+      },
+    )
+
+    return { id: updated.id, status: updated.status, meetingCompletionStatus: completionStatus }
+  }
+
+  /** 某条待办的提交时间线（含附件元信息） */
+  async listTodoSubmissions(todoId: number, user: AuthenticatedUser) {
+    const todo = await this.prisma.todo.findUnique({
+      where: { id: todoId },
+      select: {
+        meetingId: true,
+        assigneeUserId: true,
+        reviewerId: true,
+      },
+    })
+
+    if (!todo) throw new NotFoundException('待办事项不存在')
+
+    const access = await assertCanRead(this.prisma, user, todo.meetingId)
+
+    /**
+     * 只有与这条待办直接相关的人能看提交内容：
+     * 负责人（提交对象）、验收人、会议负责人/创建者、超管。
+     * 其他成员与共享者只能看到「第几次、什么时候、什么状态」。
+     */
+    const relatedToTodo =
+      access.access === 'owner' ||
+      access.leaderIds.includes(user.id) ||
+      todo.assigneeUserId === user.id ||
+      todo.reviewerId === user.id ||
+      user.role === 'SUPER_ADMIN'
+
+    const rows = await this.prisma.todoSubmission.findMany({
+      where: { todoId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        note: true,
+        attemptNo: true,
+        rejectReason: true,
+        reviewedAt: true,
+        createdAt: true,
+        submitterId: true,
+        submitter: { select: { id: true, name: true } },
+        reviewer: { select: { id: true, name: true } },
+        attachments: {
+          select: {
+            id: true,
+            fileName: true,
+            mimeType: true,
+            sizeBytes: true,
+            createdAt: true,
+          },
+        },
+      },
+    })
+
+    return rows.map((row) => {
+      const createdAt = row.createdAt.toISOString()
+
+      // 提交人本人即使后来被改派，也仍然能看到自己交过的东西
+      const canViewContent = relatedToTodo || row.submitterId === user.id
+
+      if (!canViewContent) {
+        return {
+          id: row.id,
+          status: row.status,
+          attemptNo: row.attemptNo,
+          createdAt,
+          reviewedAt: null,
+          note: null,
+          rejectReason: null,
+          // 提交人属于元信息：让成员知道是谁交的，但看不到交了什么
+          submitter: row.submitter,
+          reviewer: null,
+          attachments: [],
+          canViewContent: false,
+        }
+      }
+
+      return {
+        id: row.id,
+        status: row.status,
+        attemptNo: row.attemptNo,
+        createdAt,
+        reviewedAt: row.reviewedAt?.toISOString() ?? null,
+        note: row.note,
+        rejectReason: row.rejectReason,
+        submitter: row.submitter,
+        reviewer: row.reviewer,
+        attachments: row.attachments.map((a) => ({
+          ...a,
+          createdAt: a.createdAt.toISOString(),
+          url: `/api/meetings/todos/${todoId}/submissions/${row.id}/attachments/${a.id}`,
+        })),
+        canViewContent: true,
+      }
+    })
+  }
+
+  /** 待办流转时间线 */
+  async listTodoEvents(todoId: number, user: AuthenticatedUser) {
+    const todo = await this.prisma.todo.findUnique({
+      where: { id: todoId },
+      select: {
+        meetingId: true,
+        assigneeUserId: true,
+        reviewerId: true,
+      },
+    })
+
+    if (!todo) throw new NotFoundException('待办事项不存在')
+
+    const access = await assertCanRead(this.prisma, user, todo.meetingId)
+
+    const relatedToTodo =
+      access.access === 'owner' ||
+      access.leaderIds.includes(user.id) ||
+      todo.assigneeUserId === user.id ||
+      todo.reviewerId === user.id ||
+      user.role === 'SUPER_ADMIN'
+
+    const rows = await this.prisma.todoEvent.findMany({
+      where: { todoId },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        type: true,
+        fromStatus: true,
+        toStatus: true,
+        submissionId: true,
+        metadata: true,
+        createdAt: true,
+        actor: { select: { id: true, name: true } },
+      },
+    })
+
+    return rows.map((row) => ({
+      ...row,
+      // 打回原因属于提交内容，无关的人只看到「被打回」这个事实
+      metadata:
+        !relatedToTodo && row.type === 'rejected' ? null : row.metadata,
+      createdAt: row.createdAt.toISOString(),
+    }))
+  }
+
+  /**
+   * 给某次提交追加交付物。
+   *
+   * 约束：仅提交人本人或会议负责人可加；仅待验收状态可加（验收后再加会让验收结论失效）。
+   * 单次提交最多 5 个文件，单文件大小由控制器层的 multer 限制。
+   */
+  async addSubmissionAttachment(
+    submissionId: number,
+    file: { originalname: string; mimetype: string; size: number; path: string; filename: string },
+    user: AuthenticatedUser,
+  ) {
+    const submission = await this.loadSubmission(submissionId)
+    const access = await assertCanRead(
+      this.prisma,
+      user,
+      submission.todo.meetingId,
+    )
+
+    const isLeader =
+      access.access === 'owner' ||
+      access.leaderIds.includes(user.id) ||
+      access.capabilities.canEdit
+
+    if (submission.submitterId !== user.id && !isLeader) {
+      throw new ForbiddenException('只有提交人本人或会议负责人可以补充交付物')
+    }
+
+    if (submission.status !== 'PENDING') {
+      throw new ConflictException('该提交已处理，不能再补充交付物')
+    }
+
+    const count = await this.prisma.todoAttachment.count({
+      where: { submissionId },
+    })
+
+    if (count >= 5) {
+      throw new BadRequestException('单次提交最多 5 个附件')
+    }
+
+    const created = await this.prisma.todoAttachment.create({
+      data: {
+        submissionId,
+        fileName: file.originalname.slice(0, 255),
+        mimeType: file.mimetype.slice(0, 128) || 'application/octet-stream',
+        sizeBytes: file.size,
+        // 相对 backend 运行目录保存，换机器后仍能定位
+        storedPath: `uploads/todos/${submissionId}/${file.filename}`,
+      },
+    })
+
+    await this.prisma.todoEvent.create({
+      data: {
+        todoId: submission.todoId,
+        actorId: user.id,
+        type: 'attachment_added',
+        submissionId,
+        metadata: { attachmentId: created.id, fileName: created.fileName } as Prisma.InputJsonValue,
+      },
+    })
+
+    return {
+      id: created.id,
+      fileName: created.fileName,
+      mimeType: created.mimeType,
+      sizeBytes: created.sizeBytes,
+      url: `/api/meetings/todos/${submission.todoId}/submissions/${submissionId}/attachments/${created.id}`,
+    }
+  }
+
+  /** 校验下载权限并返回磁盘位置 */
+  async resolveSubmissionAttachment(
+    todoId: number,
+    submissionId: number,
+    attachmentId: number,
+    user: AuthenticatedUser,
+  ) {
+    const attachment = await this.prisma.todoAttachment.findFirst({
+      where: {
+        id: attachmentId,
+        submissionId,
+        submission: { todoId },
+      },
+      select: {
+        id: true,
+        fileName: true,
+        mimeType: true,
+        storedPath: true,
+        submission: {
+          select: {
+            submitterId: true,
+            todo: {
+              select: {
+                meetingId: true,
+                assigneeUserId: true,
+                reviewerId: true,
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (!attachment) throw new NotFoundException('附件不存在')
+
+    const access = await assertCanRead(
+      this.prisma,
+      user,
+      attachment.submission.todo.meetingId,
+    )
+
+    /**
+     * 附件是提交内容的一部分：只有负责人、验收人、会议负责人/创建者、超管，
+     * 以及该次提交的提交人本人可以下载。其他成员只能看到「有几次提交」。
+     */
+    const canView =
+      access.access === 'owner' ||
+      access.leaderIds.includes(user.id) ||
+      attachment.submission.submitterId === user.id ||
+      attachment.submission.todo.assigneeUserId === user.id ||
+      attachment.submission.todo.reviewerId === user.id ||
+      user.role === 'SUPER_ADMIN'
+
+    if (!canView) {
+      throw new ForbiddenException('只有与该待办相关的人员可以查看提交内容')
+    }
+
+    return {
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      absolutePath: join(process.cwd(), attachment.storedPath),
+    }
+  }
+
+  /**
+   * 删除会议前清理交付物文件。
+   *
+   * 附件是磁盘文件，不参与外键级联；记录删了文件还在，uploads 卷会攒孤儿。
+   * 清理失败只记日志，不能因此挡住删除。
+   */
+  async removeTodoAttachmentFiles(meetingId: number) {
+    const attachments = await this.prisma.todoAttachment.findMany({
+      where: { submission: { todo: { meetingId } } },
+      select: { storedPath: true },
+    })
+
+    for (const attachment of attachments) {
+      try {
+        await unlink(join(process.cwd(), attachment.storedPath))
+      } catch {
+        // 文件已不存在或权限不足：不影响数据库记录的级联删除
+      }
+    }
+  }
+
+  /* =========================
+     验收要点（清单）
+     ========================= */
+
+  /**
+   * 覆盖式设置验收要点。
+   *
+   * 待验收期间禁止修改：验收人正在按清单核对，这时换清单等于移动球门。
+   * 最多 20 条，单条 200 字；空数组表示清空。
+   */
+  async setTodoChecklist(todoId: number, items: string[], user: AuthenticatedUser) {
+    const todo = await this.prisma.todo.findUnique({
+      where: { id: todoId },
+      select: { meetingId: true, status: true },
+    })
+
+    if (!todo) throw new NotFoundException('待办事项不存在')
+
+    await assertCanWrite(this.prisma, user, todo.meetingId)
+
+    if (todo.status === 'SUBMITTED') {
+      throw new ConflictException('待验收期间不能修改验收要点，请先验收或撤回')
+    }
+
+    const contents = items
+      .map((item) => (item ?? '').trim())
+      .filter(Boolean)
+      .slice(0, 20)
+      .map((item) => item.slice(0, 200))
+
+    const rows = await this.prisma.$transaction(async (tx) => {
+      await tx.todoCheckItem.deleteMany({ where: { todoId } })
+
+      if (contents.length) {
+        await tx.todoCheckItem.createMany({
+          data: contents.map((content, sortOrder) => ({
+            todoId,
+            content,
+            sortOrder,
+          })),
+        })
+      }
+
+      await tx.todoEvent.create({
+        data: {
+          todoId,
+          actorId: user.id,
+          type: 'checklist_updated',
+          metadata: { count: contents.length } as Prisma.InputJsonValue,
+        },
+      })
+
+      return tx.todoCheckItem.findMany({
+        where: { todoId },
+        orderBy: { sortOrder: 'asc' },
+        select: {
+          id: true,
+          content: true,
+          done: true,
+          doneById: true,
+          doneAt: true,
+          doneBy: { select: { id: true, name: true } },
+        },
+      })
+    })
+
+    return {
+      todoId,
+      checklist: rows.map((row) => ({
+        id: row.id,
+        content: row.content,
+        done: row.done,
+        doneById: row.doneById ?? null,
+        doneByName: row.doneBy?.name ?? null,
+        doneAt: row.doneAt?.toISOString() ?? null,
+      })),
+    }
+  }
+
+  /** 勾选 / 取消一条验收要点；不改待办状态 */
+  async toggleTodoCheckItem(
+    todoId: number,
+    itemId: number,
+    done: boolean,
+    user: AuthenticatedUser,
+  ) {
+    const item = await this.prisma.todoCheckItem.findFirst({
+      where: { id: itemId, todoId },
+      select: {
+        id: true,
+        content: true,
+        todo: { select: { meetingId: true } },
+      },
+    })
+
+    if (!item) throw new NotFoundException('验收要点不存在')
+
+    // 成员也可以勾：清单是核对工具，不应该只有负责人能打勾
+    await assertCanEditTodos(this.prisma, user, item.todo.meetingId)
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const next = await tx.todoCheckItem.update({
+        where: { id: itemId },
+        data: {
+          done,
+          doneById: done ? user.id : null,
+          doneAt: done ? new Date() : null,
+        },
+      })
+
+      await tx.todoEvent.create({
+        data: {
+          todoId,
+          actorId: user.id,
+          type: done ? 'check_checked' : 'check_unchecked',
+          metadata: { itemId, content: item.content } as Prisma.InputJsonValue,
+        },
+      })
+
+      return next
+    })
+
+    return {
+      id: updated.id,
+      done: updated.done,
+      doneByName: done ? user.name : null,
+      doneAt: updated.doneAt?.toISOString() ?? null,
+    }
+  }
+
+  /** 读取提交及其待办、会议归属，供验收类操作复用 */
+  private async loadSubmission(submissionId: number) {
+    const submission = await this.prisma.todoSubmission.findUnique({
+      where: { id: submissionId },
+      select: {
+        id: true,
+        status: true,
+        submitterId: true,
+        reviewerId: true,
+        todoId: true,
+        todo: {
+          select: {
+            content: true,
+            meetingId: true,
+          },
+        },
+      },
+    })
+
+    if (!submission) throw new NotFoundException('提交记录不存在')
+
+    return submission
+  }
+
+  /** 谁能验收：指定验收人，或会议创建者/负责人/管理员（代验收） */
+  private async assertCanReview(
+    submission: SubmissionForReview,
+    user: AuthenticatedUser,
+    action: 'accept' | 'reject',
+  ) {
+    const access = await assertCanRead(
+      this.prisma,
+      user,
+      submission.todo.meetingId,
+    )
+
+    const allowed =
+      submission.reviewerId === user.id ||
+      access.access === 'owner' ||
+      access.leaderIds.includes(user.id) ||
+      access.capabilities.canEdit
+
+    if (!allowed) {
+      throw new ForbiddenException(
+        action === 'accept'
+          ? '只有验收人或会议负责人可以确认通过'
+          : '只有验收人或会议负责人可以打回',
+      )
+    }
+
+    /**
+     * 自己不能验自己。
+     * 验收人等于提交人时提交阶段已自动通过，走不到这里；
+     * 这一条挡的是「创建者/负责人给自己的交付盖章」。
+     */
+    if (submission.submitterId === user.id) {
+      throw new ForbiddenException('不能验收自己提交的交付，请让其他负责人或验收人处理')
+    }
+
+    if (submission.status !== 'PENDING') {
+      throw new ConflictException('该提交已处理，请刷新后重试')
+    }
+  }
+
+  /** 写一条待办相关的收件箱消息；没有收件人就跳过 */
+  private async notifyTodo(
+    tx: Prisma.TransactionClient,
+    meetingId: number,
+    userIds: number[],
+    kind: string,
+    content: string,
+  ) {
+    const targets = [...new Set(userIds)].filter((id) => Number.isFinite(id))
+
+    if (!targets.length) return
+
+    await tx.meetingNotice.createMany({
+      data: targets.map((userId) => ({
+        userId,
+        meetingId,
+        kind,
+        content,
+      })),
+    })
+  }
+
   /**
    * 根据待办完成情况推算会议应处的状态。
    *
@@ -1319,11 +2476,39 @@ export class MeetingsService {
     data: {
       content: string;
       assignee?: string;
+      assigneeUserId?: number | null;
+      reviewerId?: number | null;
       deadline?: string;
+      deadlineAt?: string | null;
     },
     user: AuthenticatedUser,
   ) {
     await assertCanWrite(this.prisma, user, meetingId);
+
+    // 指定了负责人 ID 就以账号姓名为准，文本只作展示
+    let assignee = data.assignee?.trim() || null
+
+    if (data.assigneeUserId) {
+      const target = await this.prisma.user.findUnique({
+        where: { id: data.assigneeUserId },
+        select: { name: true, isActive: true },
+      })
+
+      if (!target) throw new NotFoundException('指定的负责人不存在')
+      if (!target.isActive) throw new BadRequestException('该账号已停用，不能担任负责人')
+
+      assignee = target.name
+    }
+
+    if (data.reviewerId) {
+      const reviewer = await this.prisma.user.findUnique({
+        where: { id: data.reviewerId },
+        select: { isActive: true },
+      })
+
+      if (!reviewer) throw new NotFoundException('指定的验收人不存在')
+      if (!reviewer.isActive) throw new BadRequestException('该账号已停用，不能担任验收人')
+    }
 
     // 新增的待办一定是未完成状态，因此会议不再是“全部完成”。
     const [todo, completionStatus] = await this.prisma.$transaction(
@@ -1332,12 +2517,43 @@ export class MeetingsService {
           data: {
             meetingId,
             content: data.content.trim(),
-            assignee: data.assignee?.trim() || null,
+            assignee,
+            assigneeUserId: data.assigneeUserId ?? null,
+            reviewerId: data.reviewerId ?? null,
             deadline: data.deadline?.trim() || null,
+            deadlineAt: data.deadlineAt
+              ? parseDeadlineAt(data.deadlineAt)
+              : parseDeadlineAt(data.deadline),
             status: 'OPEN',
             sortOrder: 0,
           },
         });
+
+        await tx.todoEvent.create({
+          data: {
+            todoId: created.id,
+            actorId: user.id,
+            type: 'created',
+            toStatus: 'OPEN',
+            metadata: {
+              assigneeUserId: created.assigneeUserId,
+              reviewerId: created.reviewerId,
+            } as Prisma.InputJsonValue,
+          },
+        })
+
+        // 负责人与验收人都必须能看到这场会议，否则打开待办只会拿到 404
+        const membersToAdd = [created.assigneeUserId, created.reviewerId].filter(
+          (userId): userId is number => !!userId,
+        )
+
+        for (const userId of [...new Set(membersToAdd)]) {
+          await tx.meetingMember.upsert({
+            where: { meetingId_userId: { meetingId, userId } },
+            create: { meetingId, userId },
+            update: {},
+          })
+        }
 
         return [
           created,
@@ -1351,7 +2567,10 @@ export class MeetingsService {
       meetingId: todo.meetingId,
       content: todo.content,
       assignee: todo.assignee,
+      assigneeUserId: todo.assigneeUserId,
+      reviewerId: todo.reviewerId,
       deadline: todo.deadline,
+      deadlineAt: todo.deadlineAt?.toISOString() ?? null,
       status: todo.status,
       meetingCompletionStatus: completionStatus,
     };
@@ -1482,16 +2701,98 @@ export class MeetingsService {
       ...capabilities,
 
       decisions: meeting.decisions.map((decision) => decision.content),
-      todos: meeting.todos.map((todo) => ({
-        id: todo.id,
-        content: todo.content,
-        assignee: todo.assignee ?? undefined,
-        deadline: todo.deadline ?? undefined,
-        status: todo.status,
-      })),
+      todos: meeting.todos.map((todo) => {
+        const latest = todo.submissions?.[0] ?? null
+        const leaderIds = (meeting.leaders ?? []).map((l) => l.user.id)
+        const isMeetingLeader = access === 'owner' || leaderIds.includes(user.id)
+        const isLeaderLike =
+          access === 'owner' ||
+          leaderIds.includes(user.id) ||
+          capabilities.canEdit
+
+        const isAssignee = todo.assigneeUserId === user.id
+        const unfinished = todo.status === 'OPEN' || todo.status === 'IN_PROGRESS'
+
+        return {
+          id: todo.id,
+          content: todo.content,
+          assignee: todo.assignee ?? undefined,
+          /** 结构化负责人；为空说明只留了姓名文本（AI 没能唯一匹配到账号） */
+          assigneeUserId: todo.assigneeUserId ?? null,
+          assigneeName: todo.assigneeUser?.name ?? todo.assignee ?? null,
+          /** 验收人；为空表示这条待办不需要验收 */
+          reviewerId: todo.reviewerId ?? null,
+          reviewerName: todo.reviewer?.name ?? null,
+          deadline: todo.deadline ?? undefined,
+          deadlineAt: todo.deadlineAt?.toISOString() ?? null,
+          /** 逾期：过了截止时间且未完成（含待验收） */
+          overdue: isOverdue(todo.deadlineAt, todo.status),
+          /** 验收要点：只是清单，不改变状态机 */
+          checklist: (todo.checkItems ?? []).map((item) => ({
+            id: item.id,
+            content: item.content,
+            done: item.done,
+            doneById: item.doneById ?? null,
+            doneByName: item.doneBy?.name ?? null,
+            doneAt: item.doneAt?.toISOString() ?? null,
+          })),
+          checklistTotal: todo.checkItems?.length ?? 0,
+          checklistDone: todo.checkItems?.filter((item) => item.done).length ?? 0,
+          status: todo.status,
+          /** 最近一次提交（待验收 / 被打回时前端据此渲染角标与时间线入口） */
+          latestSubmission: latest
+            ? {
+              id: latest.id,
+              status: latest.status,
+              note: latest.note,
+              attemptNo: latest.attemptNo,
+              submitterId: latest.submitterId,
+              submitterName: latest.submitter?.name ?? null,
+              rejectReason: latest.rejectReason,
+              reviewedAt: latest.reviewedAt?.toISOString() ?? null,
+              createdAt: latest.createdAt.toISOString(),
+              attachmentCount: latest._count?.attachments ?? 0,
+            }
+            : null,
+          /** 改状态：会议负责人、该待办负责人，或超级管理员 */
+          canChangeStatus:
+            todo.status !== 'SUBMITTED' &&
+            (isMeetingLeader ||
+              isAssignee ||
+              user.role === 'SUPER_ADMIN'),
+          /** 提交：只有该待办的负责人 */
+          canSubmit: unfinished && isAssignee,
+          /** 能否查看提交内容（说明、附件、打回原因） */
+          canViewSubmissionContent:
+            isAssignee ||
+            todo.reviewerId === user.id ||
+            isMeetingLeader ||
+            user.role === 'SUPER_ADMIN',
+          /** 验收人：指定验收人，或负责人/管理员代验收 */
+          canReview:
+            todo.status === 'SUBMITTED' &&
+            latest?.status === 'PENDING' &&
+            (todo.reviewerId === user.id || isLeaderLike),
+          /** 撤回：只有提交人本人，负责人也不行 */
+          canWithdraw:
+            todo.status === 'SUBMITTED' &&
+            latest?.status === 'PENDING' &&
+            latest.submitterId === user.id,
+        }
+      }),
       created_at: meeting.createdAt.toISOString(),
     };
   }
+}
+
+/** 验收操作需要的最小提交视图 */
+interface SubmissionForReview {
+  id: number;
+  status: string;
+  submitterId: number;
+  reviewerId: number | null;
+  todoId: number;
+  todo: { content: string; meetingId: number };
 }
 
 /** 列表/详情查询统一带回的基础关联与归属字段 */
@@ -1503,9 +2804,35 @@ type MeetingWithRelations = Meeting & {
     id: number;
     content: string;
     assignee: string | null;
+    assigneeUserId: number | null;
+    reviewerId: number | null;
     deadline: string | null;
+    deadlineAt: Date | null;
     status: TodoStatus;
     sortOrder: number;
+    assigneeUser?: { id: number; name: string } | null;
+    reviewer?: { id: number; name: string } | null;
+    checkItems?: Array<{
+      id: number;
+      content: string;
+      done: boolean;
+      doneById: number | null;
+      doneAt: Date | null;
+      doneBy?: { id: number; name: string } | null;
+    }>;
+    submissions?: Array<{
+      id: number;
+      status: string;
+      note: string | null;
+      attemptNo: number;
+      submitterId: number;
+      reviewerId: number | null;
+      rejectReason: string | null;
+      reviewedAt: Date | null;
+      createdAt: Date;
+      submitter?: { id: number; name: string };
+      _count?: { attachments: number };
+    }>;
   }>;
   leaders?: Array<{ user: UserBrief }>;
   members?: Array<{ user: UserBrief }>;

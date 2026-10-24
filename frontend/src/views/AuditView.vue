@@ -33,7 +33,8 @@ const ACTION_LABELS: Record<string, string> = {
   'user.password_reset': '重置密码',
   'meeting.delete': '删除会议',
   'meeting.share': '共享会议',
-  'meeting.share_revoke': '撤销共享'
+  'meeting.share_revoke': '撤销共享',
+  'todo.accept_forced': '代验收待办'
 }
 
 const actionLabel = (action: string) =>
@@ -44,6 +45,7 @@ const actionTagType = (action: string) => {
   if (action.endsWith('.delete') || action.endsWith('.revoke')) return 'danger'
   if (action === 'user.impersonate') return 'warning'
   if (action === 'user.password_reset_issue') return 'warning'
+  if (action === 'todo.accept_forced') return 'warning'
   if (action.startsWith('meeting.share')) return 'warning'
   return 'info'
 }

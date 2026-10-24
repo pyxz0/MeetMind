@@ -516,8 +516,32 @@ onMounted(() => {
               </span>
             </header>
 
-            <!-- 展开：正文按「摘要 / 决策 / 待办」三段 -->
+            <!-- 展开：按钮先给到手边，正文再按「摘要 / 决策 / 待办」三段 -->
             <div v-show="isExpanded(meeting.id)" class="reg-body">
+              <div class="reg-actions reg-actions--top">
+                <el-button type="primary" @click="handleView(meeting.id)">
+                  打开纪要
+                </el-button>
+
+                <!-- 置顶属于写操作，只读共享者不可用 -->
+                <el-button v-if="meeting.canEdit" :loading="pinningId === meeting.id" @click="handleTogglePin(meeting)">
+                  {{ meeting.pinnedAt ? '取消置顶' : '置顶' }}
+                </el-button>
+
+                <!-- 删除按后端 capability 判定：拥有者与管理员及以上都能删 -->
+                <el-button v-if="meeting.canDelete" type="danger" plain @click="handleDelete(meeting.id)">
+                  删除
+                </el-button>
+
+                <el-tag v-if="meeting.access === 'read'" size="small" type="info">
+                  只读共享
+                </el-tag>
+
+                <el-tag v-else-if="meeting.access === 'edit'" size="small" type="warning">
+                  可编辑共享
+                </el-tag>
+              </div>
+
               <div class="sec">
                 <div class="sec-h">
                   <span class="sec-n">一</span>
@@ -555,36 +579,11 @@ onMounted(() => {
                   <div v-for="(todo, index) in detailOf(meeting.id)?.todos ?? []" :key="index" class="reg-todo">
                     <span class="reg-todo-content">{{ todo.content }}</span>
 
-                    <span class="reg-todo-meta">
-                      <span class="reg-todo-who">{{ todo.assignee || '未指定' }}</span>
-                      <span class="num reg-todo-when">{{ todo.deadline || '未指定' }}</span>
-                    </span>
+                    <span class="reg-todo-who">{{ todo.assignee || '未指定' }}</span>
+
+                    <span class="num reg-todo-when">{{ todo.deadline || '未指定' }}</span>
                   </div>
                 </div>
-              </div>
-
-              <div class="reg-actions">
-                <el-button type="primary" @click="handleView(meeting.id)">
-                  打开纪要
-                </el-button>
-
-                <!-- 置顶属于写操作，只读共享者不可用 -->
-                <el-button v-if="meeting.canEdit" :loading="pinningId === meeting.id" @click="handleTogglePin(meeting)">
-                  {{ meeting.pinnedAt ? '取消置顶' : '置顶' }}
-                </el-button>
-
-                <!-- 删除按后端 capability 判定：拥有者与管理员及以上都能删 -->
-                <el-button v-if="meeting.canDelete" type="danger" plain @click="handleDelete(meeting.id)">
-                  删除
-                </el-button>
-
-                <el-tag v-if="meeting.access === 'read'" size="small" type="info">
-                  只读共享
-                </el-tag>
-
-                <el-tag v-else-if="meeting.access === 'edit'" size="small" type="warning">
-                  可编辑共享
-                </el-tag>
               </div>
             </div>
           </article>
@@ -669,8 +668,10 @@ onMounted(() => {
   border-top: 1px solid var(--rule-soft);
 }
 
+/* 任务 / 人物 / 时间三栏：后两栏定宽，各行上下对齐，不随名字长短漂移 */
 .reg-todo {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px 96px;
   align-items: baseline;
   gap: 16px;
   padding: 9px 0;
@@ -678,29 +679,34 @@ onMounted(() => {
 }
 
 .reg-todo-content {
-  flex: 1;
   min-width: 0;
   font-size: 13px;
   line-height: 1.7;
   color: var(--ink);
 }
 
-.reg-todo-meta {
-  display: flex;
-  gap: 14px;
-  flex-shrink: 0;
-}
-
 .reg-todo-who {
+  min-width: 0;
+
   font-family: var(--song);
   font-size: 13px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .reg-todo-when {
+  text-align: right;
+
   font-size: 11px;
   color: var(--ink-3);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .load-more {
@@ -727,9 +733,19 @@ onMounted(() => {
     width: 100%;
   }
 
+  /* 窄屏放不下三栏：退回单列，人物与时间并成一行 */
   .reg-todo {
-    flex-direction: column;
-    gap: 4px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+    padding: 10px 0;
+  }
+
+  .reg-todo-content {
+    grid-column: 1 / -1;
+  }
+
+  .reg-todo-when {
+    text-align: left;
   }
 }
 </style>

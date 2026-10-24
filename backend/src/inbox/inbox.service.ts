@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
+import { isOverdue } from '../meetings/deadline';
 
 /** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 落库的会议消息 */
 export type InboxNotificationType =
@@ -36,6 +37,10 @@ export interface InboxTodo {
   content: string;
   assignee: string | null;
   deadline: string | null;
+  /** 结构化截止时间；逾期排序用 */
+  deadlineAt: string | null;
+  /** 已过截止时间且未完成 */
+  overdue: boolean;
   status: 'OPEN' | 'IN_PROGRESS';
   /** 待办负责人文本里包含我的名字 */
   mine: boolean;
@@ -43,10 +48,37 @@ export interface InboxTodo {
   leaderOwned: boolean;
 }
 
+/**
+ * 交付相关的收件箱条目。
+ *
+ * 两种来源：
+ * - reviews  待我验收（PENDING 且验收人是我，或未指定验收人而我是负责人）
+ * - rejected 被我打回、需要我重新提交
+ *
+ * 这类条目是「待办的事」而不是消息，标记已读不会让它消失。
+ */
+export interface InboxReview {
+  submissionId: number;
+  todoId: number;
+  meetingId: number;
+  meetingTitle: string;
+  todoContent: string;
+  assignee: string | null;
+  submitterName: string;
+  attemptNo: number;
+  submittedAt: string;
+  rejectReason: string | null;
+  /** 待验收也能看出逾期：过了截止时间还在等验收 */
+  deadlineAt: string | null;
+  overdue: boolean;
+}
+
 @Injectable()
 export class InboxService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InboxService.name);
   private timer: NodeJS.Timeout | null = null;
+  /** 上一次扫描「超时未验收」的时间戳，控制扫描频率 */
+  private lastSubmissionSweep = 0;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -60,9 +92,17 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     // 启动先跑一次，补上服务停机期间错过的提醒
     void this.sendDueReminders();
+    void this.sendSubmissionReminders();
+    this.lastSubmissionSweep = Date.now();
 
     this.timer = setInterval(() => {
       void this.sendDueReminders();
+
+      // 催办是「按天」的量级，没必要每分钟扫一次提交表
+      if (Date.now() - this.lastSubmissionSweep >= 5 * 60 * 1000) {
+        this.lastSubmissionSweep = Date.now();
+        void this.sendSubmissionReminders();
+      }
     }, 60_000);
   }
 
@@ -158,6 +198,81 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * 待验收超过 24 小时催办一次。
+   *
+   * 幂等：先用 updateMany 抢占 reminder_sent_at，抢到才发消息；
+   * 多实例或并发扫描都不会重复催办。
+   */
+  async sendSubmissionReminders() {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    try {
+      const rows = await this.prisma.todoSubmission.findMany({
+        where: {
+          status: 'PENDING',
+          reminderSentAt: null,
+          createdAt: { lte: cutoff },
+        },
+        select: {
+          id: true,
+          reviewerId: true,
+          todo: {
+            select: {
+              content: true,
+              meetingId: true,
+              meeting: {
+                select: {
+                  title: true,
+                  leaders: { select: { userId: true } },
+                },
+              },
+            },
+          },
+        },
+        take: 200,
+      });
+
+      let sent = 0;
+
+      for (const row of rows) {
+        const claimed = await this.prisma.todoSubmission.updateMany({
+          where: { id: row.id, status: 'PENDING', reminderSentAt: null },
+          data: { reminderSentAt: new Date() },
+        });
+
+        if (!claimed.count) continue;
+
+        // 没有验收人就催会议负责人，别让待验收悬着
+        const recipients = row.reviewerId
+          ? [row.reviewerId]
+          : row.todo.meeting.leaders.map((leader) => leader.userId);
+
+        const targets = [...new Set(recipients)];
+
+        if (!targets.length) continue;
+
+        await this.prisma.meetingNotice.createMany({
+          data: targets.map((userId) => ({
+            userId,
+            meetingId: row.todo.meetingId,
+            kind: 'todo_review_overdue',
+            content: `待办「${row.todo.content}」已提交超过 24 小时，仍在等待你验收`,
+          })),
+        });
+
+        sent += targets.length;
+      }
+
+      if (sent > 0) {
+        this.logger.log(`已发送 ${sent} 条待验收催办`);
+      }
+    } catch (error) {
+      // 定时任务失败不能影响接口，只记日志
+      this.logger.error('发送待验收催办失败', error as Error);
+    }
+  }
+
+  /**
    * 收件箱数据。
    *
    * 通知直接从「负责人 / 成员 / 共享」三类关系派生，
@@ -169,6 +284,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       members,
       shares,
       todoItems,
+      reviewItems,
       seenAt,
       readRows,
       notices,
@@ -203,6 +319,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
           take: 100,
         }),
         this.collectTodos(user),
+        this.collectReviews(user),
         this.prisma.user.findUnique({
           where: { id: user.id },
           select: { inboxSeenAt: true },
@@ -294,11 +411,20 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
           isRead(new Date(item.createdAt)),
       }));
 
-    const unreadCount = notifications.filter((n) => !n.read).length;
+    /**
+     * 待验收是「待办的事」，不是消息：标记已读不会让它消失，
+     * 因此单独计入未读，避免角标与实际要做的事脱节。
+     */
+    const unreadCount =
+      notifications.filter((n) => !n.read).length + reviewItems.reviews.length;
 
     return {
       notifications,
       todos: todoItems,
+      /** 待我验收的提交 */
+      reviews: reviewItems.reviews,
+      /** 被验收人打回、需要我重新提交的待办 */
+      rejected: reviewItems.rejected,
       unreadCount,
       seenAt: seenAtDate?.toISOString() ?? null,
     };
@@ -370,6 +496,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
             content: true,
             assignee: true,
             deadline: true,
+            deadlineAt: true,
             status: true,
           },
           orderBy: { sortOrder: 'asc' },
@@ -399,6 +526,8 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
           content: todo.content,
           assignee: todo.assignee,
           deadline: todo.deadline,
+          deadlineAt: todo.deadlineAt?.toISOString() ?? null,
+          overdue: isOverdue(todo.deadlineAt, todo.status),
           status: todo.status as 'OPEN' | 'IN_PROGRESS',
           mine,
           leaderOwned,
@@ -406,8 +535,108 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // 指派给我的排前面
-    return items.sort((a, b) => Number(b.mine) - Number(a.mine));
+    /**
+     * 排序优先级：逾期 → 指派给我 → 截止时间近的。
+     * 收件箱是用来做事的，逾期的不该沉在列表底部。
+     */
+    return items.sort((a, b) => {
+      if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
+
+      if (a.mine !== b.mine) return Number(b.mine) - Number(a.mine);
+
+      const aTime = a.deadlineAt ? Date.parse(a.deadlineAt) : Number.POSITIVE_INFINITY;
+      const bTime = b.deadlineAt ? Date.parse(b.deadlineAt) : Number.POSITIVE_INFINITY;
+
+      return aTime - bTime;
+    });
+  }
+
+  /**
+   * 待我验收 + 被我打回。
+   *
+   * 与 collectTodos 不同，这里以「提交记录」为主体：
+   * 一条待办可能有多次提交，只有最近那次 PENDING 的需要处理。
+   */
+  private async collectReviews(
+    user: AuthenticatedUser,
+  ): Promise<{ reviews: InboxReview[]; rejected: InboxReview[] }> {
+    const rows = await this.prisma.todoSubmission.findMany({
+      where: {
+        OR: [
+          { status: 'PENDING' },
+          { status: 'REJECTED', submitterId: user.id },
+        ],
+        todo: { meeting: this.visibleMeetingWhere(user) },
+      },
+      select: {
+        id: true,
+        status: true,
+        attemptNo: true,
+        createdAt: true,
+        rejectReason: true,
+        submitterId: true,
+        reviewerId: true,
+        submitter: { select: { name: true } },
+        todo: {
+          select: {
+            id: true,
+            content: true,
+            assignee: true,
+            deadlineAt: true,
+            status: true,
+            meeting: {
+              select: {
+                id: true,
+                title: true,
+                ownerId: true,
+                leaders: { where: { userId: user.id }, select: { id: true } },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    })
+
+    const reviews: InboxReview[] = []
+    const rejected: InboxReview[] = []
+
+    for (const row of rows) {
+      const isLeader =
+        row.todo.meeting.ownerId === user.id ||
+        row.todo.meeting.leaders.length > 0
+
+      const item: InboxReview = {
+        submissionId: row.id,
+        todoId: row.todo.id,
+        meetingId: row.todo.meeting.id,
+        meetingTitle: row.todo.meeting.title,
+        todoContent: row.todo.content,
+        assignee: row.todo.assignee,
+        submitterName: row.submitter.name,
+        attemptNo: row.attemptNo,
+        submittedAt: row.createdAt.toISOString(),
+        rejectReason: row.rejectReason,
+        deadlineAt: row.todo.deadlineAt?.toISOString() ?? null,
+        overdue: isOverdue(row.todo.deadlineAt, row.todo.status),
+      }
+
+      if (row.status === 'PENDING') {
+        // 指定了验收人就只有他能看到；没指定则落到会议负责人
+        if (row.reviewerId === user.id || (row.reviewerId === null && isLeader)) {
+          reviews.push(item)
+        }
+        continue
+      }
+
+      // REJECTED：只推给提交人，让他重新交付
+      if (row.submitterId === user.id) {
+        rejected.push(item)
+      }
+    }
+
+    return { reviews, rejected }
   }
 
   /** 可见会议范围，与会议列表保持一致 */

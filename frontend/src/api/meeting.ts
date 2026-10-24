@@ -4,12 +4,61 @@ export interface GenerateMeetingRequest {
   content: string
 }
 
+/** 待办最近一次提交的摘要（详情接口附带，完整时间线走独立接口） */
+export interface TodoSubmissionBrief {
+  id: number
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'WITHDRAWN'
+  note: string | null
+  attemptNo: number
+  submitterId: number
+  submitterName: string | null
+  rejectReason: string | null
+  reviewedAt: string | null
+  createdAt: string
+  attachmentCount: number
+}
+
 export interface TodoItem {
   id?: number
   content: string
+  /** 负责人姓名文本，保留兼容 */
   assignee?: string
+  /** 结构化负责人；为空说明只留了姓名（AI 未能唯一匹配到账号） */
+  assigneeUserId?: number | null
+  assigneeName?: string | null
+  /** 验收人；为空表示不需要验收 */
+  reviewerId?: number | null
+  reviewerName?: string | null
   deadline?: string
+  /** ISO 日期；自然语言解析不了时为空 */
+  deadlineAt?: string | null
+  /** 已过截止时间且未完成 */
+  overdue?: boolean
   status?: string
+  latestSubmission?: TodoSubmissionBrief | null
+  /** 验收要点：勾选进度与明细 */
+  checklist?: ChecklistItem[]
+  checklistTotal?: number
+  checklistDone?: number
+  /** 我能否提交这条交付 */
+  canSubmit?: boolean
+  /** 我能否修改状态（会议负责人、该待办负责人或超管） */
+  canChangeStatus?: boolean
+  /** 我能否查看提交内容（说明、附件、打回原因） */
+  canViewSubmissionContent?: boolean
+  /** 我能否验收 */
+  canReview?: boolean
+  /** 我能否撤回提交 */
+  canWithdraw?: boolean
+}
+
+export interface ChecklistItem {
+  id: number
+  content: string
+  done: boolean
+  doneById: number | null
+  doneByName: string | null
+  doneAt: string | null
 }
 
 export interface MeetingResult {
@@ -386,9 +435,12 @@ export const createTodo = async (
   data: {
     content: string;
     assignee?: string;
+    assigneeUserId?: number | null;
+    reviewerId?: number | null;
     deadline?: string;
+    deadlineAt?: string | null;
   }
-): Promise<TodoMutationResult> => {
+): Promise<TodoMutationResult & { id: number }> => {
   const response = await api.post(
     `/meetings/${meetingId}/todos`,
     data
@@ -409,11 +461,177 @@ export const updateTodo = async (
   data: {
     content?: string
     assignee?: string
+    assigneeUserId?: number | null
+    reviewerId?: number | null
     deadline?: string
+    deadlineAt?: string | null
   }
 ) => {
   const response = await api.patch(`/meetings/todos/${id}`, data)
   return response.data
+}
+
+/* =========================
+   验收要点（清单）
+   ========================= */
+
+/** 覆盖式设置验收要点；空数组表示清空 */
+export const setTodoChecklist = async (
+  todoId: number,
+  items: string[]
+): Promise<{ todoId: number; checklist: ChecklistItem[] }> => {
+  const response = await api.put(`/meetings/todos/${todoId}/checklist`, {
+    items
+  })
+
+  return response.data
+}
+
+/** 勾选 / 取消一条验收要点 */
+export const toggleTodoCheckItem = async (
+  todoId: number,
+  itemId: number,
+  done: boolean
+) => {
+  const response = await api.patch(
+    `/meetings/todos/${todoId}/checklist/${itemId}`,
+    { done }
+  )
+
+  return response.data
+}
+
+/* =========================
+   待办交付与验收
+   ========================= */
+
+/** 提交交付：有验收人时进入待验收，否则直接完成 */
+export const submitTodo = async (
+  todoId: number,
+  note?: string
+): Promise<
+  TodoMutationResult & {
+    id: number
+    todoId: number
+    status: string
+    attemptNo: number
+  }
+> => {
+  const response = await api.post(`/meetings/todos/${todoId}/submissions`, {
+    note
+  })
+
+  return response.data
+}
+
+/** 某条待办的提交时间线 */
+export interface TodoSubmissionRecord {
+  id: number
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'WITHDRAWN'
+  note: string | null
+  attemptNo: number
+  rejectReason: string | null
+  reviewedAt: string | null
+  createdAt: string
+  /** 提交人；无关成员也能看到，但 note/附件/打回原因为空 */
+  submitter: { id: number; name: string } | null
+  reviewer: { id: number; name: string } | null
+  /** 是否有权查看说明 / 附件 / 打回原因 */
+  canViewContent?: boolean
+  attachments: Array<{
+    id: number
+    fileName: string
+    mimeType: string
+    sizeBytes: number
+    createdAt: string
+    url: string
+  }>
+}
+
+export const listTodoSubmissions = async (
+  todoId: number
+): Promise<TodoSubmissionRecord[]> => {
+  const response = await api.get(`/meetings/todos/${todoId}/submissions`)
+
+  return response.data
+}
+
+/** 验收通过 */
+export const acceptSubmission = async (
+  submissionId: number
+): Promise<TodoMutationResult & { uncheckedChecklist?: number }> => {
+  const response = await api.post(`/meetings/submissions/${submissionId}/accept`)
+
+  return response.data
+}
+
+/** 打回，原因必填 */
+export const rejectSubmission = async (
+  submissionId: number,
+  reason: string
+): Promise<TodoMutationResult> => {
+  const response = await api.post(`/meetings/submissions/${submissionId}/reject`, {
+    reason
+  })
+
+  return response.data
+}
+
+/** 撤回提交 */
+export const withdrawSubmission = async (
+  submissionId: number
+): Promise<TodoMutationResult> => {
+  const response = await api.post(`/meetings/submissions/${submissionId}/withdraw`)
+
+  return response.data
+}
+
+/** 给某次提交追加交付物（单文件，最多 5 个） */
+export const uploadSubmissionAttachment = async (
+  submissionId: number,
+  file: File
+): Promise<{
+  id: number
+  fileName: string
+  mimeType: string
+  sizeBytes: number
+  url: string
+}> => {
+  const form = new FormData()
+  form.append('file', file)
+
+  const response = await api.post(
+    `/meetings/submissions/${submissionId}/attachments`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  )
+
+  return response.data
+}
+
+/**
+ * 下载交付物。
+ *
+ * 后端接口需要 Authorization 头，`<a href>` 带不了，
+ * 因此走 axios 取 blob 再触发下载 —— 不用 `?token=`，避免令牌留在浏览历史里。
+ */
+export const downloadSubmissionAttachment = async (
+  url: string,
+  fileName: string
+) => {
+  const path = url.replace(/^\/api/, '')
+  const response = await api.get(path, { responseType: 'blob' })
+
+  const blobUrl = URL.createObjectURL(response.data)
+  const link = document.createElement('a')
+
+  link.href = blobUrl
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+
+  URL.revokeObjectURL(blobUrl)
 }
 /** 重新生成已有会议的 AI 纪要 */
 export const regenerateMeeting = async (
@@ -435,6 +653,14 @@ export interface MeetingStats {
   cancelledMeetings: number
   totalTodos: number
   completedTodos: number
+  /** 待验收的待办数：不计入完成率，但需要单独露出 */
+  pendingReviewTodos: number
+  /** 已过截止时间且未完成 */
+  overdueTodos: number
+  /** 被打回的提交数 */
+  reworkCount: number
+  /** 平均验收时长（小时）；没有样本时为 null */
+  avgReviewHours: number | null
   totalDecisions: number
 }
 
