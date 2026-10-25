@@ -556,6 +556,44 @@ export const listTodoSubmissions = async (
   return response.data
 }
 
+/** 待办流转事件：谁在什么时候把状态改成了什么 */
+export interface TodoEventRecord {
+  id: number
+  type: string
+  fromStatus: string | null
+  toStatus: string | null
+  submissionId: number | null
+  metadata: Record<string, any> | null
+  createdAt: string
+  actor: { id: number; name: string } | null
+}
+
+export const listTodoEvents = async (
+  todoId: number
+): Promise<TodoEventRecord[]> => {
+  const response = await api.get(`/meetings/todos/${todoId}/events`)
+
+  return response.data
+}
+
+/** 会议状态变更记录：谁手动把会议状态改成了什么 */
+export interface MeetingEventRecord {
+  id: number
+  type: string
+  fromStatus: string | null
+  toStatus: string | null
+  createdAt: string
+  actor: { id: number; name: string } | null
+}
+
+export const listMeetingEvents = async (
+  meetingId: number
+): Promise<MeetingEventRecord[]> => {
+  const response = await api.get(`/meetings/${meetingId}/events`)
+
+  return response.data
+}
+
 /** 验收通过 */
 export const acceptSubmission = async (
   submissionId: number

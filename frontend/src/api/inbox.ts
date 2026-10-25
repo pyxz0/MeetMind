@@ -40,6 +40,8 @@ export interface InboxReview {
   meetingTitle: string
   todoContent: string
   assignee: string | null
+  /** 提交人 id：用于打开个人主页 */
+  submitterId: number
   submitterName: string
   attemptNo: number
   submittedAt: string

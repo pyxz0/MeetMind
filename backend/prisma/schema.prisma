@@ -53,6 +53,13 @@ enum Role {
   USER
 }
 
+/// 私信消息类型。
+enum MessageKind {
+  TEXT
+  IMAGE
+  FILE
+}
+
 /// 审计日志。
 ///
 /// 记录"谁在什么时候对什么资源做了什么"。
@@ -171,6 +178,15 @@ model User {
   todoEvents      TodoEvent[]      @relation("TodoEventActor")
   /// 该用户勾选过的验收要点。
   todoCheckItems  TodoCheckItem[]  @relation("TodoCheckDoneBy")
+  /// 该用户参与的私信会话。
+  conversations   ConversationMember[] @relation("ConversationMemberUser")
+  /// 该用户作为会话成员 A / B 的会话（一对一聊天）。
+  conversationsA  Conversation[] @relation("ConversationUserA")
+  conversationsB  Conversation[] @relation("ConversationUserB")
+  /// 该用户参与过的会议状态变更操作。
+  meetingEvents  MeetingEvent[]   @relation("MeetingEventActor")
+  /// 该用户发出的私信。
+  messagesSent    Message[]        @relation("MessageSender")
 
   @@index([role])
   @@map("users")
@@ -355,6 +371,9 @@ model Meeting {
 
   /// 该会议的 AI 生成任务。
   generations MeetingGeneration[]
+
+  /// 会议状态的手动变更记录（谁在什么时候把状态改成了什么）。
+  events MeetingEvent[]
 
   /// 该会议对其他用户的共享授权。
   shares MeetingShare[]
@@ -556,4 +575,112 @@ model AsrJob {
 
   @@index([userId, createdAt])
   @@map("asr_jobs")
+}
+
+/// 私信会话。
+///
+/// 一对一聊天：一个会话固定两名成员，用唯一索引 (user_a_id, user_b_id)
+/// 保证同一对人之间只有一条会话，避免并发发起时产生重复会话。
+/// user_a_id 存较小的一方、user_b_id 存较大的一方，保证 (a,b) 稳定可复现。
+model Conversation {
+  id        Int      @id @default(autoincrement())
+  userAId   Int      @map("user_a_id")
+  userBId   Int      @map("user_b_id")
+  /// 会话创建人（第一次发消息的人），仅用于展示，不参与权限
+  createdBy Int      @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  userA   User                @relation("ConversationUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB   User                @relation("ConversationUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  members ConversationMember[]
+  messages Message[]
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+  @@map("conversations")
+}
+
+/// 会话成员：读状态挂在成员维度（每个成员各自的未读数）。
+model ConversationMember {
+  id             Int      @id @default(autoincrement())
+  conversationId Int      @map("conversation_id")
+  userId         Int      @map("user_id")
+  /// 该成员最后一次已读消息 id；小于等于它的消息算已读
+  lastReadMessageId Int   @default(0) @map("last_read_message_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation("ConversationMemberUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_members")
+}
+
+/// 私信消息。
+model Message {
+  id             Int         @id @default(autoincrement())
+  conversationId Int         @map("conversation_id")
+  senderId       Int         @map("sender_id")
+  kind           MessageKind @default(TEXT)
+  /// 文字内容（kind=TEXT 时有值）；图片/文件消息为可选的说明文字
+  content        String?     @db.Text
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User                @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  attachments  MessageAttachment[]
+
+  @@index([conversationId, id])
+  @@index([senderId])
+  @@map("messages")
+}
+
+/// 私信附件（图片或文件）。
+///
+/// 复用交付物附件的落盘策略：上传走鉴权接口，下载不做静态目录直出。
+model MessageAttachment {
+  id        Int      @id @default(autoincrement())
+  messageId Int      @map("message_id")
+  /// 原始文件名（展示用）
+  fileName  String   @map("file_name") @db.VarChar(255)
+  /// 相对 backend 运行目录的存储路径（uploads/messages/xxx）
+  storedPath String  @map("stored_path") @db.VarChar(255)
+  /// 文件大小（字节）
+  sizeBytes Int      @map("size_bytes")
+  /// 原始 MIME 类型（下载时回给浏览器）
+  mimeType  String   @map("mime_type") @db.VarChar(120)
+  /// 是否图片（图片消息直接在聊天里预览，文件消息只给下载）
+  isImage   Boolean  @default(false) @map("is_image")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("message_attachments")
+}
+
+/// 会议状态变更记录。
+///
+/// 只记录**手动**改状态（用户在状态菜单里选的），自动流转（待办全部完成
+/// 导致会议变为已完成）不写这张表 —— 那类变化已经由 todo_events 说明来源，
+/// 重复记录反而让人分不清是系统算的还是人点的。
+model MeetingEvent {
+  id         Int      @id @default(autoincrement())
+  meetingId  Int      @map("meeting_id")
+  /// 操作者；账号被删后置空，历史仍保留
+  actorId    Int?     @map("actor_id")
+  /// 事件类型，当前只有 status_changed
+  type       String   @db.VarChar(32)
+  fromStatus String?  @map("from_status") @db.VarChar(24)
+  toStatus   String?  @map("to_status") @db.VarChar(24)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  actor   User?   @relation("MeetingEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([meetingId, createdAt(sort: Desc)])
+  @@map("meeting_events")
 }

@@ -34,6 +34,19 @@ export class UsersController {
     return this.usersService.listContacts();
   }
 
+  /**
+   * 个人主页名片：任何登录用户可看。
+   *
+   * 必须声明在 `:id` 相关路由之前，否则会被当成 id 参数解析。
+   */
+  @Get(':id/profile')
+  profile(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.usersService.getProfile(user, id);
+  }
+
   /** 用户列表，供分享时挑选接收人、以及管理员管人 */
   @Get()
   @RequirePermissions(PERMISSIONS.USER_READ)

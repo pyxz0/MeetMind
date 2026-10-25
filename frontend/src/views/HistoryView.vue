@@ -46,7 +46,6 @@ const completionStatusOptions: Array<{
   label: string
   value: MeetingCompletionStatusValue
 }> = [
-    { label: '未开始', value: 'NOT_STARTED' },
     { label: '进行中', value: 'IN_PROGRESS' },
     { label: '已完成', value: 'COMPLETED' },
     { label: '已取消', value: 'CANCELLED' },
@@ -73,7 +72,7 @@ const statusKey = (status?: MeetingCompletionStatusValue | null) => {
 
 /** 状态的中文名：任何地方都从同一份选项取，避免两处枚举漂移 */
 const statusLabel = (status?: MeetingCompletionStatusValue | null) =>
-  completionStatusOptions.find(option => option.value === status)?.label ?? '未开始'
+  completionStatusOptions.find(option => option.value === status)?.label ?? '进行中'
 
 /** 正在提交状态修改的会议 ID，避免重复提交 */
 const completionUpdatingId = ref<number | null>(null)

@@ -5,11 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import type { AppRole } from '../auth/permissions';
+import { PERMISSIONS, ROLE_LABELS, roleHasPermission } from '../auth/permissions';
+import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 import {
   createResetToken,
   hashResetToken,
@@ -133,6 +136,121 @@ export class UsersService {
     });
 
     return users;
+  }
+
+  /**
+   * 个人主页：任何登录用户都能看别人的「公开名片」。
+   *
+   * 只返回通讯录级别的基本信息 + 双方都能看到的共同会议，
+   * 不返回邮箱、权限位、密码相关字段，避免名片变成信息收集入口。
+   *
+   * 与通讯录一致：超级管理员对外隐藏，停用账号只对管理员与自己可见。
+   */
+  async getProfile(operator: AuthenticatedUser, targetId: number) {
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetId },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        avatar: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+      },
+    });
+
+    if (!target) {
+      throw new NotFoundException('账号不存在');
+    }
+
+    const isSelf = operator.id === target.id;
+    const isAdmin = roleHasPermission(operator.role, PERMISSIONS.USER_READ);
+
+    if (
+      target.role === 'SUPER_ADMIN' &&
+      !isSelf &&
+      operator.role !== 'SUPER_ADMIN'
+    ) {
+      throw new NotFoundException('账号不存在');
+    }
+
+    if (!target.isActive && !isSelf && !isAdmin) {
+      throw new NotFoundException('账号不存在');
+    }
+
+    /** 当前用户可见的会议；超管 / 管理员走全局可见 */
+    const visibleMeetings: Prisma.MeetingWhereInput = hasGlobalMeetingAccess(operator)
+      ? {}
+      : {
+          OR: [
+            { ownerId: operator.id },
+            { leaders: { some: { userId: operator.id } } },
+            { members: { some: { userId: operator.id } } },
+            { shares: { some: { userId: operator.id } } },
+          ],
+        };
+
+    /** 共同会议：双方都能看到的正式会议（排除草稿与 AI 失败） */
+    const sharedMeetingsWhere: Prisma.MeetingWhereInput = {
+      AND: [
+        visibleMeetings,
+        { status: { notIn: ['DRAFT', 'FAILED'] } },
+        {
+          OR: [
+            { ownerId: targetId },
+            { leaders: { some: { userId: targetId } } },
+            { members: { some: { userId: targetId } } },
+            { shares: { some: { userId: targetId } } },
+          ],
+        },
+      ],
+    };
+
+    const [sharedMeetingCount, sharedMeetings, openTodoCount] = await Promise.all([
+      this.prisma.meeting.count({ where: sharedMeetingsWhere }),
+      this.prisma.meeting.findMany({
+        where: sharedMeetingsWhere,
+        select: {
+          id: true,
+          title: true,
+          completionStatus: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
+      // 共同会议里他/她还没交付完的待办，用来判断「这个人忙不忙」
+      this.prisma.todo.count({
+        where: {
+          assigneeUserId: targetId,
+          status: { in: ['OPEN', 'IN_PROGRESS', 'SUBMITTED'] },
+          meeting: { is: sharedMeetingsWhere },
+        },
+      }),
+    ]);
+
+    return {
+      id: target.id,
+      name: target.name,
+      phone: target.phone,
+      avatar: target.avatar ?? null,
+      roleLabel: ROLE_LABELS[target.role as AppRole] ?? target.role,
+      isActive: target.isActive,
+      isSelf,
+      createdAt: target.createdAt.toISOString(),
+      /** 双方都能看到的会议数 */
+      sharedMeetingCount,
+      /** 最近几场共同会议，供名片里直接点进去 */
+      sharedMeetings: sharedMeetings.map((row) => ({
+        id: row.id,
+        title: row.title,
+        completionStatus: row.completionStatus,
+        createdAt: row.createdAt.toISOString(),
+      })),
+      /** 共同会议里他/她名下未完成的待办数 */
+      openTodoCount,
+    };
   }
 
   /**

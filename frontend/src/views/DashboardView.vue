@@ -23,20 +23,20 @@ const router = useRouter()
  */
 const completionMode = ref<'todos' | 'meeting'>('todos')
 
-/** 正式会议总数（后端统计已排除草稿与 AI 失败记录） */
+/** 历史口径的正式会议总数：与「会议总数」一致，排除未开始的预约会议 */
 const meetingCompletionTotal = computed(() => {
+    return stats.value?.totalMeetings ?? 0
+})
+
+/** 全部正式会议数：历史会议 + 尚未开始的预约会议（用于「会议状态」分布展示） */
+const allFormalMeetingTotal = computed(() => {
     const s = stats.value
 
     if (!s) {
         return 0
     }
 
-    return (
-        s.notStartedMeetings +
-        s.inProgressMeetings +
-        s.completedMeetings +
-        s.cancelledMeetings
-    )
+    return s.totalMeetings + s.notStartedMeetings
 })
 
 /**
@@ -52,7 +52,6 @@ const meetingCompletionSegments = computed(() => {
     }
 
     return [
-        { key: 'NOT_STARTED', label: '未开始', count: s.notStartedMeetings, color: 'var(--status-wait-dot)' },
         { key: 'IN_PROGRESS', label: '进行中', count: s.inProgressMeetings, color: 'var(--status-live-dot)' },
         { key: 'COMPLETED', label: '已完成', count: s.completedMeetings, color: 'var(--status-done-dot)' },
         { key: 'CANCELLED', label: '已取消', count: s.cancelledMeetings, color: 'var(--status-cancel-dot)' },
@@ -217,7 +216,7 @@ onMounted(loadStats)
                     <div class="total">
                         <span class="total-k">会议总数</span>
                         <span class="total-v">{{ stats.totalMeetings }}</span>
-                        <span class="total-x">已创建会议</span>
+                        <span class="total-x">历史会议</span>
                     </div>
 
                     <div class="total">
@@ -251,12 +250,12 @@ onMounted(loadStats)
                         <div class="block-head">
                             <span class="sec-t">会议状态</span>
 
-                            <span class="sec-x">共 {{ stats.totalMeetings }} 场</span>
+                            <span class="sec-x">共 {{ allFormalMeetingTotal }} 场</span>
                         </div>
 
                         <ul class="status-list">
                             <li>
-                                <span class="status-name"><i class="m-dot m-dot--wait" /><span class="status-k">未开始</span></span>
+                                <span class="status-name"><i class="m-dot m-dot--wait" /><span class="status-k">未开始（预约）</span></span>
                                 <span class="num status-v">{{ stats.notStartedMeetings }}</span>
                             </li>
 

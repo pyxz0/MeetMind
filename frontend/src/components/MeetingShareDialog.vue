@@ -11,6 +11,7 @@ import {
   type ManagedUser
 } from '../api/auth'
 import { authStore } from '../stores/auth'
+import UserProfileDialog from './UserProfileDialog.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -33,10 +34,21 @@ const submitting = ref(false)
 
 /** 可选接收人（排除自己与已共享的人） */
 const candidates = ref<ManagedUser[]>([])
-const selectedUserId = ref<number | null>(null)
+const selectedUserIds = ref<number[]>([])
 const permission = ref<SharePermission>('READ')
 
 const currentUser = computed(() => authStore.user)
+
+/** 个人主页名片：点共享名单里的人名打开 */
+const profileVisible = ref(false)
+const profileUserId = ref<number | null>(null)
+
+const openProfile = (userId?: number | null) => {
+  if (!userId) return
+
+  profileUserId.value = userId
+  profileVisible.value = true
+}
 
 /** 只有管理员及以上才能拉取用户列表用于挑选接收人 */
 const canPickUsers = computed(() => authStore.can('user:read'))
@@ -84,7 +96,7 @@ watch(
   () => props.modelValue,
   (open) => {
     if (open) {
-      selectedUserId.value = null
+      selectedUserIds.value = []
       permission.value = 'READ'
       refreshAll()
     }
@@ -92,7 +104,7 @@ watch(
 )
 
 const handleShare = async () => {
-  if (!selectedUserId.value) {
+  if (!selectedUserIds.value.length) {
     ElMessage.warning('请选择要共享的用户')
     return
   }
@@ -100,10 +112,17 @@ const handleShare = async () => {
   submitting.value = true
 
   try {
-    await shareMeeting(props.meetingId, selectedUserId.value, permission.value)
+    // 后端接口按单用户处理，多选时逐个共享，统一用当前选的权限
+    const targets = [...selectedUserIds.value]
 
-    ElMessage.success('共享成功')
-    selectedUserId.value = null
+    for (const userId of targets) {
+      await shareMeeting(props.meetingId, userId, permission.value)
+    }
+
+    ElMessage.success(
+      targets.length > 1 ? `已共享给 ${targets.length} 位同事` : '共享成功'
+    )
+    selectedUserIds.value = []
     await refreshAll()
   } catch (error: any) {
     const message = error?.response?.data?.message ?? '共享失败'
@@ -175,11 +194,12 @@ const handleRevoke = async (share: MeetingShare) => {
     <section class="share-sec">
       <div class="sec-h">
         <span class="sec-t">添加成员</span>
-        <span class="sec-x">选人，再选只读或可编辑</span>
+        <span class="sec-x">可多选，再选只读或可编辑</span>
       </div>
 
       <div v-if="canPickUsers" class="share-form">
-        <el-select v-model="selectedUserId" class="share-pick" placeholder="选择同事" filterable :disabled="submitting">
+        <el-select v-model="selectedUserIds" class="share-pick" placeholder="选择同事（可多选）" multiple
+          collapse-tags collapse-tags-tooltip filterable :disabled="submitting">
           <el-option v-for="user in candidates" :key="user.id" :label="`${user.name}（${user.phone}）`"
             :value="user.id" />
         </el-select>
@@ -189,7 +209,7 @@ const handleRevoke = async (share: MeetingShare) => {
           <el-option label="可编辑" value="EDIT" />
         </el-select>
 
-        <el-button type="primary" :loading="submitting" :disabled="!selectedUserId" @click="handleShare">
+        <el-button type="primary" :loading="submitting" :disabled="!selectedUserIds.length" @click="handleShare">
           共享
         </el-button>
       </div>
@@ -208,11 +228,13 @@ const handleRevoke = async (share: MeetingShare) => {
 
       <div v-loading="loading" class="share-list">
         <p v-if="!loading && shares.length === 0" class="share-empty">
-          还没有共享给任何人。选一位同事，给他只读权限。
+          还没有共享给任何人。选一位或多位同事，给他们只读权限。
         </p>
 
         <div v-for="share in shares" :key="share.id" class="reg-row share-row">
-          <span class="share-name">{{ share.name }}</span>
+          <button type="button" class="share-name name-link" @click="openProfile(share.userId)">
+            {{ share.name }}
+          </button>
 
           <span class="share-phone num">{{ share.phone }}</span>
 
@@ -234,6 +256,9 @@ const handleRevoke = async (share: MeetingShare) => {
       <el-button @click="visible = false">关闭</el-button>
     </template>
   </el-dialog>
+
+  <!-- 个人主页：嵌套在共享弹窗之上 -->
+  <UserProfileDialog v-model="profileVisible" :user-id="profileUserId" />
 </template>
 
 <style scoped>
@@ -331,10 +356,34 @@ const handleRevoke = async (share: MeetingShare) => {
 .share-name {
   flex-shrink: 0;
 
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+
   font-family: var(--song);
   font-size: 13.5px;
   letter-spacing: 0.04em;
   color: var(--ink);
+}
+
+/* 可点击人名：虚线下划线示意，hover 变品牌色 */
+.name-link {
+  cursor: pointer;
+  text-decoration: underline dotted var(--rule);
+  text-underline-offset: 3px;
+  transition: color 0.15s, text-decoration-color 0.15s;
+}
+
+.name-link:hover {
+  color: var(--brand);
+  text-decoration-color: var(--brand);
+}
+
+.name-link:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .share-phone {

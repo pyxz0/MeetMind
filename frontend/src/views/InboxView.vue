@@ -9,8 +9,20 @@ import {
   type InboxNotification
 } from '../api/inbox'
 import { useInboxStore } from '../composables/inboxStore'
+import UserProfileDialog from '../components/UserProfileDialog.vue'
 
 const router = useRouter()
+
+/** 个人主页名片：点提交人打开 */
+const profileVisible = ref(false)
+const profileUserId = ref<number | null>(null)
+
+const openProfile = (userId?: number | null) => {
+  if (!userId) return
+
+  profileUserId.value = userId
+  profileVisible.value = true
+}
 const inboxStore = useInboxStore()
 
 const loading = ref(false)
@@ -264,7 +276,12 @@ onMounted(load)
 
                       <div class="todo-meta">
                         <span class="todo-meeting">{{ item.meetingTitle }}</span>
-                        <span class="todo-who">{{ item.submitterName }} 提交 · 第 {{ item.attemptNo }} 次</span>
+                        <span class="todo-who">
+                          <button type="button" class="name-link" @click.stop="openProfile(item.submitterId)">
+                            {{ item.submitterName }}
+                          </button>
+                          提交 · 第 {{ item.attemptNo }} 次
+                        </span>
                         <span v-if="item.overdue" class="overdue-pill">逾期</span>
                         <span class="num todo-when">{{ formatTime(item.submittedAt) }}</span>
                       </div>
@@ -305,12 +322,39 @@ onMounted(load)
         </el-tabs>
       </section>
     </div>
+
+    <!-- 个人主页：点提交人打开 -->
+    <UserProfileDialog v-model="profileVisible" :user-id="profileUserId" />
   </div>
 </template>
 
 <style scoped>
 .inbox {
   padding: 4px 22px 18px;
+}
+
+/* 可点击人名：与会议详情页同一套视觉 */
+.name-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted var(--rule);
+  text-underline-offset: 3px;
+  transition: color 0.15s, text-decoration-color 0.15s;
+}
+
+.name-link:hover {
+  color: var(--brand);
+  text-decoration-color: var(--brand);
+}
+
+.name-link:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .tab-label {

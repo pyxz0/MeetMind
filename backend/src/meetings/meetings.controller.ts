@@ -247,6 +247,15 @@ export class MeetingsController {
     return this.meetingsService.exportMarkdown(id, user);
   }
 
+  /** 会议状态变更记录（谁把会议状态改成了什么） */
+  @Get(':id/events')
+  listMeetingEvents(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.listMeetingEvents(id, user);
+  }
+
   /** 删除会议及其关联内容，并返回无响应体的 204 状态。 */
   @Delete(':id')
   @HttpCode(204)

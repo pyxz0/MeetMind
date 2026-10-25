@@ -12,6 +12,7 @@ import { PrismaModule } from './common/prisma.module'
 import { AuthModule } from './auth/auth.module'
 import { UsersModule } from './users/users.module'
 import { InboxModule } from './inbox/inbox.module'
+import { MessagesModule } from './messages/messages.module'
 import { AuditModule } from './audit/audit.module'
 import { JwtAuthGuard } from './auth/jwt-auth.guard'
 
@@ -29,6 +30,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard'
     AuthModule,
     UsersModule,
     InboxModule,
+    MessagesModule,
     AuditModule,
     AiModule,
     MeetingsModule,

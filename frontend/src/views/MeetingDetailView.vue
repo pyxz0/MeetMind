@@ -11,6 +11,8 @@ import {
   updateTodo,
   submitTodo,
   listTodoSubmissions,
+  listTodoEvents,
+  listMeetingEvents,
   acceptSubmission,
   rejectSubmission,
   withdrawSubmission,
@@ -33,11 +35,14 @@ import {
   type MeetingRecord,
   type MemberBrief,
   type TodoItem,
-  type TodoSubmissionRecord
+  type TodoSubmissionRecord,
+  type TodoEventRecord,
+  type MeetingEventRecord
 } from '../api/meeting'
 import { listContacts, type Contact } from '../api/auth'
 import MeetingAudioPlayer from '../components/MeetingAudioPlayer.vue'
 import MeetingResultComponent from '../components/MeetingResult.vue'
+import UserProfileDialog from '../components/UserProfileDialog.vue'
 import MeetingShareDialog from '../components/MeetingShareDialog.vue'
 const route = useRoute()
 const router = useRouter()
@@ -46,6 +51,17 @@ const meeting = ref<MeetingRecord | null>(null)
 
 /** 分享弹窗状态 */
 const shareDialogVisible = ref(false)
+
+/** 个人主页名片：点负责人 / 成员 / 待办负责人 / 验收人 / 提交人都会打开 */
+const profileVisible = ref(false)
+const profileUserId = ref<number | null>(null)
+
+const openProfile = (userId?: number | null) => {
+  if (!userId) return
+
+  profileUserId.value = userId
+  profileVisible.value = true
+}
 
 /**
  * 权限判断集中在这里，模板只读这些计算属性。
@@ -117,6 +133,10 @@ const timelineVisible = ref(false)
 const timelineLoading = ref(false)
 const timelineTodo = ref<TodoItem | null>(null)
 const submissions = ref<TodoSubmissionRecord[]>([])
+/** 待办流转事件：谁撤回了、谁通过了、谁改了状态 */
+const todoEvents = ref<TodoEventRecord[]>([])
+/** 会议状态的手动变更：谁把会议改成了什么状态 */
+const meetingEvents = ref<MeetingEventRecord[]>([])
 
 /** 验收要点弹窗 */
 const checklistVisible = ref(false)
@@ -991,7 +1011,7 @@ const handleWithdrawSubmission = async (todo: TodoItem) => {
   }
 }
 
-/** 打开提交历史时间线 */
+/** 打开记录：提交内容 + 待办流转 + 会议状态变更，合成一条时间线 */
 const openTimeline = async (todo: TodoItem) => {
   if (!todo.id) return
 
@@ -999,14 +1019,153 @@ const openTimeline = async (todo: TodoItem) => {
   timelineVisible.value = true
   timelineLoading.value = true
   submissions.value = []
+  todoEvents.value = []
+  meetingEvents.value = []
 
   try {
-    submissions.value = await listTodoSubmissions(todo.id)
+    const [submissionRows, eventRows, meetingRows] = await Promise.all([
+      listTodoSubmissions(todo.id),
+      listTodoEvents(todo.id),
+      meeting.value?.id ? listMeetingEvents(meeting.value.id) : Promise.resolve([]),
+    ])
+
+    submissions.value = submissionRows
+    todoEvents.value = eventRows
+    meetingEvents.value = meetingRows
   } catch (error: any) {
-    const message = error?.response?.data?.message ?? '提交记录加载失败'
+    const message = error?.response?.data?.message ?? '记录加载失败'
     ElMessage.error(Array.isArray(message) ? message.join('；') : message)
   } finally {
     timelineLoading.value = false
+  }
+}
+
+/** 时间线条目：待办事件与会议事件混排，按时间倒序 */
+interface TimelineEntry {
+  key: string
+  /** todo = 待办流转，meeting = 会议状态变更 */
+  scope: 'todo' | 'meeting'
+  type: string
+  actor: { id: number; name: string } | null
+  createdAt: string
+  fromStatus: string | null
+  toStatus: string | null
+  /** 关联的提交（带说明、附件、打回原因） */
+  submission: TodoSubmissionRecord | null
+}
+
+const timelineEntries = computed<TimelineEntry[]>(() => {
+  const submissionById = new Map(submissions.value.map((row) => [row.id, row]))
+
+  const entries: TimelineEntry[] = [
+    ...todoEvents.value.map((row) => ({
+      key: `todo-${row.id}`,
+      scope: 'todo' as const,
+      type: row.type,
+      actor: row.actor,
+      createdAt: row.createdAt,
+      fromStatus: row.fromStatus,
+      toStatus: row.toStatus,
+      submission: row.submissionId
+        ? submissionById.get(row.submissionId) ?? null
+        : null,
+    })),
+    ...meetingEvents.value.map((row) => ({
+      key: `meeting-${row.id}`,
+      scope: 'meeting' as const,
+      type: row.type,
+      actor: row.actor,
+      createdAt: row.createdAt,
+      fromStatus: row.fromStatus,
+      toStatus: row.toStatus,
+      submission: null,
+    })),
+  ]
+
+  return entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+})
+
+/** 事件标签：短词，一眼看清发生了什么 */
+const eventLabel = (entry: TimelineEntry) => {
+  if (entry.scope === 'meeting') return '会议状态'
+
+  switch (entry.type) {
+    case 'created':
+      return '创建'
+    case 'submitted':
+      return '提交'
+    case 'withdrawn':
+      return '撤回'
+    case 'rejected':
+      return '打回'
+    case 'accepted':
+      return '通过'
+    case 'reopened':
+      return '重开'
+    case 'assigned':
+      return '改派'
+    case 'deadline_changed':
+      return '改期'
+    case 'checklist_updated':
+      return '改要点'
+    case 'updated':
+      return '编辑'
+    default:
+      return '状态变更'
+  }
+}
+
+const eventTagType = (entry: TimelineEntry) => {
+  if (entry.scope === 'meeting') return 'info'
+
+  switch (entry.type) {
+    case 'accepted':
+      return 'success'
+    case 'rejected':
+      return 'danger'
+    case 'withdrawn':
+      return 'info'
+    case 'submitted':
+      return 'warning'
+    default:
+      return 'info'
+  }
+}
+
+/** 事件说明：把类型翻成一句人话，带上状态变化 */
+const eventText = (entry: TimelineEntry) => {
+  if (entry.scope === 'meeting') {
+    const from = statusText(entry.fromStatus)
+    const to = statusText(entry.toStatus)
+
+    return `把会议状态从「${from}」改为「${to}」`
+  }
+
+  switch (entry.type) {
+    case 'created':
+      return '创建了这条待办'
+    case 'submitted':
+      return entry.submission
+        ? `提交了第 ${entry.submission.attemptNo} 次交付`
+        : '提交了交付'
+    case 'withdrawn':
+      return '撤回了提交'
+    case 'rejected':
+      return '打回了交付'
+    case 'accepted':
+      return '验收通过'
+    case 'reopened':
+      return '把待办重新打开'
+    case 'assigned':
+      return '调整了负责人或验收人'
+    case 'deadline_changed':
+      return '修改了截止时间'
+    case 'checklist_updated':
+      return '更新了验收要点'
+    case 'updated':
+      return '修改了待办内容'
+    default:
+      return `把状态从「${todoStatusText(entry.fromStatus)}」改为「${todoStatusText(entry.toStatus)}」`
   }
 }
 
@@ -1215,7 +1374,7 @@ const statusKey = (status?: string | null) => {
 }
 
 /** 待办状态文字，取法与 MeetingResult 一致 */
-const todoStatusText = (status?: string) => {
+const todoStatusText = (status?: string | null) => {
   switch (status) {
     case 'COMPLETED':
       return '已完成'
@@ -1250,17 +1409,20 @@ const todoStatusKey = (status?: string) => {
 }
 
 /** 负责人能选的状态：有验收人时不能直接勾完成 */
-const todoStatusOptions = (todo: TodoItem) => {
+/**
+ * 可切换的待办状态。
+ *
+ * 「已完成」对所有人放开：有验收人时，验收人勾完成等于给出结论，
+ * 会议负责人勾完成则视为代完成（后端会写审计）。
+ * 「待验收」永远不在列表里 —— 必须走提交，否则交付记录是空的。
+ */
+const todoStatusOptions = () => {
   const options: Array<{ value: 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'; label: string }> = [
     { value: 'OPEN', label: '待处理' },
     { value: 'IN_PROGRESS', label: '进行中' },
+    { value: 'COMPLETED', label: '已完成' },
+    { value: 'CANCELLED', label: '已取消' },
   ]
-
-  if (!todo.reviewerId) {
-    options.push({ value: 'COMPLETED', label: '已完成' })
-  }
-
-  options.push({ value: 'CANCELLED', label: '已取消' })
 
   return options
 }
@@ -1379,7 +1541,13 @@ onMounted(async () => {
               <span class="field-k">负责人</span>
 
               <span class="field-v field-name" :title="leadersLine">
-                {{ leadersLine }}
+                <template v-if="meeting.leaders?.length">
+                  <template v-for="(leader, index) in meeting.leaders" :key="`meta-leader-${leader.id}`">
+                    <button type="button" class="name-link" @click="openProfile(leader.id)">{{ leader.name }}</button>
+                    <span v-if="index < (meeting.leaders?.length ?? 0) - 1">、</span>
+                  </template>
+                </template>
+                <template v-else>—</template>
               </span>
             </div>
 
@@ -1458,7 +1626,9 @@ onMounted(async () => {
                   class="member-chip"
                   :closable="attendeesOpen && canManageMembers && (meeting.leaders?.length ?? 0) > 1"
                   @close="handleRemoveLeader(leader)">
-                  <span class="member-name">{{ leader.name }}</span>
+                  <span class="member-name name-link" role="button" tabindex="0"
+                    :title="`查看 ${leader.name} 的个人主页`" @click.stop="openProfile(leader.id)"
+                    @keydown.enter.prevent="openProfile(leader.id)">{{ leader.name }}</span>
                   <span class="member-phone num">{{ leader.phone }}</span>
                 </el-tag>
 
@@ -1474,7 +1644,9 @@ onMounted(async () => {
               <div class="member-chips">
                 <el-tag v-for="member in meeting.members ?? []" :key="`member-${member.id}`" type="info" effect="plain"
                   class="member-chip" :closable="attendeesOpen && canManageMembers" @close="handleRemoveMember(member)">
-                  <span class="member-name">{{ member.name }}</span>
+                  <span class="member-name name-link" role="button" tabindex="0"
+                    :title="`查看 ${member.name} 的个人主页`" @click.stop="openProfile(member.id)"
+                    @keydown.enter.prevent="openProfile(member.id)">{{ member.name }}</span>
                   <span class="member-phone num">{{ member.phone }}</span>
                 </el-tag>
 
@@ -1648,9 +1820,20 @@ onMounted(async () => {
                     </el-button>
                   </span>
 
-                  <span class="todo-owner">{{ todo.assigneeName || todo.assignee || '未指定' }}</span>
+                  <span class="todo-owner">
+                    <button v-if="todo.assigneeUserId" type="button" class="name-link"
+                      @click="openProfile(todo.assigneeUserId)">
+                      {{ todo.assigneeName || todo.assignee || '未指定' }}
+                    </button>
+                    <template v-else>{{ todo.assigneeName || todo.assignee || '未指定' }}</template>
+                  </span>
 
-                  <span class="todo-reviewer">{{ todo.reviewerName || '未指定' }}</span>
+                  <span class="todo-reviewer">
+                    <button v-if="todo.reviewerId" type="button" class="name-link" @click="openProfile(todo.reviewerId)">
+                      {{ todo.reviewerName || '未指定' }}
+                    </button>
+                    <template v-else>{{ todo.reviewerName || '未指定' }}</template>
+                  </span>
 
                   <span class="todo-due num" :class="{ overdue: todo.overdue }">
                     {{ todo.deadline || '未指定' }}
@@ -1686,7 +1869,7 @@ onMounted(async () => {
 
                       <template #dropdown>
                         <el-dropdown-menu>
-                          <el-dropdown-item v-for="option in todoStatusOptions(todo)" :key="option.value"
+                          <el-dropdown-item v-for="option in todoStatusOptions()" :key="option.value"
                             :command="option.value">
                             <span class="m-status" :class="`m-status--${todoStatusKey(option.value)}`">
                               <i class="m-status-dot" />
@@ -1709,11 +1892,7 @@ onMounted(async () => {
                       提交
                     </el-button>
 
-                    <el-button v-if="todo.canWithdraw" link @click="handleWithdrawSubmission(todo)">
-                      撤回
-                    </el-button>
-
-                    <!-- 记录对每条待办都可见；没有提交时弹窗里显示「暂无提交」 -->
+                    <!-- 撤回移入「提交详情」弹窗，行内不再单独展示；记录对每条待办都可见 -->
                     <el-button link @click="openTimeline(todo)">
                       记录
                     </el-button>
@@ -1780,6 +1959,9 @@ onMounted(async () => {
   <MeetingShareDialog v-if="meeting" v-model="shareDialogVisible" :meeting-id="meeting.id"
     :meeting-title="meeting.title || `会议 #${meeting.id}`" />
 
+  <!-- 个人主页：点任何一个人名都能打开 -->
+  <UserProfileDialog v-model="profileVisible" :user-id="profileUserId" />
+
   <el-dialog v-model="scheduleDialogVisible" title="编辑预约信息" width="520px">
     <p class="note note-flat">
       保存后会立即通知全部参会人员。会议一旦到达开会时间，就不能再改时间与人员。
@@ -1832,7 +2014,7 @@ onMounted(async () => {
       </el-form-item>
 
       <el-form-item label="验收人">
-        <el-select v-model="todoForm.reviewerId" placeholder="不填则不需要验收，可直接完成" clearable filterable
+        <el-select v-model="todoForm.reviewerId" placeholder="不填则默认会议负责人（多个时默认创建者）" clearable filterable
           :loading="contactsLoading" style="width: 100%" @focus="loadContacts">
           <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
         </el-select>
@@ -1874,7 +2056,7 @@ onMounted(async () => {
       </el-form-item>
 
       <el-form-item label="验收人">
-        <el-select v-model="editTodoForm.reviewerId" placeholder="不填则不需要验收" clearable filterable
+        <el-select v-model="editTodoForm.reviewerId" placeholder="不填则默认会议负责人（多个时默认创建者）" clearable filterable
           :loading="contactsLoading" style="width: 100%" @focus="loadContacts">
           <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
         </el-select>
@@ -1937,7 +2119,12 @@ onMounted(async () => {
           </el-tag>
 
           <span class="view-meta">
-            {{ viewSubmission.submitter?.name ?? '提交人' }} · 第 {{ viewSubmission.attemptNo }} 次提交 · {{ formatDate(viewSubmission.createdAt) }}
+            <button v-if="viewSubmission.submitter?.id" type="button" class="name-link"
+              @click="openProfile(viewSubmission.submitter?.id)">
+              {{ viewSubmission.submitter?.name ?? '提交人' }}
+            </button>
+            <template v-else>{{ viewSubmission.submitter?.name ?? '提交人' }}</template>
+            · 第 {{ viewSubmission.attemptNo }} 次提交 · {{ formatDate(viewSubmission.createdAt) }}
           </span>
         </div>
 
@@ -2050,42 +2237,52 @@ onMounted(async () => {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="timelineVisible" width="560px"
-    :title="`提交记录 · ${timelineTodo?.content ?? ''}`">
+  <el-dialog v-model="timelineVisible" width="580px"
+    :title="`记录 · ${timelineTodo?.content ?? ''}`">
     <div v-loading="timelineLoading" class="timeline-wrap">
-      <el-empty v-if="!timelineLoading && !submissions.length" description="暂无提交" :image-size="72" />
+      <el-empty v-if="!timelineLoading && !timelineEntries.length" description="还没有记录" :image-size="72" />
 
       <ul v-else class="timeline">
-        <li v-for="item in submissions" :key="item.id" class="timeline-item">
+        <li v-for="entry in timelineEntries" :key="entry.key" class="timeline-item">
           <div class="timeline-head">
-            <el-tag size="small" :type="submissionStatusType(item.status)">
-              {{ submissionStatusText(item.status) }}
+            <el-tag size="small" :type="eventTagType(entry)">
+              {{ eventLabel(entry) }}
             </el-tag>
 
             <span class="timeline-meta">
-              <template v-if="item.submitter">{{ item.submitter.name }} · </template>
-              第 {{ item.attemptNo }} 次提交 · {{ formatDate(item.createdAt) }}
+              <template v-if="entry.actor">
+                <button type="button" class="name-link" @click="openProfile(entry.actor.id)">
+                  {{ entry.actor.name }}
+                </button>
+              </template>
+              <template v-else>系统</template>
+
+              <span class="timeline-action">{{ eventText(entry) }}</span>
+
+              <span class="timeline-time num">{{ formatDate(entry.createdAt) }}</span>
             </span>
           </div>
 
-          <p v-if="item.canViewContent === false" class="timeline-muted">
-            仅相关人员可查看提交内容
-          </p>
+          <template v-if="entry.submission">
+            <p v-if="entry.submission.canViewContent === false" class="timeline-muted">
+              仅相关人员可查看提交内容
+            </p>
 
-          <p v-if="item.note" class="timeline-note">{{ item.note }}</p>
+            <p v-if="entry.submission.note" class="timeline-note">{{ entry.submission.note }}</p>
 
-          <p v-if="item.rejectReason" class="timeline-reject">
-            打回原因：{{ item.rejectReason }}
-          </p>
+            <p v-if="entry.submission.rejectReason" class="timeline-reject">
+              打回原因：{{ entry.submission.rejectReason }}
+            </p>
 
-          <div v-if="item.attachments?.length" class="timeline-files">
-            <span>附件：</span>
+            <div v-if="entry.submission.attachments?.length" class="timeline-files">
+              <span>附件：</span>
 
-            <el-button v-for="file in item.attachments" :key="file.id" link type="primary"
-              @click="handleDownloadAttachment(file.url, file.fileName)">
-              {{ file.fileName }}
-            </el-button>
-          </div>
+              <el-button v-for="file in entry.submission.attachments" :key="file.id" link type="primary"
+                @click="handleDownloadAttachment(file.url, file.fileName)">
+                {{ file.fileName }}
+              </el-button>
+            </div>
+          </template>
         </li>
       </ul>
     </div>
@@ -2176,6 +2373,33 @@ onMounted(async () => {
   font-family: var(--song);
   font-size: 13px;
   letter-spacing: 0.04em;
+}
+
+/**
+ * 可点击的人名：负责人、成员、待办负责人、验收人、提交人共用。
+ * 用虚线下划线示意可点，hover 变品牌色，不改变原有排版尺寸。
+ */
+.name-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted var(--rule);
+  text-underline-offset: 3px;
+  transition: color 0.15s, text-decoration-color 0.15s;
+}
+
+.name-link:hover {
+  color: var(--brand);
+  text-decoration-color: var(--brand);
+}
+
+.name-link:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* 状态栏：放得下一枚状态标记，不参与省略号截断 */
@@ -2571,7 +2795,21 @@ onMounted(async () => {
 }
 
 .timeline-meta {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+
   font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* 动作描述：比时间稍重，一眼能看出发生了什么 */
+.timeline-action {
+  color: var(--ink-2);
+}
+
+.timeline-time {
   color: var(--ink-3);
 }
 

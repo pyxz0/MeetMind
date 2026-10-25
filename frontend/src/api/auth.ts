@@ -106,6 +106,36 @@ export const listContacts = async (): Promise<Contact[]> => {
   return response.data
 }
 
+/** 个人主页名片：任何登录用户都能看别人的公开信息 */
+export interface UserProfile {
+  id: number
+  name: string
+  phone: string
+  avatar: string | null
+  roleLabel: string
+  isActive: boolean
+  /** 看的是不是自己 */
+  isSelf: boolean
+  createdAt: string
+  /** 双方都能看到的会议数 */
+  sharedMeetingCount: number
+  /** 最近几场共同会议 */
+  sharedMeetings: Array<{
+    id: number
+    title: string
+    completionStatus: string
+    createdAt: string
+  }>
+  /** 共同会议里他/她名下未完成的待办数 */
+  openTodoCount: number
+}
+
+export const getUserProfile = async (userId: number): Promise<UserProfile> => {
+  const response = await api.get<UserProfile>(`/users/${userId}/profile`)
+
+  return response.data
+}
+
 /** 新建账号 */
 export const createUser = async (data: {
   phone: string

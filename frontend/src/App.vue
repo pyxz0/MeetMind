@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { provideDraftStore } from './composables/draftStore'
 import { useInboxStore } from './composables/inboxStore'
+import { useMessageStore } from './composables/messageStore'
 import {
   recordingStatus,
   formatRecordingTime,
@@ -17,6 +18,7 @@ import {
 
 const draftStore = provideDraftStore()
 const inboxStore = useInboxStore()
+const messageStore = useMessageStore()
 
 const route = useRoute()
 const router = useRouter()
@@ -56,6 +58,11 @@ const navItems = computed(() => [
     path: '/inbox',
     label: '收件箱',
     count: inboxStore.unreadCount.value,
+  },
+  {
+    path: '/messages',
+    label: '私信',
+    count: messageStore.unreadCount.value,
   },
 ])
 
@@ -133,7 +140,7 @@ const isActiveEntry = (id: number) => route.path === `/history/${id}`
 onMounted(async () => {
   // 未登录时（登录页）不拉草稿数量与角标，避免无谓的 401
   if (authStore.isAuthenticated.value) {
-    await Promise.all([draftStore.refresh(), inboxStore.refresh()])
+    await Promise.all([draftStore.refresh(), inboxStore.refresh(), messageStore.refresh()])
     await loadRecent()
   }
 })

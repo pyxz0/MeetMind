@@ -64,6 +64,8 @@ export interface InboxReview {
   meetingTitle: string;
   todoContent: string;
   assignee: string | null;
+  /** 提交人 id：前端据此打开个人主页 */
+  submitterId: number;
   submitterName: string;
   attemptNo: number;
   submittedAt: string;
@@ -614,6 +616,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
         meetingTitle: row.todo.meeting.title,
         todoContent: row.todo.content,
         assignee: row.todo.assignee,
+        submitterId: row.submitterId,
         submitterName: row.submitter.name,
         attemptNo: row.attemptNo,
         submittedAt: row.createdAt.toISOString(),

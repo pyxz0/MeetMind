@@ -639,17 +639,73 @@ export class MeetingsService {
 
     await assertCanWrite(this.prisma, user, id);
 
-    return this.prisma.meeting.update({
+    const current = await this.prisma.meeting.findUnique({
       where: { id },
-      data: {
-        completionStatus,
-      },
+      select: { completionStatus: true },
+    })
+
+    if (!current) {
+      throw new NotFoundException('会议记录不存在')
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.meeting.update({
+        where: { id },
+        data: {
+          completionStatus,
+        },
+        select: {
+          id: true,
+          title: true,
+          completionStatus: true,
+        },
+      })
+
+      /**
+       * 状态真的变了才留痕：重复点同一个状态不该在记录里堆噪声。
+       * 这条记录是「谁手动改的」，自动流转由 todo_events 说明来源。
+       */
+      if (current.completionStatus !== completionStatus) {
+        await tx.meetingEvent.create({
+          data: {
+            meetingId: id,
+            actorId: user.id,
+            type: 'status_changed',
+            fromStatus: current.completionStatus,
+            toStatus: completionStatus,
+          },
+        })
+      }
+
+      return updated
+    })
+  }
+
+  /** 会议状态变更记录：谁、何时、从什么状态改成了什么 */
+  async listMeetingEvents(meetingId: number, user: AuthenticatedUser) {
+    await assertCanRead(this.prisma, user, meetingId)
+
+    const rows = await this.prisma.meetingEvent.findMany({
+      where: { meetingId },
+      orderBy: { createdAt: 'desc' },
       select: {
         id: true,
-        title: true,
-        completionStatus: true,
+        type: true,
+        fromStatus: true,
+        toStatus: true,
+        createdAt: true,
+        actor: { select: { id: true, name: true } },
       },
-    });
+    })
+
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      fromStatus: row.fromStatus,
+      toStatus: row.toStatus,
+      createdAt: row.createdAt.toISOString(),
+      actor: row.actor,
+    }))
   }
 
   /** 修改会议标题 */
@@ -774,22 +830,28 @@ export class MeetingsService {
       }
     }
 
-    if (data.reviewerId) {
-      const reviewer = await this.prisma.user.findUnique({
-        where: { id: data.reviewerId },
-        select: { isActive: true },
-      })
-
-      if (!reviewer) throw new NotFoundException('指定的验收人不存在')
-      if (!reviewer.isActive) throw new BadRequestException('该账号已停用，不能担任验收人')
-    }
-
     // 截止时间：优先用显式 deadlineAt，否则尝试从文本解析
     let deadlineAt = todo.deadlineAt
     if (data.deadlineAt !== undefined) {
       deadlineAt = data.deadlineAt === null ? null : parseDeadlineAt(data.deadlineAt)
     } else if (data.deadline !== undefined) {
       deadlineAt = parseDeadlineAt(data.deadline)
+    }
+
+    // 未指定验收人（传了 null）时，默认会议负责人（多个时默认创建者）
+    let resolvedReviewerId: number | null | undefined
+    if (data.reviewerId !== undefined) {
+      resolvedReviewerId = data.reviewerId ?? (await this.resolveDefaultReviewerId(todo.meetingId))
+
+      if (resolvedReviewerId) {
+        const reviewer = await this.prisma.user.findUnique({
+          where: { id: resolvedReviewerId },
+          select: { isActive: true },
+        })
+
+        if (!reviewer) throw new NotFoundException('指定的验收人不存在')
+        if (!reviewer.isActive) throw new BadRequestException('该账号已停用，不能担任验收人')
+      }
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -805,8 +867,8 @@ export class MeetingsService {
           ...(data.assigneeUserId !== undefined && {
             assigneeUserId
           }),
-          ...(data.reviewerId !== undefined && {
-            reviewerId: data.reviewerId
+          ...(resolvedReviewerId !== undefined && {
+            reviewerId: resolvedReviewerId
           }),
           ...(data.deadline !== undefined && {
             deadline: data.deadline
@@ -876,8 +938,27 @@ export class MeetingsService {
     // 统计同样受数据隔离约束：只看自己可见范围内的数据
     const visible = this.visibleMeetingWhere(user);
 
+    /**
+     * 正式会议（历史口径）：排除手动草稿与 AI 失败，且排除「尚未开始的预约会议」。
+     * 预约时间已过或未设预约时间的会议才算入历史。
+     */
     const formalMeeting: Prisma.MeetingWhereInput = {
-      AND: [visible, { status: { notIn: ['DRAFT', 'FAILED'] } }],
+      AND: [
+        visible,
+        { status: { notIn: ['DRAFT', 'FAILED'] } },
+        {
+          OR: [{ scheduledAt: null }, { scheduledAt: { lte: new Date() } }],
+        },
+      ],
+    };
+
+    /** 尚未开始的预约会议：单独作为「未开始」分段统计，不计入历史会议总数 */
+    const upcomingMeeting: Prisma.MeetingWhereInput = {
+      AND: [
+        visible,
+        { status: { notIn: ['DRAFT', 'FAILED'] } },
+        { scheduledAt: { gt: new Date() } },
+      ],
     };
 
     const draftMeeting: Prisma.MeetingWhereInput = {
@@ -908,19 +989,33 @@ export class MeetingsService {
       acceptedSamples,
       totalDecisions,
     ] = await Promise.all([
-      // 正式会议总数：排除手动草稿和 AI 生成失败记录
+      // 会议总数（历史口径）：排除草稿、AI 失败与尚未开始的预约会议
       this.prisma.meeting.count({ where: formalMeeting }),
 
       // 草稿箱数量：手动草稿 + AI 生成失败
       this.prisma.meeting.count({ where: draftMeeting }),
 
-      // 以下会议完成状态统计，都只统计正式会议
+      // 未开始：只统计尚未开始的预约会议（历史口径里不该有未开始）
       this.prisma.meeting.count({
-        where: { AND: [formalMeeting, { completionStatus: 'NOT_STARTED' }] },
+        where: { AND: [upcomingMeeting, { completionStatus: 'NOT_STARTED' }] },
       }),
 
+      // 进行中：IN_PROGRESS，或「预约已过但仍停在 NOT_STARTED」的遗留会议
       this.prisma.meeting.count({
-        where: { AND: [formalMeeting, { completionStatus: 'IN_PROGRESS' }] },
+        where: {
+          AND: [
+            formalMeeting,
+            {
+              OR: [
+                { completionStatus: 'IN_PROGRESS' },
+                {
+                  completionStatus: 'NOT_STARTED',
+                  scheduledAt: { lte: new Date() },
+                },
+              ],
+            },
+          ],
+        },
       }),
 
       this.prisma.meeting.count({
@@ -1153,7 +1248,18 @@ export class MeetingsService {
           audioOpen: row.audioOpen,
         });
 
-        return mapMeetingSummary(row, access, capabilities);
+        // 历史列表不出现「未开始」：预约已过但仍停在 NOT_STARTED 的遗留会议，按进行中展示
+        const completionStatus =
+          row.completionStatus === 'NOT_STARTED' &&
+          (row.scheduledAt === null || row.scheduledAt <= new Date())
+            ? 'IN_PROGRESS'
+            : row.completionStatus;
+
+        return mapMeetingSummary(
+          { ...row, completionStatus },
+          access,
+          capabilities,
+        );
       }),
       total,
       pinnedTotal,
@@ -1479,29 +1585,29 @@ export class MeetingsService {
     }
 
     /**
-     * 状态只能由「会议负责人」「该待办的提交对象」或「超级管理员」修改。
+     * 状态只能由「该事项的验收人」或「会议负责人」修改。
      *
-     * 负责人包含创建者与负责人（不含共享编辑者）；
-     * 提交对象指 assignee_user_id 指向的人。
+     * 验收人是这条待办的责任判定人，改状态等于给结论；
+     * 会议负责人对整场会议的所有事项都有处置权（含创建者，不含共享编辑者）。
      * 超管是唯一的全局例外：它本来就拥有全部数据的处置权。
      */
-    const access = await assertCanRead(this.prisma, user, todo.meetingId);
+    const access = await assertCanRead(this.prisma, user, todo.meetingId)
 
     const isMeetingLeader =
-      access.access === 'owner' || access.leaderIds.includes(user.id);
+      access.access === 'owner' || access.leaderIds.includes(user.id)
 
-    const isAssignee = todo.assigneeUserId === user.id;
+    /** 该事项的验收人；未指定验收人时只有会议负责人能改 */
+    const isTodoReviewer = todo.reviewerId !== null && todo.reviewerId === user.id
 
-    if (!isMeetingLeader && !isAssignee && user.role !== 'SUPER_ADMIN') {
+    if (!isMeetingLeader && !isTodoReviewer && user.role !== 'SUPER_ADMIN') {
       throw new ForbiddenException(
-        '只有会议负责人、该待办的负责人或超级管理员可以修改状态',
+        '只有该事项的验收人或会议负责人可以修改状态',
       );
     }
 
     /**
-     * 两个后门必须在这里堵死，否则验收流程形同虚设：
-     * - 不能直接把状态改成 SUBMITTED（必须走提交，才能留下交付记录）
-     * - 有待验收流程的待办不能直接被勾成 COMPLETED（必须走验收）
+     * 只剩一个后门要堵：不能直接把状态改成 SUBMITTED
+     * （必须走提交，才能留下交付记录）。
      */
     if (status === 'SUBMITTED') {
       throw new BadRequestException('请通过「提交」操作进入待验收');
@@ -1511,9 +1617,16 @@ export class MeetingsService {
       throw new ConflictException('该待办正在等待验收，请先验收或撤回');
     }
 
-    if (status === 'COMPLETED' && todo.reviewerId) {
-      throw new ConflictException('该待办需要验收，请由验收人确认后再完成');
-    }
+    /**
+     * 有验收人时也允许直接勾「已完成」，但要分清是不是验收人本人做的：
+     * - 验收人本人勾完成 = 他给出结论，等同验收通过（不额外记审计）
+     * - 会议负责人 / 超管代完成 = 跳过了验收环节，写一条审计留痕
+     *
+     * 这里刻意不补造 ACCEPTED 提交记录：没有真实交付却补一条，
+     * 会把返工次数、平均验收时长这些统计口径弄脏。
+     */
+    const forceComplete =
+      status === 'COMPLETED' && todo.reviewerId !== null && !isTodoReviewer
 
     // 待办状态与会议状态必须一起变，否则会出现
     // “待办全完成但会议仍显示进行中”的不一致状态。
@@ -1533,6 +1646,12 @@ export class MeetingsService {
               : 'status_changed',
             fromStatus: todo.status,
             toStatus: status,
+            ...(forceComplete && {
+              metadata: {
+                forced: true,
+                reviewerId: todo.reviewerId,
+              } as Prisma.InputJsonValue,
+            }),
           },
         })
 
@@ -1542,6 +1661,15 @@ export class MeetingsService {
         ] as const;
       },
     );
+
+    if (forceComplete) {
+      await this.audit.record(user, {
+        action: 'todo.complete_forced',
+        resourceType: 'meeting',
+        resourceId: todo.meetingId,
+        metadata: { todoId: id, reviewerId: todo.reviewerId },
+      })
+    }
 
     return {
       id: updated.id,
@@ -2471,6 +2599,30 @@ export class MeetingsService {
 
     return next;
   }
+  /**
+   * 解析待办的默认验收人：未指定验收人时，取会议负责人；负责人有多个时取创建者。
+   * 返回 null 仅当会议既没有负责人也没有创建者（理论上不会发生）。
+   */
+  private async resolveDefaultReviewerId(meetingId: number): Promise<number | null> {
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id: meetingId },
+      select: {
+        ownerId: true,
+        leaders: { select: { userId: true }, orderBy: { createdAt: 'asc' as const } },
+      },
+    })
+
+    if (!meeting) throw new NotFoundException('会议不存在')
+
+    const leaderIds = meeting.leaders.map((l) => l.userId)
+
+    if (leaderIds.length === 0) return meeting.ownerId
+    if (leaderIds.length === 1) return leaderIds[0]
+
+    // 多个负责人：默认创建者；创建者不在负责人列表时，退回第一个负责人
+    return leaderIds.includes(meeting.ownerId) ? meeting.ownerId : leaderIds[0]
+  }
+
   async createTodo(
     meetingId: number,
     data: {
@@ -2500,9 +2652,15 @@ export class MeetingsService {
       assignee = target.name
     }
 
-    if (data.reviewerId) {
+    // 未指定验收人时，默认会议负责人（多个时默认创建者）
+    let reviewerId = data.reviewerId ?? null
+    if (!reviewerId) {
+      reviewerId = await this.resolveDefaultReviewerId(meetingId)
+    }
+
+    if (reviewerId) {
       const reviewer = await this.prisma.user.findUnique({
-        where: { id: data.reviewerId },
+        where: { id: reviewerId },
         select: { isActive: true },
       })
 
@@ -2519,7 +2677,7 @@ export class MeetingsService {
             content: data.content.trim(),
             assignee,
             assigneeUserId: data.assigneeUserId ?? null,
-            reviewerId: data.reviewerId ?? null,
+            reviewerId: reviewerId ?? null,
             deadline: data.deadline?.trim() || null,
             deadlineAt: data.deadlineAt
               ? parseDeadlineAt(data.deadlineAt)
@@ -2754,11 +2912,11 @@ export class MeetingsService {
               attachmentCount: latest._count?.attachments ?? 0,
             }
             : null,
-          /** 改状态：会议负责人、该待办负责人，或超级管理员 */
+          /** 改状态：该事项的验收人、会议负责人，或超级管理员 */
           canChangeStatus:
             todo.status !== 'SUBMITTED' &&
             (isMeetingLeader ||
-              isAssignee ||
+              (todo.reviewerId !== null && todo.reviewerId === user.id) ||
               user.role === 'SUPER_ADMIN'),
           /** 提交：只有该待办的负责人 */
           canSubmit: unfinished && isAssignee,

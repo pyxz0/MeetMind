@@ -5,6 +5,7 @@ import MeetMindView from '../views/MeetMindView.vue'
 import MinutesView from '../views/MinutesView.vue'
 import UploadMinutesView from '../views/UploadMinutesView.vue'
 import InboxView from '../views/InboxView.vue'
+import MessagesView from '../views/MessagesView.vue'
 import AuditView from '../views/AuditView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import MeetingDetailView from '../views/MeetingDetailView.vue'
@@ -107,6 +108,21 @@ const router = createRouter({
       path: '/inbox',
       name: 'inbox',
       component: InboxView,
+    },
+
+    {
+      /** 私信：一对一站内聊天 */
+      path: '/messages',
+      name: 'messages',
+      component: MessagesView,
+    },
+
+    {
+      /** 私信直链：打开指定会话 */
+      path: '/messages/:id',
+      name: 'messages-conversation',
+      component: MessagesView,
+      props: true,
     },
 
     {
