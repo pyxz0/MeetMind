@@ -58,3 +58,7 @@ yarn-error.log*
 pnpm-debug.log*
 .temp
 .tmp
+
+# ---------- 数据库备份 ----------
+# 服务器上的 pg_dump 落在 /opt/meetmind/backups，含真实账号哈希，绝不能入库
+backups/
