@@ -138,55 +138,63 @@ model User {
   /// 收件箱最后一次已读时间；早于该时间的通知算已读
   inboxSeenAt  DateTime? @map("inbox_seen_at") @db.Timestamptz(3)
 
+  /// 是否接收邮件提醒。
+  /// 默认开启：绑邮箱这个动作本身已经表达了「愿意用它联系我」；
+  /// 但仍然给个人中心一个开关，随时能关 —— 通知最容易招人烦的就是关不掉。
+  notifyEmail Boolean @default(true) @map("notify_email")
+
   /// 密码重置令牌的 SHA-256（只存哈希，不存原文）；为空表示没有待用的重置链接
-  passwordResetTokenHash  String?   @map("password_reset_token_hash") @db.VarChar(64)
+  passwordResetTokenHash String?   @map("password_reset_token_hash") @db.VarChar(64)
   /// 重置令牌过期时间；与令牌同时写入、同时清除
-  passwordResetExpiresAt  DateTime? @map("password_reset_expires_at") @db.Timestamptz(3)
+  passwordResetExpiresAt DateTime? @map("password_reset_expires_at") @db.Timestamptz(3)
   /// 令牌版本：改密或重置密码后自增，令已签发的 JWT 立即失效
-  tokenVersion            Int       @default(0) @map("token_version")
+  tokenVersion           Int       @default(0) @map("token_version")
 
   /// 自己创建的会议。
-  meetings     Meeting[]       @relation("MeetingOwner")
+  meetings           Meeting[]           @relation("MeetingOwner")
   /// 由该用户担任负责人的会议。
-  ledMeetings  MeetingLeader[] @relation("MeetingLeaderUser")
+  ledMeetings        MeetingLeader[]     @relation("MeetingLeaderUser")
   /// 该用户作为成员参与的会议。
-  meetingMemberships MeetingMember[] @relation("MeetingMemberUser")
+  meetingMemberships MeetingMember[]     @relation("MeetingMemberUser")
   /// 收件箱已读记录。
-  inboxReads   InboxRead[]
+  inboxReads         InboxRead[]
   /// 收到的会议变更消息。
-  notices      MeetingNotice[] @relation("NoticeRecipient")
+  notices            MeetingNotice[]     @relation("NoticeRecipient")
   /// 该用户发起的 AI 生成任务。
-  generations  MeetingGeneration[] @relation("GenerationOwner")
+  generations        MeetingGeneration[] @relation("GenerationOwner")
   /// 该用户上传的转写任务。
-  asrJobs      AsrJob[]        @relation("AsrJobUser")
+  asrJobs            AsrJob[]            @relation("AsrJobUser")
   /// 该用户产生的审计日志。
-  auditLogs    AuditLog[] @relation("AuditActor")
+  auditLogs          AuditLog[]          @relation("AuditActor")
   /// 别人共享给该用户的会议。
-  sharedWithMe MeetingShare[]  @relation("ShareRecipient")
+  sharedWithMe       MeetingShare[]      @relation("ShareRecipient")
   /// 该用户做过的共享操作（用于追溯是谁授的权）。
-  sharesGiven  MeetingShare[]  @relation("ShareGrantor")
+  sharesGiven        MeetingShare[]      @relation("ShareGrantor")
 
   /// 指派给该用户的待办。
-  todosAssigned Todo[] @relation("TodoAssignee")
+  todosAssigned   Todo[]               @relation("TodoAssignee")
   /// 由该用户验收的待办。
-  todosToReview Todo[] @relation("TodoReviewer")
+  todosToReview   Todo[]               @relation("TodoReviewer")
   /// 该用户提交过的交付。
-  todoSubmissions TodoSubmission[] @relation("SubmissionSubmitter")
+  todoSubmissions TodoSubmission[]     @relation("SubmissionSubmitter")
   /// 该用户验收过的交付。
-  todoReviews     TodoSubmission[] @relation("SubmissionReviewer")
+  todoReviews     TodoSubmission[]     @relation("SubmissionReviewer")
   /// 该用户产生的待办流转记录。
-  todoEvents      TodoEvent[]      @relation("TodoEventActor")
+  todoEvents      TodoEvent[]          @relation("TodoEventActor")
   /// 该用户勾选过的验收要点。
-  todoCheckItems  TodoCheckItem[]  @relation("TodoCheckDoneBy")
+  todoCheckItems  TodoCheckItem[]      @relation("TodoCheckDoneBy")
   /// 该用户参与的私信会话。
   conversations   ConversationMember[] @relation("ConversationMemberUser")
   /// 该用户作为会话成员 A / B 的会话（一对一聊天）。
-  conversationsA  Conversation[] @relation("ConversationUserA")
-  conversationsB  Conversation[] @relation("ConversationUserB")
+  conversationsA  Conversation[]       @relation("ConversationUserA")
+  conversationsB  Conversation[]       @relation("ConversationUserB")
   /// 该用户参与过的会议状态变更操作。
-  meetingEvents  MeetingEvent[]   @relation("MeetingEventActor")
+  meetingEvents   MeetingEvent[]       @relation("MeetingEventActor")
+
+  /// 该用户在会议追问里提过的问题（含对应的回答）
+  meetingChats MeetingChatMessage[] @relation("MeetingChatAuthor")
   /// 该用户发出的私信。
-  messagesSent    Message[]        @relation("MessageSender")
+  messagesSent Message[]            @relation("MessageSender")
 
   @@index([role])
   @@map("users")
@@ -225,19 +233,24 @@ model MeetingGeneration {
 /// 无法从当前状态反推，所以需要落库。
 /// 收件箱会把这类消息与派生通知合并展示。
 model MeetingNotice {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  meetingId Int      @map("meeting_id")
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  meetingId Int       @map("meeting_id")
   /// 消息正文，已按收件人视角写好（如「你已被移出会议」）
-  content   String   @db.Text
+  content   String    @db.Text
   /// 消息类型：update 预约信息变更 / reminder 会议即将开始
-  kind      String   @default("update") @db.VarChar(20)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  kind      String    @default("update") @db.VarChar(20)
+  /// 邮件投递时间。为空表示还没通过邮件发出，下一轮扫描会捡走。
+  /// 先用它「抢占」再发信：抢到才发，发失败回滚成 null 等下次重试。
+  emailedAt DateTime? @map("emailed_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user    User    @relation("NoticeRecipient", fields: [userId], references: [id], onDelete: Cascade)
   meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt(sort: Desc)])
+  /// 出站扫描：只找还没发出去的
+  @@index([emailedAt, createdAt])
   @@map("meeting_notices")
 }
 
@@ -300,13 +313,13 @@ model MeetingMember {
 /// 会议共享关系：把某场会议授权给某个用户。
 /// 会议的所有者不写在这张表里，避免与 ownerId 双写产生不一致。
 model MeetingShare {
-  id         Int             @id @default(autoincrement())
-  meetingId  Int             @map("meeting_id")
-  userId     Int             @map("user_id")
-  permission SharePermission @default(READ)
+  id          Int             @id @default(autoincrement())
+  meetingId   Int             @map("meeting_id")
+  userId      Int             @map("user_id")
+  permission  SharePermission @default(READ)
   /// 是谁授予的，便于审计。
-  grantedById Int            @map("granted_by_id")
-  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  grantedById Int             @map("granted_by_id")
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
 
   meeting   Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   user      User    @relation("ShareRecipient", fields: [userId], references: [id], onDelete: Cascade)
@@ -321,29 +334,29 @@ model MeetingShare {
 /// 会议主记录：保存原始文本、生成纪要和创建时间。
 model Meeting {
   /// 数据库自增主键，也是前端详情和删除接口使用的 ID。
-  id        Int           @id @default(autoincrement())
+  id               Int           @id @default(autoincrement())
   /// 会议显示名称；未提供标题时使用默认名称。
-  title     String        @default("未命名会议") @db.VarChar(200)
+  title            String        @default("未命名会议") @db.VarChar(200)
   /// 用户输入的完整会议原文。
-  content   String        @db.Text
+  content          String        @db.Text
   /// AI 生成的摘要，可为空以兼容尚未生成摘要的草稿。
-  summary   String?       @db.Text
+  summary          String?       @db.Text
   /// 会议录音的站内相对路径，例如 uploads/xxx.webm。
   /// 为空表示这场会议没有留存录音（例如纯文字输入）。
-  audioUrl  String?      @map("audio_url") @db.VarChar(255)
+  audioUrl         String?       @map("audio_url") @db.VarChar(255)
   /// 录音时长（秒），与转写计时一致；暂停期间不计入。
-  audioDurationSec Int?  @map("audio_duration_sec")
+  audioDurationSec Int?          @map("audio_duration_sec")
   /// 置顶时间；为空表示未置顶。
   /// 用时间戳而非布尔值，多条置顶之间才能按“最近置顶优先”稳定排序。
-  pinnedAt  DateTime?    @map("pinned_at") @db.Timestamptz(3)
+  pinnedAt         DateTime?     @map("pinned_at") @db.Timestamptz(3)
   /// 主记录状态，用于区分草稿、处理中、完成和失败。
-  status    MeetingStatus @default(READY)
+  status           MeetingStatus @default(READY)
   /// 带时区的创建时间，映射为数据库的 snake_case 字段名。
-  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   /// 该会议提取出的关键决策，删除会议时一并删除。
-  decisions Decision[]
+  decisions        Decision[]
   /// 该会议提取出的行动项，删除会议时一并删除。
-  todos     Todo[]
+  todos            Todo[]
 
   completionStatus MeetingCompletionStatus @default(NOT_STARTED)
 
@@ -363,6 +376,20 @@ model Meeting {
   /// 距离开会时间不足 20 分钟时，参会人员会在收件箱收到提醒。
   scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz(3)
 
+  /// 来源平台。为空表示 MeetMind 自建；'tencent' 表示来自腾讯会议同步。
+  /// 用字符串而不是 enum，是为了以后接飞书/zoom 时不用再改表结构。
+  sourcePlatform String? @map("source_platform") @db.VarChar(20)
+
+  /// 平台侧的会议 ID。
+  /// 腾讯会议的 meeting_id 是长数字串，超出 int 范围，必须用 String。
+  externalId String? @map("external_id") @db.VarChar(64)
+
+  /// 入会链接。同步自平台，点一下就能进会。
+  externalJoinUrl String? @map("external_join_url") @db.VarChar(512)
+
+  /// 会议号（给人念的那串数字，腾讯会议 9-11 位）。
+  externalCode String? @map("external_code") @db.VarChar(32)
+
   /// 会议成员（参会人）。
   members MeetingMember[]
 
@@ -372,12 +399,18 @@ model Meeting {
   /// 该会议的 AI 生成任务。
   generations MeetingGeneration[]
 
+  /// 该会议的追问记录（人机问答），随会议删除。
+  chatMessages MeetingChatMessage[]
+
   /// 会议状态的手动变更记录（谁在什么时候把状态改成了什么）。
   events MeetingEvent[]
 
   /// 该会议对其他用户的共享授权。
   shares MeetingShare[]
 
+  /// 同一场平台会议只能对应一条记录，避免 webhook 重推时重复建会。
+  /// sourcePlatform 为空的（自建会议）不受约束 —— PG 里 NULL 不参与唯一比较。
+  @@unique([sourcePlatform, externalId])
   /// 常用历史列表按时间排序；状态筛选列表按状态和时间排序。
   @@index([createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
@@ -409,28 +442,35 @@ model Decision {
 
 /// AI 从会议内容中提取的待办或行动项。
 model Todo {
-  id        Int        @id @default(autoincrement())
+  id                 Int        @id @default(autoincrement())
   /// 所属会议的外键。
-  meetingId Int        @map("meeting_id")
+  meetingId          Int        @map("meeting_id")
   /// 需要完成的任务描述。
-  content   String     @db.Text
+  content            String     @db.Text
   /// 负责人可能未被会议原文明确指定。
-  assignee  String?    @db.VarChar(120)
+  assignee           String?    @db.VarChar(120)
   /// 结构化的负责人。文本 assignee 保留做展示与历史兼容，
   /// 归属判定与「谁能提交」一律以本字段为准（文本匹配会把张三丰认成张三）。
-  assigneeUserId Int?  @map("assignee_user_id")
+  assigneeUserId     Int?       @map("assignee_user_id")
   /// 验收人；为空表示该待办不需要验收，保持旧的一键完成行为。
-  reviewerId     Int?  @map("reviewer_id")
+  reviewerId         Int?       @map("reviewer_id")
   /// 保留自然语言截止时间，例如“下周一”，避免丢失模型原始表达。
-  deadline  String?    @db.VarChar(120)
+  deadline           String?    @db.VarChar(120)
   /// 结构化的截止时间。自然语言解析不了就留空，只保留 deadline 文本。
-  deadlineAt DateTime? @map("deadline_at") @db.Timestamptz(3)
+  deadlineAt         DateTime?  @map("deadline_at") @db.Timestamptz(3)
   /// 待办处理状态，默认处于未开始状态。
-  status    TodoStatus @default(OPEN)
+  status             TodoStatus @default(OPEN)
+  /// 上一次逾期提醒的时间。
+  /// 与 overdueNotifyCount 一起保证「同一条待办每天最多提醒一次」，
+  /// 改期到未来或状态回退时一起清零，否则改回来就再也不提醒了。
+  overdueNotifiedAt  DateTime?  @map("overdue_notified_at") @db.Timestamptz(3)
+  /// 连续逾期提醒次数。达到上限后不再提醒 ——
+  /// 一条放了一个月的待办每天发一封信，只会让人把整个域名拉黑。
+  overdueNotifyCount Int        @default(0) @map("overdue_notify_count")
   /// 同一会议内的展示顺序。
-  sortOrder Int        @default(0) @map("sort_order")
+  sortOrder          Int        @default(0) @map("sort_order")
   /// 删除所属会议时级联删除此待办。
-  meeting   Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  meeting            Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
 
   assigneeUser User?            @relation("TodoAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
   reviewer     User?            @relation("TodoReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
@@ -443,6 +483,8 @@ model Todo {
   @@index([status])
   @@index([assigneeUserId, status])
   @@index([reviewerId, status])
+  /// 逾期扫描：按状态筛出未完成、再比截止时间
+  @@index([status, deadlineAt])
   @@map("meeting_todos")
 }
 
@@ -451,24 +493,24 @@ model Todo {
 /// 「提交」是一件事，不是待办的一个属性：需要记录谁、何时、交了什么、谁验的、为什么打回。
 /// 只改 todos.status 能跑通流程，但答不了返工次数、验收时长、谁的交付老被打回。
 model TodoSubmission {
-  id           Int              @id @default(autoincrement())
-  todoId       Int              @map("todo_id")
-  submitterId  Int              @map("submitter_id")
+  id             Int              @id @default(autoincrement())
+  todoId         Int              @map("todo_id")
+  submitterId    Int              @map("submitter_id")
   /// 提交时的验收人快照；验收人后续被换掉，不影响这条记录的责任归属
-  reviewerId   Int?             @map("reviewer_id")
+  reviewerId     Int?             @map("reviewer_id")
   /// 交付说明
-  note         String?          @db.Text
-  status       SubmissionStatus @default(PENDING)
+  note           String?          @db.Text
+  status         SubmissionStatus @default(PENDING)
   /// 第几次提交（打回后递增），用于统计返工次数
-  attemptNo    Int              @default(1) @map("attempt_no")
+  attemptNo      Int              @default(1) @map("attempt_no")
   /// 打回原因；打回时必填，其余情况为空
-  rejectReason String?          @map("reject_reason") @db.Text
-  reviewedAt   DateTime?        @map("reviewed_at") @db.Timestamptz(3)
+  rejectReason   String?          @map("reject_reason") @db.Text
+  reviewedAt     DateTime?        @map("reviewed_at") @db.Timestamptz(3)
   /// 24 小时未验收催办的发送时间；为空表示还没催过。
   /// 用时间戳而不是布尔值：能看出催办发生的时刻，也方便将来做多级催办。
-  reminderSentAt DateTime?      @map("reminder_sent_at") @db.Timestamptz(3)
-  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  reminderSentAt DateTime?        @map("reminder_sent_at") @db.Timestamptz(3)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   todo        Todo             @relation(fields: [todoId], references: [id], onDelete: Cascade)
   submitter   User             @relation("SubmissionSubmitter", fields: [submitterId], references: [id], onDelete: Cascade)
@@ -544,32 +586,31 @@ model TodoCheckItem {
   @@map("todo_check_items")
 }
 
-
 /// 服务端转写任务：上传录音 / 会议文件后由 ASR 转成文字。
 ///
 /// 与「会议录音」分开存：转写发生在会议存在之前（用户先上传、再决定要不要生成纪要），
 /// 失败的任务也不该污染会议表。
 model AsrJob {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
   /// 原始文件名，用于展示与预填会议标题
-  filename  String   @db.VarChar(255)
+  filename       String   @db.VarChar(255)
   /// 相对 backend 运行目录的存储路径（uploads/asr/xxx）
-  storedPath String  @map("stored_path") @db.VarChar(255)
-  sizeBytes Int      @map("size_bytes")
+  storedPath     String   @map("stored_path") @db.VarChar(255)
+  sizeBytes      Int      @map("size_bytes")
   /// PENDING / RUNNING / SUCCEEDED / FAILED
-  status    String   @default("PENDING") @db.VarChar(20)
+  status         String   @default("PENDING") @db.VarChar(20)
   /// 转写结果；纯文本文件（txt/md）上传时直接落这里
-  transcript String? @db.Text
+  transcript     String?  @db.Text
   /// 音频时长（秒），由服务商返回
-  durationSec Int?   @map("duration_sec")
+  durationSec    Int?     @map("duration_sec")
   /// 服务商侧任务 id（腾讯云 TaskId），用于轮询
-  providerTaskId String? @map("provider_task_id") @db.VarChar(120)
+  providerTaskId String?  @map("provider_task_id") @db.VarChar(120)
   /// 实际使用的转写通道：mock / tencent
-  provider  String   @db.VarChar(32)
-  error     String?  @db.Text
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  provider       String   @db.VarChar(32)
+  error          String?  @db.Text
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   user User @relation("AsrJobUser", fields: [userId], references: [id], onDelete: Cascade)
 
@@ -591,9 +632,9 @@ model Conversation {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  userA   User                @relation("ConversationUserA", fields: [userAId], references: [id], onDelete: Cascade)
-  userB   User                @relation("ConversationUserB", fields: [userBId], references: [id], onDelete: Cascade)
-  members ConversationMember[]
+  userA    User                 @relation("ConversationUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB    User                 @relation("ConversationUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  members  ConversationMember[]
   messages Message[]
 
   @@unique([userAId, userBId])
@@ -604,12 +645,12 @@ model Conversation {
 
 /// 会话成员：读状态挂在成员维度（每个成员各自的未读数）。
 model ConversationMember {
-  id             Int      @id @default(autoincrement())
-  conversationId Int      @map("conversation_id")
-  userId         Int      @map("user_id")
+  id                Int      @id @default(autoincrement())
+  conversationId    Int      @map("conversation_id")
+  userId            Int      @map("user_id")
   /// 该成员最后一次已读消息 id；小于等于它的消息算已读
-  lastReadMessageId Int   @default(0) @map("last_read_message_id")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastReadMessageId Int      @default(0) @map("last_read_message_id")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user         User         @relation("ConversationMemberUser", fields: [userId], references: [id], onDelete: Cascade)
@@ -642,19 +683,19 @@ model Message {
 ///
 /// 复用交付物附件的落盘策略：上传走鉴权接口，下载不做静态目录直出。
 model MessageAttachment {
-  id        Int      @id @default(autoincrement())
-  messageId Int      @map("message_id")
+  id         Int      @id @default(autoincrement())
+  messageId  Int      @map("message_id")
   /// 原始文件名（展示用）
-  fileName  String   @map("file_name") @db.VarChar(255)
+  fileName   String   @map("file_name") @db.VarChar(255)
   /// 相对 backend 运行目录的存储路径（uploads/messages/xxx）
-  storedPath String  @map("stored_path") @db.VarChar(255)
+  storedPath String   @map("stored_path") @db.VarChar(255)
   /// 文件大小（字节）
-  sizeBytes Int      @map("size_bytes")
+  sizeBytes  Int      @map("size_bytes")
   /// 原始 MIME 类型（下载时回给浏览器）
-  mimeType  String   @map("mime_type") @db.VarChar(120)
+  mimeType   String   @map("mime_type") @db.VarChar(120)
   /// 是否图片（图片消息直接在聊天里预览，文件消息只给下载）
-  isImage   Boolean  @default(false) @map("is_image")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  isImage    Boolean  @default(false) @map("is_image")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
@@ -683,4 +724,67 @@ model MeetingEvent {
 
   @@index([meetingId, createdAt(sort: Desc)])
   @@map("meeting_events")
+}
+
+/// 会议追问的一条问答记录。
+///
+/// 只存文本，不改动会议的任何业务字段 —— 追问是「读」操作，
+/// 不能因为问了句「把这条标成完成」就把待办改了。
+/// 想改数据，走待办与状态各自的接口，那里才有权限与审计。
+model MeetingChatMessage {
+  id        Int      @id @default(autoincrement())
+  meetingId Int      @map("meeting_id")
+  /// 提问人；账号删除后置空，问答内容仍保留
+  userId    Int?     @map("user_id")
+  /// USER（提问）或 ASSISTANT（回答）
+  role      String   @db.VarChar(16)
+  content   String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user    User?   @relation("MeetingChatAuthor", fields: [userId], references: [id], onDelete: SetNull)
+
+  /// 打开抽屉时按时间正序取最近 N 条
+  @@index([meetingId, createdAt(sort: Desc)])
+  @@map("meeting_chat_messages")
+}
+
+/// 会议平台回调事件的原始记录。
+///
+/// 先落库、后处理：腾讯要求回调 3 秒内返回 200，拉录制、转写这些动作
+/// 不能卡在响应里；落库还能让失败的事件可重放、可排查。
+///
+/// 幂等靠 (platform, externalEventId) 唯一索引 ——
+/// 腾讯在没收到 200 时会重推，没有这个约束就会重复建会、重复转写。
+model PlatformEvent {
+  id       Int    @id @default(autoincrement())
+  /// 平台标识：tencent
+  platform String @db.VarChar(20)
+
+  /// 事件类型：meeting.created / meeting.end / recording.completed …
+  eventType String @map("event_type") @db.VarChar(64)
+
+  /// 平台侧事件唯一标识。腾讯给的是 unique_sequence，
+  /// 缺失时用 payload 的哈希兜底，保证同一事件不会处理两次。
+  externalEventId String @map("external_event_id") @db.VarChar(128)
+
+  /// 解码后的回调明文，原样保留便于排查
+  payload Json
+
+  /// RECEIVED 已入库 / PROCESSED 处理完 / IGNORED 不关心 / FAILED 处理失败
+  status String @default("RECEIVED") @db.VarChar(16)
+
+  /// 失败原因，超长截断
+  error String? @db.Text
+
+  /// 能匹配上的会议 ID；匹配不上（比如直接在腾讯会议开的会）置空
+  meetingId Int? @map("meeting_id")
+
+  receivedAt  DateTime  @default(now()) @map("received_at") @db.Timestamptz(3)
+  processedAt DateTime? @map("processed_at") @db.Timestamptz(3)
+
+  @@unique([platform, externalEventId])
+  /// 补跑：按状态捞未处理的历史事件
+  @@index([status, receivedAt])
+  @@map("platform_events")
 }
