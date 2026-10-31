@@ -4,6 +4,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
+  Logger,
 } from '@nestjs/common';
 import {
   Meeting,
@@ -15,10 +17,13 @@ import { PrismaService } from '../common/prisma.service';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isOverdue, parseDeadlineAt } from './deadline';
+import { formatCstDate } from '../common/datetime';
 import { mapMeetingSummary } from './meeting.mapper';
 import { buildMeetingMarkdown, markdownFilename } from './meeting-markdown';
 import { MeetingAudioService } from './meeting-audio.service';
 import { AuditService } from '../audit/audit.service';
+import { PLATFORM_PROVIDER } from '../platforms/platform-core.module';
+import type { MeetingPlatformProvider } from '../platforms/platform-provider';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { PERMISSIONS, roleHasPermission } from '../auth/permissions';
 import {
@@ -186,10 +191,15 @@ export interface MeetingListQuery {
 
 @Injectable()
 export class MeetingsService {
+  private readonly logger = new Logger(MeetingsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audioService: MeetingAudioService,
     private readonly audit: AuditService,
+    /** 会议平台适配层；未接入时是 DisabledPlatformProvider（enabled=false） */
+    @Inject(PLATFORM_PROVIDER)
+    private readonly platform: MeetingPlatformProvider,
   ) { }
 
   /** 创建会议并通过嵌套写入原文、摘要、决策和待办，保证一次提交完成。 */
@@ -289,6 +299,7 @@ export class MeetingsService {
       scheduledAt: string;
       leaderIds?: number[];
       memberIds?: number[];
+      platform?: 'tencent';
     },
     user: AuthenticatedUser,
   ) {
@@ -311,9 +322,52 @@ export class MeetingsService {
 
     await this.assertUsersUsable([...finalLeaderIds, ...memberIds]);
 
+    const title = input.title?.trim() || '未命名会议';
+
+    /**
+     * 会前同步到会议平台。
+     *
+     * 同步失败**不回滚**本地会议：时间和人已经定了，只是少一个入会入口，
+     * 用户可以在腾讯会议里手动建。因为第三方挂了就把建会整个搞失败，
+     * 是比「没有链接」更糟的体验。
+     */
+    let external: {
+      externalId: string;
+      externalJoinUrl: string;
+      externalCode: string;
+    } | null = null;
+    let platformSyncError: string | undefined;
+
+    if (input.platform === 'tencent') {
+      if (!this.platform.enabled) {
+        platformSyncError =
+          '腾讯会议尚未配置，这场会只记在 MeetMind，没有入会链接';
+      } else {
+        try {
+          const created = await this.platform.createMeeting({
+            title,
+            startAt: when,
+            // 默认按 1 小时建会；会议表目前没有时长字段
+            endAt: new Date(when.getTime() + 60 * 60 * 1000),
+          });
+
+          external = {
+            externalId: created.externalId,
+            externalJoinUrl: created.joinUrl,
+            externalCode: created.code,
+          };
+        } catch (error) {
+          platformSyncError =
+            error instanceof Error ? error.message : '同步到腾讯会议失败';
+
+          this.logger.warn(`会议同步失败：${platformSyncError}`);
+        }
+      }
+    }
+
     const meeting = await this.prisma.meeting.create({
       data: {
-        title: input.title?.trim() || '未命名会议',
+        title,
         content: '',
         summary: null,
         status: 'READY',
@@ -321,11 +375,17 @@ export class MeetingsService {
         scheduledAt: when,
         leaders: { create: finalLeaderIds.map((userId) => ({ userId })) },
         members: { create: memberIds.map((userId) => ({ userId })) },
+        ...(external && {
+          sourcePlatform: this.platform.name,
+          externalId: external.externalId,
+          externalJoinUrl: external.externalJoinUrl,
+          externalCode: external.externalCode,
+        }),
       },
       include: meetingInclude,
     });
 
-    return this.toApiRecord(
+    const record = this.toApiRecord(
       meeting,
       'owner',
       user,
@@ -335,6 +395,9 @@ export class MeetingsService {
         audioOpen: meeting.audioOpen,
       }),
     );
+
+    // 同步失败是「提示」不是「错误」：会议已经建好了
+    return platformSyncError ? { ...record, platformSyncError } : record;
   }
 
   /**
@@ -838,6 +901,16 @@ export class MeetingsService {
       deadlineAt = parseDeadlineAt(data.deadline)
     }
 
+    /**
+     * 截止时间真的变了才重置提醒计数。
+     *
+     * 不重置的话，一条待办改到下周再改回来，会因为「已经提醒过 7 次」
+     * 而永久静音 —— 用户看不到提醒，也找不到原因。
+     */
+    const deadlineChanged =
+      (data.deadlineAt !== undefined || data.deadline !== undefined) &&
+      (deadlineAt?.getTime() ?? null) !== (todo.deadlineAt?.getTime() ?? null)
+
     // 未指定验收人（传了 null）时，默认会议负责人（多个时默认创建者）
     let resolvedReviewerId: number | null | undefined
     if (data.reviewerId !== undefined) {
@@ -873,9 +946,19 @@ export class MeetingsService {
           ...(data.deadline !== undefined && {
             deadline: data.deadline
           }),
+          // 只传了结构化时间、没传文本：补一个可读日期，别让列表显示空
+          ...(data.deadlineAt !== undefined &&
+            data.deadline === undefined &&
+            deadlineAt && {
+              deadline: formatCstDate(deadlineAt)
+            }),
           ...(data.deadlineAt !== undefined || data.deadline !== undefined
             ? { deadlineAt }
             : {}),
+          ...(deadlineChanged && {
+            overdueNotifiedAt: null,
+            overdueNotifyCount: 0,
+          }),
         }
       })
 
@@ -1630,11 +1713,26 @@ export class MeetingsService {
 
     // 待办状态与会议状态必须一起变，否则会出现
     // “待办全完成但会议仍显示进行中”的不一致状态。
+    /**
+     * 从未完成状态重新打开：事情又要做了，逾期提醒从头算。
+     * 不清零的话，一条关掉过的待办会带着「已提醒 7 次」的记录回来，
+     * 从此永久静音。
+     */
+    const reopened =
+      (status === 'OPEN' || status === 'IN_PROGRESS') &&
+      (todo.status === 'COMPLETED' || todo.status === 'CANCELLED')
+
     const [updated, completionStatus] = await this.prisma.$transaction(
       async (tx) => {
         const next = await tx.todo.update({
           where: { id },
-          data: { status },
+          data: {
+            status,
+            ...(reopened && {
+              overdueNotifiedAt: null,
+              overdueNotifyCount: 0,
+            }),
+          },
         });
 
         await tx.todoEvent.create({
@@ -2669,6 +2767,20 @@ export class MeetingsService {
     }
 
     // 新增的待办一定是未完成状态，因此会议不再是“全部完成”。
+    const createdDeadlineAt = data.deadlineAt
+      ? parseDeadlineAt(data.deadlineAt)
+      : parseDeadlineAt(data.deadline)
+
+    /**
+     * 只给结构化时间、没给文本时，用日期补一个展示文本。
+     *
+     * 列表渲染的是 `deadline` 文本；留空的话，用户明明选了 11/09，
+     * 卡片上却写着「未指定」—— 看起来像没存上。
+     */
+    const createdDeadline =
+      data.deadline?.trim() ||
+      (createdDeadlineAt ? formatCstDate(createdDeadlineAt) : null)
+
     const [todo, completionStatus] = await this.prisma.$transaction(
       async (tx) => {
         const created = await tx.todo.create({
@@ -2678,10 +2790,8 @@ export class MeetingsService {
             assignee,
             assigneeUserId: data.assigneeUserId ?? null,
             reviewerId: reviewerId ?? null,
-            deadline: data.deadline?.trim() || null,
-            deadlineAt: data.deadlineAt
-              ? parseDeadlineAt(data.deadlineAt)
-              : parseDeadlineAt(data.deadline),
+            deadline: createdDeadline,
+            deadlineAt: createdDeadlineAt,
             status: 'OPEN',
             sortOrder: 0,
           },
@@ -2838,6 +2948,12 @@ export class MeetingsService {
       isDraft:
         meeting.status === 'FAILED' ||
         meeting.status === 'DRAFT',
+
+      // ---- 会议来源（腾讯会议等）----
+      // 前端据此显示「进入会议」按钮与会议号
+      sourcePlatform: meeting.sourcePlatform ?? null,
+      externalJoinUrl: meeting.externalJoinUrl ?? null,
+      externalCode: meeting.externalCode ?? null,
 
       // ---- 负责人与成员 ----
       leaders: (meeting.leaders ?? []).map((l) => ({

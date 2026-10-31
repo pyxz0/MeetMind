@@ -93,6 +93,17 @@ export class CreateScheduledMeetingDto {
   @IsArray()
   @IsInt({ each: true })
   memberIds?: number[];
+
+  /**
+   * 同步创建到哪个会议平台。
+   *
+   * 为空表示只在 MeetMind 记一场会（默认行为）；
+   * 传 tencent 时会调腾讯会议接口建会并回写入会链接。
+   * 同步失败不影响本地建会，返回体会带 platformSyncError。
+   */
+  @IsOptional()
+  @IsIn(['tencent'])
+  platform?: 'tencent';
 }
 
 /** 修改未开始会议的预约信息 */

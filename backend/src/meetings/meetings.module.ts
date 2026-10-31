@@ -8,9 +8,11 @@ import { MeetingShareController } from './meeting-share.controller'
 import { MeetingShareService } from './meeting-share.service'
 import { TodoAttachmentController } from './todo-attachment.controller'
 import { PrismaModule } from '../common/prisma.module'
+import { AiModule } from '../ai/ai.module'
+import { PlatformCoreModule } from '../platforms/platform-core.module'
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, AiModule, PlatformCoreModule],
   controllers: [
     MeetingsController,
     MeetingAudioController,
@@ -18,5 +20,7 @@ import { PrismaModule } from '../common/prisma.module'
     TodoAttachmentController,
   ],
   providers: [MeetingsService, MeetingAudioService, MeetingShareService],
+  // 平台回调需要复用录音存储（把云录制落到同一套 uploads 里）
+  exports: [MeetingAudioService],
 })
 export class MeetingsModule {}

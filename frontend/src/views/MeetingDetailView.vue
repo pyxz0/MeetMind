@@ -44,6 +44,7 @@ import MeetingAudioPlayer from '../components/MeetingAudioPlayer.vue'
 import MeetingResultComponent from '../components/MeetingResult.vue'
 import UserProfileDialog from '../components/UserProfileDialog.vue'
 import MeetingShareDialog from '../components/MeetingShareDialog.vue'
+import MeetingAskDrawer from '../components/MeetingAskDrawer.vue'
 const route = useRoute()
 const router = useRouter()
 
@@ -51,6 +52,18 @@ const meeting = ref<MeetingRecord | null>(null)
 
 /** 分享弹窗状态 */
 const shareDialogVisible = ref(false)
+
+/** 追问抽屉：只读问答，不改任何数据 */
+const askDrawerVisible = ref(false)
+
+/** 打开平台入会链接；noopener 防止新页面拿到 window.opener */
+const joinPlatformMeeting = () => {
+  const url = meeting.value?.externalJoinUrl
+
+  if (url) {
+    window.open(url, '_blank', 'noopener')
+  }
+}
 
 /** 个人主页名片：点负责人 / 成员 / 待办负责人 / 验收人 / 提交人都会打开 */
 const profileVisible = ref(false)
@@ -694,7 +707,7 @@ const handleUpdateTodo = async () => {
         }
       : {}
 
-    await updateTodo(editTodoForm.value.id, {
+    const updated = await updateTodo(editTodoForm.value.id, {
       content: editTodoForm.value.content.trim(),
       assigneeUserId: editTodoForm.value.assigneeUserId ?? null,
       reviewerId: editTodoForm.value.reviewerId ?? null,
@@ -708,7 +721,19 @@ const handleUpdateTodo = async () => {
       )
     }
 
-    ElMessage.success('待办修改成功')
+    /**
+     * 截止时间是自然语言、又没能解析成具体日期时，必须说清楚。
+     * 不说的话，这条待办永远不会触发逾期提醒，
+     * 用户只会觉得「到点了怎么没提醒我」。
+     */
+    if (updated?.deadline && !updated?.deadlineAt) {
+      ElMessage.warning(
+        `已保存，但「${updated.deadline}」没能解析成具体日期，到期不会提醒`
+      )
+    } else {
+      ElMessage.success('待办修改成功')
+    }
+
     editTodoDialogVisible.value = false
 
     await loadMeeting()
@@ -1717,9 +1742,21 @@ onMounted(async () => {
               <span v-if="!meeting.isOwner">他人共享</span>
 
               <span v-if="meeting.pinnedAt" class="foot-pin">已置顶</span>
+
+              <span v-if="meeting.externalCode" class="num">会议号 {{ meeting.externalCode }}</span>
             </div>
 
             <div class="foot-actions">
+              <!-- 从平台同步来的会议，入会链接是最常用的入口，放最前 -->
+              <el-button v-if="meeting.externalJoinUrl" type="primary" @click="joinPlatformMeeting">
+                进入会议
+              </el-button>
+
+              <!-- 追问放最前：看完纪要最想做的事是先问一句，而不是导出 -->
+              <el-button @click="askDrawerVisible = true">
+                问这场会
+              </el-button>
+
               <el-button v-if="canListenAudio && meeting.audioUrl" @click="scrollToAudio">
                 回听录音
               </el-button>
@@ -1837,7 +1874,15 @@ onMounted(async () => {
 
                   <span class="todo-due num" :class="{ overdue: todo.overdue }">
                     {{ todo.deadline || '未指定' }}
+
                     <span v-if="todo.overdue" class="due-flag">逾期</span>
+
+                    <!-- 有截止文本却解析不出日期：到期不会提醒，得让用户看见 -->
+                    <el-tooltip v-else-if="todo.deadline && !todo.deadlineAt"
+                      content="这句截止时间是自然语言，没能解析成具体日期，到期不会提醒。点「编辑」选一个日期。"
+                      placement="top">
+                      <span class="due-flag due-flag-soft">未确认</span>
+                    </el-tooltip>
                   </span>
 
                   <span class="todo-state">
@@ -1957,6 +2002,10 @@ onMounted(async () => {
 
   <!-- 共享：弹窗外壳由全局样式统一，内容由 MeetingShareDialog 承担 -->
   <MeetingShareDialog v-if="meeting" v-model="shareDialogVisible" :meeting-id="meeting.id"
+    :meeting-title="meeting.title || `会议 #${meeting.id}`" />
+
+  <!-- 追问：只读问答，回答不回写会议数据 -->
+  <MeetingAskDrawer v-if="meeting" v-model="askDrawerVisible" :meeting-id="meeting.id"
     :meeting-title="meeting.title || `会议 #${meeting.id}`" />
 
   <!-- 个人主页：点任何一个人名都能打开 -->
@@ -2573,6 +2622,12 @@ onMounted(async () => {
   font-size: 10px;
   line-height: 14px;
   border: 1px solid currentColor;
+}
+
+/* 「未确认」不是错误，只是提醒：颜色比逾期淡，别抢注意力 */
+.due-flag-soft {
+  color: var(--ochre);
+  cursor: help;
 }
 
 .todo-state {

@@ -14,6 +14,8 @@ import { UsersModule } from './users/users.module'
 import { InboxModule } from './inbox/inbox.module'
 import { MessagesModule } from './messages/messages.module'
 import { AuditModule } from './audit/audit.module'
+import { NotificationsModule } from './notifications/notifications.module'
+import { PlatformModule } from './platforms/platform.module'
 import { JwtAuthGuard } from './auth/jwt-auth.guard'
 
 @Module({
@@ -35,6 +37,10 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard'
     AiModule,
     MeetingsModule,
     AsrModule,
+    // 站内提醒的邮件出口，启动后自行定时扫描
+    NotificationsModule,
+    // 会议平台接入（腾讯会议回调、云录制同步）
+    PlatformModule,
   ],
   controllers: [AppController],
   providers: [

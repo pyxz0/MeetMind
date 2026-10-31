@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { createScheduledMeeting } from '../api/meeting'
+import { createScheduledMeeting, getPlatformStatus, type PlatformStatus } from '../api/meeting'
 import { listContacts, type Contact } from '../api/auth'
 
 const router = useRouter()
@@ -37,8 +37,26 @@ const form = reactive({
   title: '',
   scheduledAt: '' as string | number | Date | '',
   leaderIds: [] as number[],
-  memberIds: [] as number[]
+  memberIds: [] as number[],
+  /** 是否同时到腾讯会议建会 */
+  syncToTencent: false
 })
+
+/**
+ * 会议平台接入状态。
+ *
+ * 没配置就不显示同步勾选框 —— 给一个勾了也没效果的选项，
+ * 比不显示更让人困惑。
+ */
+const platform = ref<PlatformStatus | null>(null)
+
+const loadPlatform = async () => {
+  try {
+    platform.value = await getPlatformStatus()
+  } catch {
+    platform.value = null
+  }
+}
 
 const submitting = ref(false)
 
@@ -67,10 +85,22 @@ const submit = async () => {
       title: form.title.trim() || undefined,
       scheduledAt: when.toISOString(),
       leaderIds: form.leaderIds,
-      memberIds: form.memberIds
+      memberIds: form.memberIds,
+      platform:
+        form.syncToTencent && platform.value?.enabled ? 'tencent' : undefined
     })
 
-    ElMessage.success('正式会议已创建，参会人员会在开会前 20 分钟收到提醒')
+    /**
+     * 同步失败不是「创建失败」：会议已经在本地建好了。
+     * 用 warning 而不是 error，避免用户以为整件事没成。
+     */
+    if (meeting.platformSyncError) {
+      ElMessage.warning(`会议已创建，但腾讯会议同步失败：${meeting.platformSyncError}`)
+    } else if (meeting.externalJoinUrl) {
+      ElMessage.success('正式会议已创建，入会链接已生成')
+    } else {
+      ElMessage.success('正式会议已创建，参会人员会在开会前 20 分钟收到提醒')
+    }
 
     router.push(`/history/${meeting.id}`)
   } catch (error: any) {
@@ -82,6 +112,7 @@ const submit = async () => {
 }
 
 onMounted(loadContacts)
+onMounted(loadPlatform)
 </script>
 
 <template>
@@ -155,6 +186,17 @@ onMounted(loadContacts)
                 :loading="contactsLoading" style="width: 100%">
                 <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
               </el-select>
+            </el-form-item>
+
+            <!-- 没接入平台时整项不显示：勾了没反应比不显示更糟 -->
+            <el-form-item v-if="platform?.enabled" label="会议平台">
+              <el-checkbox v-model="form.syncToTencent">
+                同步创建到{{ platform.label }}
+              </el-checkbox>
+
+              <p class="mode-hint platform-hint">
+                会生成入会链接；会后云端录制会自动同步回来，用于生成纪要
+              </p>
             </el-form-item>
           </el-form>
 

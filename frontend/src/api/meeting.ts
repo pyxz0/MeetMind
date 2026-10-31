@@ -136,6 +136,31 @@ export interface MemberBrief {
 export interface MeetingRecord extends MeetingResult {
   id: number
   createdAt: string
+  /** 来源平台：null 表示 MeetMind 自建，tencent 表示同步自腾讯会议 */
+  sourcePlatform?: string | null
+  /** 入会链接（腾讯会议建会时回写） */
+  externalJoinUrl?: string | null
+  /** 会议号，给人念的那串数字 */
+  externalCode?: string | null
+  /**
+   * 建会时同步到腾讯会议的失败原因。
+   * 这是「提示」不是「错误」—— 会议已经在本地建好了，只是少了入会链接。
+   */
+  platformSyncError?: string
+}
+
+/** 会议平台接入状态：决定界面要不要显示「同步到腾讯会议」 */
+export interface PlatformStatus {
+  /** tencent / mock / off */
+  name: string
+  enabled: boolean
+  label: string
+}
+
+export const getPlatformStatus = async (): Promise<PlatformStatus> => {
+  const response = await api.get<PlatformStatus>('/platforms/status')
+
+  return response.data
 }
 
 /** 后端返回的相对路径转成可直接给 <audio> 使用的完整地址。 */
@@ -214,6 +239,10 @@ const normalizeMeeting = (data: any): MeetingRecord => {
     isOwner: data.isOwner ?? false,
     isLeader: data.isLeader ?? false,
     isMember: data.isMember ?? false,
+    // 会议来源与入会入口：显式列出，否则会被这个白名单函数丢掉
+    sourcePlatform: data.sourcePlatform ?? null,
+    externalJoinUrl: data.externalJoinUrl ?? null,
+    externalCode: data.externalCode ?? null,
     createdAt: data.created_at || data.createdAt
   }
 }
@@ -810,10 +839,18 @@ export const createScheduledMeeting = async (data: {
   scheduledAt: string
   leaderIds?: number[]
   memberIds?: number[]
+  /** 同时到会议平台建会；不传表示只记在 MeetMind */
+  platform?: 'tencent'
 }): Promise<MeetingRecord> => {
   const response = await api.post('/meetings/scheduled', data)
+  const record = normalizeMeeting(response.data)
 
-  return normalizeMeeting(response.data)
+  // 同步失败原因只在这一次响应里出现，不会被 normalize 保留
+  if (response.data?.platformSyncError) {
+    record.platformSyncError = response.data.platformSyncError
+  }
+
+  return record
 }
 
 /**
@@ -906,6 +943,47 @@ export const updateMeetingAudioOpen = async (
   const response = await api.patch(`/meetings/${id}/audio-open`, {
     audioOpen
   })
+
+  return response.data
+}
+
+/* =========================
+   会议追问
+   ========================= */
+
+/** 一条追问记录 */
+export interface MeetingChatMessageRecord {
+  id: number
+  role: 'USER' | 'ASSISTANT'
+  content: string
+  createdAt: string
+}
+
+/** 追问历史（最近 30 条），打开面板时回填 */
+export const listMeetingChat = async (
+  id: number
+): Promise<MeetingChatMessageRecord[]> => {
+  const response = await api.get<MeetingChatMessageRecord[]>(
+    `/meetings/${id}/chat`
+  )
+
+  return response.data
+}
+
+/**
+ * 就某场会议提问。
+ *
+ * 历史对话由服务端按会议 ID 自行读取，这里只传问题本身 ——
+ * 不把上下文放在客户端，避免被伪造。
+ */
+export const askMeeting = async (
+  id: number,
+  question: string
+): Promise<{ answer: string; createdAt: string }> => {
+  const response = await api.post<{ answer: string; createdAt: string }>(
+    `/meetings/${id}/ask`,
+    { question }
+  )
 
   return response.data
 }

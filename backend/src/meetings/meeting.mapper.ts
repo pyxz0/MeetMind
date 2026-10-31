@@ -22,6 +22,14 @@ export interface MeetingSummarySource {
   createdAt: Date;
   ownerId: number;
   audioOpen: boolean;
+  /** 来源平台；为空表示 MeetMind 自建 */
+  sourcePlatform?: string | null;
+  /** 平台侧会议 ID */
+  externalId?: string | null;
+  /** 入会链接 */
+  externalJoinUrl?: string | null;
+  /** 会议号 */
+  externalCode?: string | null;
   leaders?: Array<{ user: UserBrief }>;
   members?: Array<{ user: UserBrief }>;
   shares?: Array<{ permission: 'READ' | 'EDIT' }>;
@@ -49,6 +57,12 @@ export function mapMeetingSummary(
     pinnedAt: meeting.pinnedAt?.toISOString() ?? null,
     isDraft: meeting.status === 'FAILED' || meeting.status === 'DRAFT',
     createdAt: meeting.createdAt.toISOString(),
+
+    // 会议来源：前端据此显示「腾讯会议」标识与入会链接
+    sourcePlatform: meeting.sourcePlatform ?? null,
+    externalId: meeting.externalId ?? null,
+    externalJoinUrl: meeting.externalJoinUrl ?? null,
+    externalCode: meeting.externalCode ?? null,
 
     // 数量代替明细，前端列表只需展示"3 条待办"这类信息
     todoCount: meeting._count?.todos ?? 0,
