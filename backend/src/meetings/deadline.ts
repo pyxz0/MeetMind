@@ -169,7 +169,35 @@ export const parseDeadlineAt = (
     return endOfDay({ y, m, d: daysInMonth(y, m) });
   }
 
-  // 本周内 / 这周内 → 本周日
+  /**
+   * 范围词：「本周」「下周」「本月」。
+   *
+   * 模型提取待办时很爱这么写，而原来的解析只认「本周五」「本周内」，
+   * 遇到「本周」就返回 null —— 待办静默变成「没有截止时间」，
+   * 逾期提醒也就永远不会触发。
+   *
+   * 统一取**周期最后一天 23:59**，而不是周五：
+   * 宁可晚一天提醒，也不要把「本周完成」误判成周四就逾期。
+   */
+  const weekRange = text.match(/^(本|这|下|下下)周[内末]?$/);
+  if (weekRange) {
+    const monday = addDays(today, -weekdayIndex(today.dow));
+    const offset = weekRange[1] === '下' ? 1 : weekRange[1] === '下下' ? 2 : 0;
+
+    return endOfDay(addDays(monday, offset * 7 + 6));
+  }
+
+  const monthRange = text.match(/^(本|这|下)个?月$/);
+  if (monthRange) {
+    const offset = monthRange[1] === '下' ? 1 : 0;
+    const totalMonth = today.m - 1 + offset;
+    const y = today.y + Math.floor(totalMonth / 12);
+    const m = (totalMonth % 12) + 1;
+
+    return endOfDay({ y, m, d: daysInMonth(y, m) });
+  }
+
+  // 本周内 / 这周内 → 本周日（保留旧写法，与上面的范围词等价）
   if (/^(本|这)周[内末]$/.test(text)) {
     const monday = addDays(today, -weekdayIndex(today.dow));
 
