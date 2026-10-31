@@ -6,6 +6,15 @@ export default defineConfig({
   plugins: [vue()],
 
   server: {
+    /**
+     * 显式绑 IPv4。
+     *
+     * 不写时 Vite 用 'localhost'，在 Windows 上可能只解析到 ::1，
+     * 结果是浏览器输 127.0.0.1 打不开、只有 localhost 能用 ——
+     * 与 README 里写的地址对不上，排查起来很费时间。
+     */
+    host: '127.0.0.1',
+
     watch: {
       /**
        * 忽略工具产生的临时文件与目录。
