@@ -12,6 +12,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
+import { AiService } from '../ai/ai.service';
+import { AskMeetingDto } from '../ai/dto/ai.dto';
 import {
   CompletionStatusDto,
   CreateDraftDto,
@@ -46,7 +48,11 @@ import { PERMISSIONS } from '../auth/permissions';
  */
 @Controller('meetings')
 export class MeetingsController {
-  constructor(private readonly meetingsService: MeetingsService) {}
+  constructor(
+    private readonly meetingsService: MeetingsService,
+    // 追问复用 AI 模块的模型客户端，但不把 AI 相关逻辑搬进会议服务
+    private readonly aiService: AiService,
+  ) {}
 
   /** 保存 AI 生成的纪要结构 */
   @Post()
@@ -231,6 +237,31 @@ export class MeetingsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.meetingsService.findOne(id, user);
+  }
+
+  /**
+   * 就这份纪要提问。
+   *
+   * 挂在会议下而不是 /ai 下：权限本来就是按会议判定的，
+   * 路径也应当说明它读的是哪一场会议。
+   * 只读 —— 不改会议、不改待办，问答本身落库。
+   */
+  @Post(':id/ask')
+  askMeeting(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AskMeetingDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.aiService.askMeeting(id, dto.question, user);
+  }
+
+  /** 追问历史（最近 30 条），打开追问面板时回填 */
+  @Get(':id/chat')
+  listMeetingChat(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.aiService.listMeetingChat(id, user);
   }
 
   /**

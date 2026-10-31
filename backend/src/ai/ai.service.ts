@@ -1,4 +1,7 @@
 import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -9,7 +12,8 @@ import { NotFoundException } from '@nestjs/common';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
-import { assertCanWrite } from '../meetings/meetings.access';
+import { assertCanRead, assertCanWrite } from '../meetings/meetings.access';
+import { buildAskSystemPrompt } from './meeting-context';
 
 @Injectable()
 export class AiService {
@@ -659,4 +663,205 @@ deadline：截止时间
     };
   }
 
+  /* =========================================================
+     会议追问：只依据这一份纪要回答
+     ========================================================= */
+
+  /** 追问的限流窗口与配额 */
+  private static readonly ASK_WINDOW_MS = 60_000;
+  private static readonly ASK_LIMIT = 8;
+
+  /** 每个用户最近若干次提问的时间戳（进程内，单实例有效） */
+  private readonly askHits = new Map<number, number[]>();
+
+  /**
+   * 就某场会议提问。
+   *
+   * 这是一条**只读**链路：不改会议、不改待办、不产生任何业务副作用，
+   * 只有问答本身落库。用户问「把这条标成完成」，助手只会告诉他去哪改。
+   *
+   * 权限与详情页共用 assertCanRead：能打开这份纪要的人才能问，
+   * 看不到的人一律 404，不泄露会议是否存在。
+   */
+  async askMeeting(
+    meetingId: number,
+    question: string,
+    user: AuthenticatedUser,
+  ) {
+    await assertCanRead(this.prisma, user, meetingId);
+
+    const trimmed = question?.trim() ?? '';
+
+    if (!trimmed) {
+      throw new BadRequestException('请输入要问的问题');
+    }
+
+    this.assertAskQuota(user.id);
+
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id: meetingId },
+      select: {
+        id: true,
+        title: true,
+        content: true,
+        summary: true,
+        createdAt: true,
+        scheduledAt: true,
+        completionStatus: true,
+        decisions: {
+          select: { content: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+        todos: {
+          select: {
+            content: true,
+            assignee: true,
+            deadline: true,
+            status: true,
+          },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+
+    if (!meeting) {
+      throw new NotFoundException('会议记录不存在');
+    }
+
+    /**
+     * 最近 12 条 = 6 轮对话。
+     * 再往前模型也不会真的用上，只会白烧 token。
+     *
+     * 必须带 id 作为次序：一问一答是同一条 createMany 写进去的，
+     * created_at 完全相同，只按时间排序会让问和答的顺序随机颠倒。
+     */
+    const history = await this.prisma.meetingChatMessage.findMany({
+      where: { meetingId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 12,
+      select: { role: true, content: true },
+    });
+
+    const answer = await this.requestAnswer(
+      buildAskSystemPrompt(meeting),
+      history.reverse().map((item) => ({
+        role: item.role === 'USER' ? ('user' as const) : ('assistant' as const),
+        content: item.content,
+      })),
+      trimmed,
+    );
+
+    /**
+     * 问答落库：刷新页面还能看到，才对得起「记录」两个字。
+     * 落库失败不影响已经拿到的回答（用户已经看到了），只记日志。
+     */
+    try {
+      await this.prisma.meetingChatMessage.createMany({
+        data: [
+          { meetingId, userId: user.id, role: 'USER', content: trimmed },
+          { meetingId, userId: user.id, role: 'ASSISTANT', content: answer },
+        ],
+      });
+    } catch (error) {
+      this.logger.error(
+        `会议 ${meetingId} 追问落库失败`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+
+    return { answer, createdAt: new Date().toISOString() };
+  }
+
+  /** 追问历史（最近 30 条），打开抽屉时回填 */
+  async listMeetingChat(meetingId: number, user: AuthenticatedUser) {
+    await assertCanRead(this.prisma, user, meetingId);
+
+    const items = await this.prisma.meetingChatMessage.findMany({
+      where: { meetingId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 30,
+      select: { id: true, role: true, content: true, createdAt: true },
+    });
+
+    return items.reverse().map((item) => ({
+      id: item.id,
+      role: item.role,
+      content: item.content,
+      createdAt: item.createdAt.toISOString(),
+    }));
+  }
+
+  /** 调用模型拿回答；失败统一收敛成一句人能看懂的话 */
+  private async requestAnswer(
+    systemPrompt: string,
+    history: { role: 'user' | 'assistant'; content: string }[],
+    question: string,
+  ): Promise<string> {
+    try {
+      const response = await this.client.chat.completions.create({
+        model: process.env.DEEPSEEK_MODEL || 'deepseek-flash',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...history,
+          { role: 'user', content: question },
+        ],
+        // 读纪要要的是严谨，不是文采：温度压低，减少自由发挥
+        temperature: 0.2,
+        stream: false,
+      });
+
+      const answer = response.choices[0]?.message?.content?.trim();
+
+      if (!answer) {
+        throw new Error('模型没有返回内容');
+      }
+
+      return answer;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+
+      this.logger.error(`会议追问调用失败：${message}`);
+
+      throw new InternalServerErrorException('回答生成失败，请稍后重试');
+    }
+  }
+
+  /**
+   * 追问是唯一会实时烧额度的接口，单独设一道闸：
+   * 同一用户 60 秒内最多 8 次，超了回 429。
+   *
+   * 进程内计数，只对单实例有效；多副本部署需要换 Redis。
+   * 这里不追求精确，目的是挡住「按住回车连发」和顺手写的小脚本。
+   */
+  private assertAskQuota(userId: number) {
+    const now = Date.now();
+    const since = now - AiService.ASK_WINDOW_MS;
+
+    const recent = (this.askHits.get(userId) ?? []).filter((t) => t > since);
+
+    if (recent.length >= AiService.ASK_LIMIT) {
+      const oldest = recent[0] ?? now;
+      const waitSec = Math.max(
+        1,
+        Math.ceil((oldest + AiService.ASK_WINDOW_MS - now) / 1000),
+      );
+
+      throw new HttpException(
+        `问得有点快，${waitSec} 秒后再试`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    recent.push(now);
+    this.askHits.set(userId, recent);
+
+    // 防止 Map 随用户数无限增长：过期即删
+    if (this.askHits.size > 500) {
+      for (const [id, hits] of this.askHits) {
+        if (!hits.some((t) => t > since)) {
+          this.askHits.delete(id);
+        }
+      }
+    }
+  }
 }
