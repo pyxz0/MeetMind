@@ -184,6 +184,10 @@ const openAvatarDialog = () => {
 const emailForm = reactive({ email: authStore.user?.email ?? '' })
 const emailSaving = ref(false)
 
+/** 邮件提醒开关：切换即保存，不需要再点一次按钮 */
+const notifyEmail = ref(authStore.user?.notifyEmail ?? true)
+const notifySaving = ref(false)
+
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 
 const saveEmail = async () => {
@@ -217,8 +221,38 @@ const saveEmail = async () => {
   }
 }
 
-const saveName = async () => {
-  const name = nameForm.name.trim()
+/**
+ * 切换邮件提醒。
+ *
+ * 开关是「立刻生效」的心智模型，所以不等用户再点保存；
+ * 失败时把开关拨回去，避免界面显示开着、服务端其实关着。
+ */
+const saveNotifyEmail = async (value: boolean | string | number) => {
+  const next = Boolean(value)
+
+  notifySaving.value = true
+
+  try {
+    const updated = await updateProfile({ notifyEmail: next })
+    const { token, ...rest } = updated
+
+    authStore.setUser(rest)
+    notifyEmail.value = updated.notifyEmail ?? next
+
+    ElMessage.success(
+      next ? '已开启邮件提醒' : '已关闭邮件提醒，站内收件箱不受影响'
+    )
+  } catch (error: any) {
+    notifyEmail.value = !next
+
+    const message = error?.response?.data?.message ?? '保存失败'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+  } finally {
+    notifySaving.value = false
+  }
+}
+
+const saveName = async () => {  const name = nameForm.name.trim()
 
   if (!name) {
     ElMessage.warning('姓名不能为空')
@@ -460,6 +494,22 @@ const handleLogout = async () => {
             <el-button type="primary" :loading="emailSaving" @click="saveEmail">
               保存
             </el-button>
+
+            <!-- 邮件提醒是邮箱这一节的延伸：收不收，由用户自己定 -->
+            <div class="notify-row">
+              <div class="notify-copy">
+                <span class="notify-k">邮件提醒</span>
+
+                <p class="notify-d">
+                  {{ user?.email
+                    ? '会议开始前 20 分钟、待验收超过 24 小时，会发到这个邮箱。'
+                    : '还没有绑定邮箱，绑定后才会收到邮件。' }}
+                </p>
+              </div>
+
+              <el-switch v-model="notifyEmail" :loading="notifySaving" :disabled="notifySaving"
+                @change="saveNotifyEmail" />
+            </div>
           </section>
 
           <section class="sec">
@@ -545,6 +595,35 @@ const handleLogout = async () => {
   margin: -4px 0 14px;
   font-size: 12.5px;
   line-height: 1.8;
+  color: var(--ink-3);
+}
+
+/* 邮件提醒开关：与邮箱输入同一节，但视觉上单独成块，别和「保存」挤在一起 */
+.notify-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--rule-soft);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.notify-copy {
+  min-width: 0;
+}
+
+.notify-k {
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.notify-d {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.65;
   color: var(--ink-3);
 }
 

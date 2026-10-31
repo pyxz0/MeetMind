@@ -50,6 +50,8 @@ export const updateProfile = async (data: {
   avatar?: string
   /** 绑定邮箱；传空字符串表示解除绑定 */
   email?: string
+  /** 是否接收邮件提醒；站内收件箱不受影响 */
+  notifyEmail?: boolean
   currentPassword?: string
   newPassword?: string
 }): Promise<CurrentUser & { token?: string }> => {

@@ -52,6 +52,8 @@ export interface PublicUser {
   avatar: string | null;
   /** 绑定邮箱；为空表示未绑定，找回密码只能走管理员 */
   email: string | null;
+  /** 是否接收邮件提醒；站内收件箱不受该开关影响 */
+  notifyEmail: boolean;
   permissions: string[];
   createdAt: string;
 }
@@ -202,6 +204,7 @@ export class AuthService {
       email?: string;
       currentPassword?: string;
       newPassword?: string;
+      notifyEmail?: boolean;
     },
   ): Promise<PublicUser & { token?: string }> {
     const userId = actor.id;
@@ -216,6 +219,7 @@ export class AuthService {
       passwordHash?: string;
       avatar?: string | null;
       email?: string | null;
+      notifyEmail?: boolean;
       tokenVersion?: { increment: number };
     } = {};
 
@@ -280,6 +284,16 @@ export class AuthService {
       }
     }
 
+    /**
+     * 邮件提醒开关。
+     *
+     * 没绑邮箱时允许先打开 —— 用户可能是先设偏好、再去绑邮箱；
+     * 真正的拦截在投递侧（没邮箱自然不发）。
+     */
+    if (input.notifyEmail !== undefined) {
+      data.notifyEmail = Boolean(input.notifyEmail);
+    }
+
     if (input.newPassword !== undefined) {
       this.assertPasswordStrength(input.newPassword);
 
@@ -336,6 +350,7 @@ export class AuthService {
         nameChanged: data.name !== undefined,
         avatarChanged: data.avatar !== undefined,
         emailChanged: data.email !== undefined,
+        notifyEmailChanged: data.notifyEmail !== undefined,
         passwordChanged: data.passwordHash !== undefined,
       },
     });
@@ -371,6 +386,8 @@ export class AuthService {
     role: string;
     isActive: boolean;
     createdAt: Date;
+    /** 旧调用方可能不传，缺省按「开启」处理，与数据库默认值一致 */
+    notifyEmail?: boolean;
   }): PublicUser {
     const role = user.role as AppRole;
 
@@ -383,6 +400,7 @@ export class AuthService {
       isActive: user.isActive,
       avatar: user.avatar ?? null,
       email: user.email ?? null,
+      notifyEmail: user.notifyEmail ?? true,
       permissions: ROLE_PERMISSIONS[role] ?? [],
       createdAt: user.createdAt.toISOString(),
     };

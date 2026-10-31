@@ -4,6 +4,7 @@ import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 import { isOverdue } from '../meetings/deadline';
+import { formatCstShort } from '../common/datetime';
 
 /** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 落库的会议消息 */
 export type InboxNotificationType =
@@ -157,13 +158,14 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
         content: string;
       }> = [];
 
-      const pad = (n: number) => String(n).padStart(2, '0');
-
       for (const meeting of meetings) {
         const scheduledAt = meeting.scheduledAt as Date;
-        const when = `${pad(scheduledAt.getMonth() + 1)}/${pad(
-          scheduledAt.getDate(),
-        )} ${pad(scheduledAt.getHours())}:${pad(scheduledAt.getMinutes())}`;
+        /**
+         * 必须按 UTC+8 渲染，不能用 getHours()：
+         * 容器里是 UTC，会把 14:30 的会写成 06:30，
+         * 这条文案同时进收件箱和提醒邮件，写成错的比不发更糟。
+         */
+        const when = formatCstShort(scheduledAt);
 
         const recipients = new Set([
           ...meeting.leaders.map((l) => l.userId),

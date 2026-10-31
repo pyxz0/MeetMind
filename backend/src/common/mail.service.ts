@@ -113,6 +113,46 @@ export class MailService {
       return false;
     }
   }
+
+  /**
+   * 发送会议提醒摘要。
+   *
+   * 与重置邮件分开成两个方法，是因为它们的失败语义不同：
+   * 重置邮件失败要告诉用户「没发出去」，提醒邮件失败只需要下一轮重试，
+   * 不该弹任何东西打扰人。
+   *
+   * 返回 false 表示没投出去，调用方据此回滚投递标记。
+   */
+  async sendDigest(
+    to: string,
+    subject: string,
+    text: string,
+    html: string,
+  ): Promise<boolean> {
+    if (!this.transporter) {
+      return false;
+    }
+
+    try {
+      await this.transporter.sendMail({
+        from: this.from,
+        to,
+        subject,
+        text,
+        html,
+      });
+
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `提醒邮件发送失败 to=${to}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+
+      return false;
+    }
+  }
 }
 
 /** 姓名会进 HTML，必须转义，否则带尖括号的名字会破坏排版 */

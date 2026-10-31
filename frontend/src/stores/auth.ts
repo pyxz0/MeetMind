@@ -27,6 +27,8 @@ export interface CurrentUser {
   avatar?: string | null
   /** 绑定邮箱；为空表示未绑定，找回密码只能走管理员 */
   email?: string | null
+  /** 是否接收邮件提醒；站内收件箱不受该开关影响 */
+  notifyEmail?: boolean
   role: Role
   roleLabel: string
   isActive: boolean

@@ -1,4 +1,10 @@
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 /**
  * 登录入参。
@@ -63,6 +69,16 @@ export class UpdateProfileDto {
   @MinLength(8)
   @MaxLength(72)
   newPassword?: string;
+
+  /**
+   * 是否接收邮件提醒。
+   *
+   * 关掉之后站内收件箱照常，只是不再往邮箱推送 ——
+   * 「关不掉的通知」是这类系统最招人烦的地方，所以给一个明确的开关。
+   */
+  @IsOptional()
+  @IsBoolean()
+  notifyEmail?: boolean;
 }
 /** 校验重置令牌（进入重置页时先调，链接失效能立刻提示） */
 export class PasswordResetTokenDto {
