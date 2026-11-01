@@ -22,6 +22,15 @@ const loading = ref(false)
 /** 会议标题搜索关键词 */
 const searchKeyword = ref('')
 
+/** 命中字段的中文名，用于片段前缀 */
+const HIT_FIELDS: Record<string, string> = {
+  title: '标题',
+  summary: '摘要',
+  content: '原文',
+  decision: '决策',
+  todo: '待办'
+}
+
 /** 会议开始日期 */
 const startDate = ref('')
 
@@ -541,6 +550,14 @@ onMounted(() => {
                 </el-tag>
               </div>
 
+              <!-- 搜索命中：先看到「为什么匹配」，比让人重读一遍摘要快 -->
+              <div v-if="meeting.hits?.length" class="hits">
+                <div v-for="(hit, index) in meeting.hits" :key="index" class="hit-row">
+                  <span class="hit-tag">{{ HIT_FIELDS[hit.field] }}</span>
+                  <span class="hit-text">{{ hit.text }}</span>
+                </div>
+              </div>
+
               <div class="sec">
                 <div class="sec-h">
                   <span class="sec-n">一</span>
@@ -600,6 +617,36 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* ---------- 搜索命中片段 ---------- */
+.hits {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border-left: 2px solid var(--ochre);
+}
+
+.hit-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.hit-row + .hit-row {
+  margin-top: 2px;
+}
+
+.hit-tag {
+  flex-shrink: 0;
+  width: 28px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.hit-text {
+  min-width: 0;
+  word-break: break-word;
+}
 /* 登记簿行结构由全局 style.css 提供（.register / .reg-*），这里只放本页专有的部分 */
 
 /* ---------- 检索带 ---------- */

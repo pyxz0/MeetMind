@@ -17,6 +17,7 @@ import { PrismaService } from '../common/prisma.service';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isOverdue, parseDeadlineAt } from './deadline';
+import { collectHits, type SearchHit } from './search';
 import { formatCstDate } from '../common/datetime';
 import { mapMeetingSummary } from './meeting.mapper';
 import { buildMeetingMarkdown, markdownFilename } from './meeting-markdown';
@@ -1222,6 +1223,9 @@ export class MeetingsService {
       { status: { notIn: ['FAILED', 'DRAFT'] } },
     ];
 
+    /** 关键词（已裁剪）；空串表示不做全文过滤 */
+    const keyword = query.keyword?.trim() ?? '';
+
     if (query.upcoming) {
       conditions.push({ scheduledAt: { gt: now } });
     } else {
@@ -1239,11 +1243,10 @@ export class MeetingsService {
      * 关键词检索覆盖「标题 + 摘要 + 原文 + 决策 + 待办」。
      *
      * 列表只返回摘要字段，所以这里用 Prisma 的关系过滤（some）直接命中子表，
-     * 不需要把 decisions / todos 一起读出来；命中位置由前端提示说明。
+     * 不需要把 decisions / todos 一起读出来；
+     * 命中片段由下方的补查单独取，避免主查询被正文拖慢。
      */
-    if (query.keyword?.trim()) {
-      const keyword = query.keyword.trim();
-
+    if (keyword) {
       conditions.push({
         OR: [
           { title: { contains: keyword, mode: 'insensitive' } },
@@ -1322,6 +1325,19 @@ export class MeetingsService {
       this.prisma.meeting.count({ where: { AND: [...conditions, { pinnedAt: { not: null } }] } }),
     ]);
 
+    /**
+     * 有关键词时，补一次查询取命中片段。
+     *
+     * 只查当前页这十几条：主查询刻意不碰正文（`content` 动辄几十 KB），
+     * 但只把结果缩小、不说明「为什么匹配」，用户还得自己翻一遍才知道对不对。
+     */
+    const hitsByMeeting = keyword
+      ? await this.loadSearchHits(
+          rows.map((row) => row.id),
+          keyword,
+        )
+      : new Map<number, SearchHit[]>();
+
     return {
       items: rows.map((row) => {
         const access = this.resolveAccessFromRow(row, user);
@@ -1338,11 +1354,15 @@ export class MeetingsService {
             ? 'IN_PROGRESS'
             : row.completionStatus;
 
-        return mapMeetingSummary(
-          { ...row, completionStatus },
-          access,
-          capabilities,
-        );
+        return {
+          ...mapMeetingSummary(
+            { ...row, completionStatus },
+            access,
+            capabilities,
+          ),
+          // 有关键词时带上命中片段；没有则为空数组，前端无需判断字段是否存在
+          hits: hitsByMeeting.get(row.id) ?? [],
+        };
       }),
       total,
       pinnedTotal,
@@ -1350,6 +1370,60 @@ export class MeetingsService {
       pageSize,
       hasMore: page * pageSize < total,
     };
+  }
+
+  /**
+   * 取当前页这些会议的命中片段。
+   *
+   * 只在有关键词时调用，且 id 已限定在可见结果内，
+   * 因此不需要再套一次数据隔离条件。
+   */
+  private async loadSearchHits(
+    ids: number[],
+    keyword: string,
+  ): Promise<Map<number, SearchHit[]>> {
+    if (!ids.length) {
+      return new Map();
+    }
+
+    const match = (value: string) => ({
+      contains: value,
+      mode: 'insensitive' as const,
+    });
+
+    const rows = await this.prisma.meeting.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        title: true,
+        summary: true,
+        content: true,
+        decisions: {
+          where: { content: match(keyword) },
+          select: { content: true },
+          take: 3,
+        },
+        todos: {
+          where: { content: match(keyword) },
+          select: { content: true },
+          take: 3,
+        },
+      },
+    });
+
+    return new Map(
+      rows.map((row) => [
+        row.id,
+        collectHits({
+          title: row.title,
+          summary: row.summary,
+          content: row.content,
+          decisions: row.decisions.map((item) => item.content),
+          todos: row.todos.map((item) => item.content),
+          keyword,
+        }),
+      ]),
+    );
   }
 
   /** 从列表行推断当前用户的访问级别（与 resolveMeetingAccess 同规则） */

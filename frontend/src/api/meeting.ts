@@ -133,9 +133,17 @@ export interface MemberBrief {
   phone: string
 }
 
+/** 一条搜索命中片段：来自哪个字段、前后截取后的原文 */
+export interface SearchHit {
+  field: 'title' | 'summary' | 'content' | 'decision' | 'todo'
+  text: string
+}
+
 export interface MeetingRecord extends MeetingResult {
   id: number
   createdAt: string
+  /** 搜索命中片段；没传关键词时为空数组 */
+  hits?: SearchHit[]
   /** 来源平台：null 表示 MeetMind 自建，tencent 表示同步自腾讯会议 */
   sourcePlatform?: string | null
   /** 入会链接（腾讯会议建会时回写） */
@@ -239,6 +247,8 @@ const normalizeMeeting = (data: any): MeetingRecord => {
     isOwner: data.isOwner ?? false,
     isLeader: data.isLeader ?? false,
     isMember: data.isMember ?? false,
+    // 搜索命中片段：列表接口在有关键词时才返回
+    hits: Array.isArray(data.hits) ? data.hits : [],
     // 会议来源与入会入口：显式列出，否则会被这个白名单函数丢掉
     sourcePlatform: data.sourcePlatform ?? null,
     externalJoinUrl: data.externalJoinUrl ?? null,
