@@ -171,9 +171,11 @@ const relativeTime = (iso: string | null): string => {
 
 /**
  * 任务状态：
- * warn = 超过预期周期没动静，ok = 正常，bad = 上次失败，idle = 还没跑过
+ * skip = 主动跳过（未配置），warn = 超过预期周期没动静，
+ * bad = 上次失败，ok = 正常，idle = 还没跑过
  */
-const jobTone = (job: JobOverview): 'ok' | 'warn' | 'bad' | 'idle' => {
+const jobTone = (job: JobOverview): 'ok' | 'warn' | 'bad' | 'idle' | 'skip' => {
+  if (job.skipped) return 'skip'
   if (job.stale) return 'warn'
   if (job.lastStatus === 'FAILED') return 'bad'
   if (!job.lastStatus) return 'idle'
@@ -230,11 +232,15 @@ onMounted(loadJobs)
 
             <div class="job-main">
               <span class="job-label">{{ job.label }}</span>
-              <span class="job-meta">{{ job.interval }} · {{ relativeTime(job.lastRunAt) }}</span>
+              <span class="job-meta">
+                {{ job.interval }} ·
+                {{ job.skipped ? '未配置，已跳过' : relativeTime(job.lastRunAt) }}
+              </span>
             </div>
 
             <div class="job-stats">
-              <span v-if="job.stale" class="job-flag">可能已停</span>
+              <span v-if="job.skipped" class="job-flag job-flag-skip">未启用</span>
+              <span v-else-if="job.stale" class="job-flag">可能已停</span>
               <span v-else-if="job.lastStatus === 'FAILED'" class="job-flag">上次失败</span>
 
               <span class="job-count">
@@ -418,6 +424,16 @@ onMounted(loadJobs)
 .job-idle .job-dot {
   background: var(--ink-3);
   opacity: 0.5;
+}
+
+/* 未启用：比「没跑过」更淡，不制造焦虑 */
+.job-skip .job-dot {
+  background: var(--ink-3);
+  opacity: 0.3;
+}
+
+.job-flag-skip {
+  color: var(--ink-3);
 }
 
 .job-main {

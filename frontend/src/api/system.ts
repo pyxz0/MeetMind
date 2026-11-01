@@ -18,6 +18,8 @@ export interface JobOverview {
   lastAffected: number
   lastDurationMs: number
   lastError: string | null
+  /** 上次是主动跳过的（例如未配置 SMTP），与「没执行」不是一回事 */
+  skipped: boolean
   /** 近 24 小时有动作的次数 / 失败次数 */
   runs24h: number
   failures24h: number

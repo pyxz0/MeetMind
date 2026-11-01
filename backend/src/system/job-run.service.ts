@@ -55,6 +55,13 @@ export interface JobOverview extends JobDefinition {
   lastAffected: number;
   lastDurationMs: number;
   lastError: string | null;
+  /**
+   * 上次是被主动跳过的（例如未配置 SMTP）。
+   *
+   * 必须和「没执行」区分开：否则界面上「未配置」和「定时器挂了」
+   * 长得一模一样，等于换了个地方继续黑盒。
+   */
+  skipped: boolean;
   /** 近 24 小时有动作的次数 / 失败次数（来自数据库） */
   runs24h: number;
   failures24h: number;
@@ -69,6 +76,7 @@ interface Snapshot {
   affected: number;
   durationMs: number;
   error?: string;
+  skipped?: boolean;
 }
 
 @Injectable()
@@ -93,7 +101,7 @@ export class JobRunService {
    */
   async track(
     job: string,
-    fn: () => Promise<{ affected: number }>,
+    fn: () => Promise<{ affected: number; skipped?: boolean }>,
   ): Promise<void> {
     const at = new Date();
     const began = Date.now();
@@ -107,6 +115,7 @@ export class JobRunService {
         ok: true,
         affected: result.affected,
         durationMs,
+        skipped: result.skipped,
       });
 
       // 空跑不记：只留「真的发了东西」的痕迹
@@ -164,6 +173,7 @@ export class JobRunService {
         lastAffected: snap?.affected ?? 0,
         lastDurationMs: snap?.durationMs ?? 0,
         lastError: snap?.error ?? null,
+        skipped: snap?.skipped ?? false,
         runs24h: countOf(def.key, 'OK'),
         failures24h: countOf(def.key, 'FAILED'),
         lastFailureAt: failure?.ranAt.toISOString() ?? null,

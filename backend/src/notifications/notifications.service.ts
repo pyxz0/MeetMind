@@ -49,6 +49,17 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         '未配置 SMTP，邮件提醒不会发出（站内收件箱不受影响）',
       );
+
+      /**
+       * 仍然登记一次「跳过」。
+       * 不登记的话，管理端只会显示「未执行」，
+       * 和「定时器挂了」长得一模一样 —— 那这个功能就白做了。
+       */
+      void this.jobs.track('notice-delivery', async () => ({
+        affected: 0,
+        skipped: true,
+      }));
+
       return;
     }
 

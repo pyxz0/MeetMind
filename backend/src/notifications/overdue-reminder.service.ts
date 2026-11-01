@@ -78,6 +78,13 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     if (!this.mail.configured) {
       this.logger.warn('未配置 SMTP，待办逾期提醒不会发出');
+
+      // 与邮件投递同理：登记「跳过」，让人能区分「没配」和「卡住」
+      void this.jobs.track('overdue-reminder', async () => ({
+        affected: 0,
+        skipped: true,
+      }));
+
       return;
     }
 
