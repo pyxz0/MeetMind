@@ -475,6 +475,16 @@ onMounted(() => {
                 <span class="reg-sub num">
                   {{ formatDate(meeting.createdAt) }}
                 </span>
+
+                <!--
+                  搜索命中放在折叠态：搜完一眼就能看出「为什么匹配」，
+                  藏在展开区里等于让人逐条点开再判断。
+                -->
+                <div v-if="meeting.hits?.length" class="reg-hits">
+                  <span v-for="(hit, index) in meeting.hits" :key="index" class="reg-hit">
+                    <em>{{ HIT_FIELDS[hit.field] }}</em>{{ hit.text }}
+                  </span>
+                </div>
               </div>
 
               <span v-if="meeting.pinnedAt" class="reg-pin">置顶</span>
@@ -550,14 +560,6 @@ onMounted(() => {
                 </el-tag>
               </div>
 
-              <!-- 搜索命中：先看到「为什么匹配」，比让人重读一遍摘要快 -->
-              <div v-if="meeting.hits?.length" class="hits">
-                <div v-for="(hit, index) in meeting.hits" :key="index" class="hit-row">
-                  <span class="hit-tag">{{ HIT_FIELDS[hit.field] }}</span>
-                  <span class="hit-text">{{ hit.text }}</span>
-                </div>
-              </div>
-
               <div class="sec">
                 <div class="sec-h">
                   <span class="sec-n">一</span>
@@ -618,34 +620,29 @@ onMounted(() => {
 
 <style scoped>
 /* ---------- 搜索命中片段 ---------- */
-.hits {
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  background: var(--paper);
-  border-left: 2px solid var(--ochre);
-}
-
-.hit-row {
+/* 折叠态就显示，每条压成一行：列表不能被命中片段撑散 */
+.reg-hits {
   display: flex;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 1.8;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 5px;
 }
 
-.hit-row + .hit-row {
-  margin-top: 2px;
-}
-
-.hit-tag {
-  flex-shrink: 0;
-  width: 28px;
-  font-size: 11px;
+.reg-hit {
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.7;
   color: var(--ink-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.hit-text {
-  min-width: 0;
-  word-break: break-word;
+.reg-hit em {
+  margin-right: 6px;
+  padding: 0 3px;
+  font-size: 10px;
+  font-style: normal;
+  border: 1px solid var(--rule);
 }
 /* 登记簿行结构由全局 style.css 提供（.register / .reg-*），这里只放本页专有的部分 */
 
