@@ -16,6 +16,7 @@ import { MessagesModule } from './messages/messages.module'
 import { AuditModule } from './audit/audit.module'
 import { NotificationsModule } from './notifications/notifications.module'
 import { PlatformModule } from './platforms/platform.module'
+import { SystemModule } from './system/system.module'
 import { JwtAuthGuard } from './auth/jwt-auth.guard'
 
 @Module({
@@ -41,6 +42,8 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard'
     NotificationsModule,
     // 会议平台接入（腾讯会议回调、云录制同步）
     PlatformModule,
+    // 后台任务可观测：job_runs 与 /api/system/jobs
+    SystemModule,
   ],
   controllers: [AppController],
   providers: [

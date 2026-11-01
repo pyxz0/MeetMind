@@ -7,6 +7,7 @@ import {
   type AuditLogItem,
   type AuditLogQuery
 } from '../api/audit'
+import { getSystemJobs, type JobOverview } from '../api/system'
 
 const router = useRouter()
 
@@ -130,6 +131,59 @@ const rangeText = computed(() => {
 })
 
 onMounted(load)
+
+/* ---------- 后台任务 ---------- */
+
+const jobs = ref<JobOverview[]>([])
+const jobsLoading = ref(false)
+
+const loadJobs = async () => {
+  jobsLoading.value = true
+
+  try {
+    jobs.value = await getSystemJobs()
+  } catch {
+    // 拿不到就显示空，不影响下面的审计列表
+    jobs.value = []
+  } finally {
+    jobsLoading.value = false
+  }
+}
+
+/** 相对时间：3 分钟前 / 2 小时前 */
+const relativeTime = (iso: string | null): string => {
+  if (!iso) return '本次启动后还没执行'
+
+  const diff = Date.now() - new Date(iso).getTime()
+
+  if (diff < 60_000) return '刚刚'
+
+  const minutes = Math.floor(diff / 60_000)
+
+  if (minutes < 60) return `${minutes} 分钟前`
+
+  const hours = Math.floor(minutes / 60)
+
+  if (hours < 24) return `${hours} 小时前`
+
+  return `${Math.floor(hours / 24)} 天前`
+}
+
+/**
+ * 任务状态：
+ * warn = 超过预期周期没动静，ok = 正常，bad = 上次失败，idle = 还没跑过
+ */
+const jobTone = (job: JobOverview): 'ok' | 'warn' | 'bad' | 'idle' => {
+  if (job.stale) return 'warn'
+  if (job.lastStatus === 'FAILED') return 'bad'
+  if (!job.lastStatus) return 'idle'
+
+  return 'ok'
+}
+
+const failedJob = computed(() => jobs.value.find((job) => job.lastError) ?? null)
+
+onMounted(loadJobs)
 </script>
 
 <template>
@@ -154,6 +208,50 @@ onMounted(load)
           </el-button>
         </div>
       </header>
+
+      <!-- 后台任务：这些是「发出去才有价值」的活儿，静默失败最难发现 -->
+      <section class="job-band">
+        <div class="job-band-head">
+          <h2>后台任务</h2>
+
+          <button type="button" class="job-refresh" :disabled="jobsLoading" @click="loadJobs">
+            {{ jobsLoading ? '检查中…' : '重新检查' }}
+          </button>
+        </div>
+
+        <p class="job-band-desc">
+          会议提醒、邮件投递、逾期提醒都跑在后台定时器里。
+          超过预期周期没有动静会标成「可能已停」。
+        </p>
+
+        <ul v-if="jobs.length" class="job-list">
+          <li v-for="job in jobs" :key="job.key" class="job-row" :class="`job-${jobTone(job)}`">
+            <span class="job-dot" />
+
+            <div class="job-main">
+              <span class="job-label">{{ job.label }}</span>
+              <span class="job-meta">{{ job.interval }} · {{ relativeTime(job.lastRunAt) }}</span>
+            </div>
+
+            <div class="job-stats">
+              <span v-if="job.stale" class="job-flag">可能已停</span>
+              <span v-else-if="job.lastStatus === 'FAILED'" class="job-flag">上次失败</span>
+
+              <span class="job-count">
+                24h 内 {{ job.runs24h }} 次<template v-if="job.failures24h">，失败 {{ job.failures24h }} 次</template>
+              </span>
+            </div>
+          </li>
+        </ul>
+
+        <p v-else class="job-empty">
+          {{ jobsLoading ? '正在读取…' : '暂无任务信息' }}
+        </p>
+
+        <p v-if="failedJob" class="job-error">
+          {{ failedJob.label }}：{{ failedJob.lastError }}
+        </p>
+      </section>
 
       <!-- 筛选带 -->
       <div class="filter-bar">
@@ -235,6 +333,154 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* ---------- 后台任务 ---------- */
+.job-band {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  padding: 16px 18px;
+  margin-bottom: 20px;
+}
+
+.job-band-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.job-band-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.job-refresh {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.job-refresh:hover {
+  color: var(--ink);
+}
+
+.job-refresh:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.job-band-desc {
+  margin: 6px 0 12px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.job-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+}
+
+/* 四种状态只用一个圆点区分，颜色克制：正常是灰绿，异常才明显 */
+.job-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.job-ok .job-dot {
+  background: #4a8a63;
+}
+
+.job-warn .job-dot {
+  background: var(--ochre);
+}
+
+.job-bad .job-dot {
+  background: #b4453c;
+}
+
+.job-idle .job-dot {
+  background: var(--ink-3);
+  opacity: 0.5;
+}
+
+.job-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.job-label {
+  font-size: 12.5px;
+}
+
+.job-meta {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.job-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.job-flag {
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 15px;
+  border: 1px solid currentColor;
+}
+
+.job-warn .job-flag {
+  color: var(--ochre);
+}
+
+.job-bad .job-flag {
+  color: #b4453c;
+}
+
+.job-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.job-empty {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.job-error {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #b4453c;
+  word-break: break-all;
+}
+
 /* ---------- 筛选带 ---------- */
 .filter-bar {
   display: flex;

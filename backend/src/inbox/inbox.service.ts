@@ -1,6 +1,7 @@
 ﻿import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+import { JobRunService } from '../system/job-run.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 import { isOverdue } from '../meetings/deadline';
@@ -83,7 +84,10 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
   /** 上一次扫描「超时未验收」的时间戳，控制扫描频率 */
   private lastSubmissionSweep = 0;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jobs: JobRunService,
+  ) {}
 
   /**
    * 每分钟扫一次「即将开始的会议」，到期就发提醒。
@@ -94,19 +98,32 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
    */
   onModuleInit() {
     // 启动先跑一次，补上服务停机期间错过的提醒
-    void this.sendDueReminders();
-    void this.sendSubmissionReminders();
+    void this.runDueReminders();
+    void this.runSubmissionReminders();
     this.lastSubmissionSweep = Date.now();
 
     this.timer = setInterval(() => {
-      void this.sendDueReminders();
+      void this.runDueReminders();
 
       // 催办是「按天」的量级，没必要每分钟扫一次提交表
       if (Date.now() - this.lastSubmissionSweep >= 5 * 60 * 1000) {
         this.lastSubmissionSweep = Date.now();
-        void this.sendSubmissionReminders();
+        void this.runSubmissionReminders();
       }
     }, 60_000);
+  }
+
+  /** 会议开始提醒，包一层记录：失败不再静默 */
+  private runDueReminders() {
+    return this.jobs.track('inbox-reminder', async () => ({
+      affected: await this.sendDueReminders(),
+    }));
+  }
+
+  private runSubmissionReminders() {
+    return this.jobs.track('submission-reminder', async () => ({
+      affected: await this.sendSubmissionReminders(),
+    }));
   }
 
   onModuleDestroy() {
@@ -122,7 +139,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
    * 幂等：部分唯一索引 (user_id, meeting_id) WHERE kind='reminder'
    * 保证同一会议对同一人只会有一条提醒。
    */
-  async sendDueReminders() {
+  async sendDueReminders(): Promise<number> {
     const WINDOW_BEFORE_MS = 20 * 60 * 1000;
     const GRACE_AFTER_MS = 60 * 60 * 1000;
     const now = Date.now();
@@ -148,7 +165,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (!meetings.length) {
-        return;
+        return 0;
       }
 
       const rows: Array<{
@@ -183,7 +200,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (!rows.length) {
-        return;
+        return 0;
       }
 
       const result = await this.prisma.meetingNotice.createMany({
@@ -195,9 +212,12 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       if (result.count > 0) {
         this.logger.log(`已发送 ${result.count} 条会议开始提醒`);
       }
+
+      return result.count;
     } catch (error) {
-      // 定时任务失败不能影响接口，只记日志
+      // 定时任务失败不能影响接口，只记日志；同时抛给上层记录到 job_runs
       this.logger.error('发送会议提醒失败', error as Error);
+      throw error;
     }
   }
 
@@ -207,7 +227,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
    * 幂等：先用 updateMany 抢占 reminder_sent_at，抢到才发消息；
    * 多实例或并发扫描都不会重复催办。
    */
-  async sendSubmissionReminders() {
+  async sendSubmissionReminders(): Promise<number> {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     try {
@@ -270,9 +290,12 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       if (sent > 0) {
         this.logger.log(`已发送 ${sent} 条待验收催办`);
       }
+
+      return sent;
     } catch (error) {
-      // 定时任务失败不能影响接口，只记日志
+      // 定时任务失败不能影响接口，只记日志；同时抛给上层记录到 job_runs
       this.logger.error('发送待验收催办失败', error as Error);
+      throw error;
     }
   }
 

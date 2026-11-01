@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../common/prisma.module';
+import { SystemModule } from '../system/system.module';
 import { NotificationsService } from './notifications.service';
 import { OverdueReminderService } from './overdue-reminder.service';
 
@@ -14,7 +15,7 @@ import { OverdueReminderService } from './overdue-reminder.service';
  * 不重复 provide —— 否则会建出第二个 nodemailer 连接池。
  */
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, SystemModule],
   providers: [NotificationsService, OverdueReminderService],
   exports: [NotificationsService, OverdueReminderService],
 })

@@ -788,3 +788,25 @@ model PlatformEvent {
   @@index([status, receivedAt])
   @@map("platform_events")
 }
+
+/// 后台任务的执行记录。
+///
+/// 只记录「有动作」或「失败」的执行 —— 每分钟一条心跳会让表迅速膨胀，
+/// 而真正需要回溯的是「发了什么」和「什么时候挂的」；
+/// 「任务还活着吗」由接口读进程内状态回答，不必落库。
+model JobRun {
+  id         Int      @id @default(autoincrement())
+  /// 任务标识：inbox-reminder / submission-reminder / notice-delivery / overdue-reminder
+  job        String   @db.VarChar(40)
+  /// OK / FAILED
+  status     String   @db.VarChar(16)
+  /// 本次处理的条数
+  affected   Int      @default(0)
+  /// 耗时（毫秒）：用来发现「越来越慢」
+  durationMs Int      @default(0) @map("duration_ms")
+  error      String?  @db.Text
+  ranAt      DateTime @default(now()) @map("ran_at") @db.Timestamptz(3)
+
+  @@index([job, ranAt])
+  @@map("job_runs")
+}

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { MailService } from '../common/mail.service';
+import { JobRunService } from '../system/job-run.service';
 import {
   cstDayKey,
   cstHour,
@@ -71,6 +72,7 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
+    private readonly jobs: JobRunService,
   ) {}
 
   onModuleInit() {
@@ -80,11 +82,25 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
     }
 
     // 启动先检查一次：服务在 9 点之后才启动时，当天不该漏掉
-    void this.runIfDue();
+    void this.runTracked();
 
     this.timer = setInterval(() => {
-      void this.runIfDue();
+      void this.runTracked();
     }, CHECK_INTERVAL_MS);
+  }
+
+  /**
+   * 包一层记录。
+   *
+   * 注意 9 点前和「今天已跑过」都会返回 sent=0、ran=false，
+   * 这属于正常空转：只更新内存里的心跳，不写库。
+   */
+  private runTracked() {
+    return this.jobs.track('overdue-reminder', async () => {
+      const result = await this.runIfDue();
+
+      return { affected: result.sent };
+    });
   }
 
   onModuleDestroy() {
@@ -127,7 +143,8 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.logger.error('逾期提醒扫描失败', error as Error);
 
-      return { sent: 0, ran: false };
+      // 抛给上层写进 job_runs：静默吞掉等于这条链路没有观测
+      throw error;
     } finally {
       this.running = false;
     }
@@ -280,6 +297,9 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
         `逾期提醒已发出：${delivered.size} 条待办，覆盖 ${byRecipient.size} 人`,
       );
     }
+
+    // 一天只跑一次，顺手清掉 30 天前的任务记录，避免 job_runs 无限增长
+    await this.jobs.prune().catch(() => undefined);
 
     return delivered.size;
   }

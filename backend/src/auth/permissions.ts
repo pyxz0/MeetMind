@@ -36,6 +36,8 @@ export const PERMISSIONS = {
   USER_MANAGE_ADMIN: 'user:manage:admin',
   /** 查看审计日志 */
   AUDIT_READ: 'audit:read',
+  /** 查看后台任务运行状态（运维视角，不含业务数据） */
+  SYSTEM_READ: 'system:read',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -65,6 +67,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   PERMISSIONS.USER_READ,
   PERMISSIONS.USER_MANAGE,
   PERMISSIONS.AUDIT_READ,
+  PERMISSIONS.SYSTEM_READ,
 ];
 
 /** 超级管理员：全部权限 */

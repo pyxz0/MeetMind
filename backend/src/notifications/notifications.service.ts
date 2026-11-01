@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { MailService } from '../common/mail.service';
+import { JobRunService } from '../system/job-run.service';
 import {
   buildDigestHtml,
   buildDigestSubject,
@@ -40,6 +41,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
+    private readonly jobs: JobRunService,
   ) {}
 
   onModuleInit() {
@@ -51,13 +53,22 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     }
 
     // 启动先补一轮：服务停机期间产生的提醒不该丢
-    void this.flush();
+    void this.runDelivery();
 
     this.timer = setInterval(() => {
-      void this.flush();
+      void this.runDelivery();
     }, 2 * 60 * 1000);
 
     this.logger.log('邮件提醒已启用，每 2 分钟扫描一次未投递消息');
+  }
+
+  /** 投递一轮，包一层记录：失败不再静默 */
+  private runDelivery() {
+    return this.jobs.track('notice-delivery', async () => {
+      const result = await this.flush();
+
+      return { affected: result.delivered };
+    });
   }
 
   onModuleDestroy() {
