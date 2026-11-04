@@ -18,7 +18,10 @@ COPY package*.json ./
 COPY prisma ./prisma
 COPY prisma7.config.ts ./
 
-RUN npm ci
+# 官方源在国内经常几十分钟拉不完（2026-11-04 实测卡了 59 分钟，
+# 把 2C2G 的机器拖到 SSH 都连不上）。用 --registry 写在命令里，
+# 不改全局 .npmrc，缓存失效条件也更明确。
+RUN npm ci --registry=https://registry.npmmirror.com
 
 # ---------- 构建 ----------
 FROM deps AS builder

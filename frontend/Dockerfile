@@ -12,7 +12,8 @@ FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+# 同 backend：官方源在国内不可靠，换 npmmirror
+RUN npm ci --registry=https://registry.npmmirror.com
 
 COPY . .
 
@@ -27,7 +28,13 @@ RUN npm run build
 FROM ${NGINX_IMAGE} AS runtime
 
 # 站点配置就在本目录，构建上下文可直接 COPY
+#   nginx.conf       80 默认入口（IP 直连 / 探活）
+#   https.conf       域名 443 入口 + 80 跳转（证书缺失时容器会起不来，见部署脚本）
+#   app-common.conf  两者共用的路由与响应头
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY https.conf /etc/nginx/conf.d/https.conf
+COPY app-common.conf /etc/nginx/app-common.conf
+COPY security-headers.conf /etc/nginx/security-headers.conf
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 
