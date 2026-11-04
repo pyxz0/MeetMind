@@ -474,6 +474,11 @@ onMounted(() => {
 
                 <span class="reg-sub num">
                   {{ formatDate(meeting.createdAt) }}
+
+                  <!-- 有会议号的会，在列表里就标出来，不用点进去才知道能不能入会 -->
+                  <template v-if="meeting.externalCode">
+                    · 会议号 {{ meeting.externalCode }}
+                  </template>
                 </span>
 
                 <!--

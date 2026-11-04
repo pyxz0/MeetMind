@@ -66,6 +66,13 @@ const joinPlatformMeeting = () => {
 }
 
 /**
+ * 会议号按 3-3-3 分组：「498 330 226」比「498330226」好念得多。
+ * 只影响展示，复制时仍用原值。
+ */
+const formatJoinCode = (code: string): string =>
+  code.replace(/(\d{3})(?=\d)/g, '$1 ').trim()
+
+/**
  * 只有会议号、没有链接时的入会方式。
  *
  * 腾讯会议的入会链接带的是随机 dm 串，没法从会议号拼出来，
@@ -1645,6 +1652,25 @@ onMounted(async () => {
             </div>
           </header>
 
+          <!--
+            入会入口：填了会议号/链接才出现。
+            放在元信息栏下面而不是页脚 —— 沉在底部的话，
+            不翻到最后一屏根本看不见，等于白填。
+          -->
+          <div v-if="meeting.externalCode || meeting.externalJoinUrl" class="join-bar">
+            <span class="join-k">腾讯会议</span>
+
+            <span v-if="meeting.externalCode" class="join-code num">{{ formatJoinCode(meeting.externalCode) }}</span>
+
+            <el-button v-if="meeting.externalJoinUrl" type="primary" size="small" @click="joinPlatformMeeting">
+              进入会议
+            </el-button>
+
+            <el-button v-else size="small" @click="copyMeetingCode">
+              复制会议号
+            </el-button>
+          </div>
+
           <!-- 参会人员与录音开放：放在标题上方，先看人，再看事 -->
           <section class="sec sec-attendees">
             <div class="sec-h">
@@ -2405,6 +2431,25 @@ onMounted(async () => {
   display: flex;
   border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
+}
+
+/* 入会条：沿用元信息栏的视觉语言，但一眼能看出这行是可操作的 */
+.join-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.join-k {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.join-code {
+  font-size: 14px;
+  letter-spacing: 0.08em;
 }
 
 .field {
