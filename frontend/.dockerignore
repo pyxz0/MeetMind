@@ -10,3 +10,7 @@ coverage
 !.env.example
 *.log
 .vscode
+
+# 证书与 ACME 验证目录：绝不能进构建上下文（私钥会留在 build cache 里）
+certs
+acme-webroot

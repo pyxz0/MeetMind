@@ -62,3 +62,8 @@ pnpm-debug.log*
 # ---------- 数据库备份 ----------
 # 服务器上的 pg_dump 落在 /opt/meetmind/backups，含真实账号哈希，绝不能入库
 backups/
+
+# ---------- TLS 证书 ----------
+# acme.sh 签发的私钥与 ACME 校验目录，只存在于服务器，绝不能入库
+frontend/certs/
+frontend/acme-webroot/
