@@ -71,6 +71,29 @@ services:
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
       PORT: 3000
       TZ: Asia/Shanghai
+
+      # 邮件里拼链接用（重置密码、会议提醒、待办逾期）。
+      # 不传的话后端会回退到 http://localhost:5173，收件人点开是死链。
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
+
+      # 自助找回密码 / 会议提醒的 SMTP；留空则只写日志，不发信
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURE: ${SMTP_SECURE:-true}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+
+      # 会议平台接入：off（默认）/ mock（本地假数据）/ tencent（真实对接）
+      # 回调地址：https://<域名>/api/platforms/tencent/webhook（GET 验址 + POST 事件）
+      MEETING_PLATFORM: ${MEETING_PLATFORM:-off}
+      TENCENT_MEETING_APP_ID: ${TENCENT_MEETING_APP_ID:-}
+      TENCENT_MEETING_SDK_ID: ${TENCENT_MEETING_SDK_ID:-}
+      TENCENT_MEETING_SECRET_ID: ${TENCENT_MEETING_SECRET_ID:-}
+      TENCENT_MEETING_SECRET_KEY: ${TENCENT_MEETING_SECRET_KEY:-}
+      TENCENT_MEETING_USER_ID: ${TENCENT_MEETING_USER_ID:-}
+      TENCENT_MEETING_WEBHOOK_TOKEN: ${TENCENT_MEETING_WEBHOOK_TOKEN:-}
+      TENCENT_MEETING_OWNER_PHONE: ${TENCENT_MEETING_OWNER_PHONE:-}
     volumes:
       # 录音必须落盘持久化，否则重建容器就丢音频
       - uploads:/app/uploads
@@ -96,6 +119,13 @@ services:
         condition: service_started
     ports:
       - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      # 证书由宿主机上的 acme.sh 维护，容器只读挂载；
+      # 续期后 nginx -s reload 即可生效，不用重建镜像。
+      - ./frontend/certs:/etc/nginx/certs:ro
+      # ACME HTTP-01 校验文件的落地目录，80 端口的 /.well-known/acme-challenge/ 从这里读
+      - ./frontend/acme-webroot:/var/www/certbot:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
       interval: 15s
