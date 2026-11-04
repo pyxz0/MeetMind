@@ -6,6 +6,9 @@ import { extname } from 'node:path';
  *
  * 音频/视频交给 ASR；txt/md 直接当原文，不花转写费用。
  * 不支持 docx/pdf：解析它们要再加一层依赖，且会议录音才是主场景。
+ *
+ * 视频格式是给「腾讯会议本地录制」和「系统录屏」准备的：
+ * 云录制要商业版，多数人手上就是一个 mp4/mov 文件。
  */
 export const AUDIO_EXTENSIONS = [
   '.mp3',
@@ -16,6 +19,10 @@ export const AUDIO_EXTENSIONS = [
   '.ogg',
   '.amr',
   '.mp4',
+  '.mov',
+  '.mkv',
+  '.webm',
+  '.m4v',
 ] as const;
 
 export const TEXT_EXTENSIONS = ['.txt', '.md'] as const;
@@ -60,6 +67,14 @@ export const mimeOf = (filename: string): string => {
       return 'audio/amr';
     case '.mp4':
       return 'video/mp4';
+    case '.mov':
+      return 'video/quicktime';
+    case '.mkv':
+      return 'video/x-matroska';
+    case '.webm':
+      return 'video/webm';
+    case '.m4v':
+      return 'video/x-m4v';
     case '.md':
       return 'text/markdown; charset=utf-8';
     case '.txt':

@@ -39,7 +39,10 @@ const form = reactive({
   leaderIds: [] as number[],
   memberIds: [] as number[],
   /** 是否同时到腾讯会议建会 */
-  syncToTencent: false
+  syncToTencent: false,
+  /** 手动填写的会议号与入会链接 */
+  externalCode: '',
+  externalJoinUrl: ''
 })
 
 /**
@@ -87,7 +90,10 @@ const submit = async () => {
       leaderIds: form.leaderIds,
       memberIds: form.memberIds,
       platform:
-        form.syncToTencent && platform.value?.enabled ? 'tencent' : undefined
+        form.syncToTencent && platform.value?.enabled ? 'tencent' : undefined,
+      // 手填的会议号/链接：接口建会成功时后端以接口返回为准
+      externalCode: form.externalCode.trim() || undefined,
+      externalJoinUrl: form.externalJoinUrl.trim() || undefined
     })
 
     /**
@@ -198,6 +204,32 @@ onMounted(loadPlatform)
                 会生成入会链接；会后云端录制会自动同步回来，用于生成纪要
               </p>
             </el-form-item>
+
+            <!--
+              手动入会信息：没有 API 权限（腾讯会议需商业版）时的主路径。
+              用户在腾讯会议里建好会，把会议号或链接贴进来即可。
+            -->
+            <el-form-item label="腾讯会议号 / 入会链接（可选）">
+              <div class="join-fields">
+                <el-input
+                  v-model="form.externalCode"
+                  placeholder="会议号，例：123 456 789"
+                  maxlength="32"
+                  clearable
+                />
+
+                <el-input
+                  v-model="form.externalJoinUrl"
+                  placeholder="或贴入会链接，例：https://meeting.tencent.com/dm/xxxx"
+                  maxlength="512"
+                  clearable
+                />
+              </div>
+
+              <p class="mode-hint platform-hint">
+                填了之后，会议详情里会出现「入会」按钮；两者都填以接口同步结果为准
+              </p>
+            </el-form-item>
           </el-form>
 
           <el-button type="primary" size="large" class="mode-action" :loading="submitting" :disabled="!canSubmit"
@@ -226,6 +258,13 @@ onMounted(loadPlatform)
 </template>
 
 <style scoped>
+/* 会议号与入会链接上下排：两个都填时一眼能看清谁是哪个 */
+.join-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
 .upload-entry {
   display: flex;
   align-items: center;

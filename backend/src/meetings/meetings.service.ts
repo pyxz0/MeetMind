@@ -18,6 +18,7 @@ import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isOverdue, parseDeadlineAt } from './deadline';
 import { collectHits, type SearchHit } from './search';
+import { normalizeJoinUrl, normalizeMeetingCode } from './link';
 import { formatCstDate } from '../common/datetime';
 import { mapMeetingSummary } from './meeting.mapper';
 import { buildMeetingMarkdown, markdownFilename } from './meeting-markdown';
@@ -301,6 +302,8 @@ export class MeetingsService {
       leaderIds?: number[];
       memberIds?: number[];
       platform?: 'tencent';
+      externalCode?: string;
+      externalJoinUrl?: string;
     },
     user: AuthenticatedUser,
   ) {
@@ -324,6 +327,14 @@ export class MeetingsService {
     await this.assertUsersUsable([...finalLeaderIds, ...memberIds]);
 
     const title = input.title?.trim() || '未命名会议';
+
+    /**
+     * 用户手填的会议号/链接。
+     *
+     * 放在同步之前解析：格式不对要立刻报错，而不是等建完会议才发现。
+     */
+    const manualCode = normalizeMeetingCode(input.externalCode);
+    const manualUrl = normalizeJoinUrl(input.externalJoinUrl);
 
     /**
      * 会前同步到会议平台。
@@ -376,12 +387,20 @@ export class MeetingsService {
         scheduledAt: when,
         leaders: { create: finalLeaderIds.map((userId) => ({ userId })) },
         members: { create: memberIds.map((userId) => ({ userId })) },
-        ...(external && {
-          sourcePlatform: this.platform.name,
-          externalId: external.externalId,
-          externalJoinUrl: external.externalJoinUrl,
-          externalCode: external.externalCode,
-        }),
+        ...(external
+          ? {
+              // 只有接口建会才记来源与外部 ID；手填的不算「平台建的会议」
+              sourcePlatform: this.platform.name,
+              externalId: external.externalId,
+              externalJoinUrl: external.externalJoinUrl,
+              externalCode: external.externalCode,
+            }
+          : manualCode || manualUrl
+            ? {
+                externalJoinUrl: manualUrl,
+                externalCode: manualCode,
+              }
+            : {}),
       },
       include: meetingInclude,
     });
@@ -417,6 +436,8 @@ export class MeetingsService {
       scheduledAt?: string;
       leaderIds?: number[];
       memberIds?: number[];
+      externalCode?: string;
+      externalJoinUrl?: string;
     },
     user: AuthenticatedUser,
   ) {
@@ -473,6 +494,15 @@ export class MeetingsService {
       }
 
       data.scheduledAt = when;
+    }
+
+    // 补填或清空入会信息；传空串时 normalize 返回 null，等于清空
+    if (input.externalCode !== undefined) {
+      data.externalCode = normalizeMeetingCode(input.externalCode);
+    }
+
+    if (input.externalJoinUrl !== undefined) {
+      data.externalJoinUrl = normalizeJoinUrl(input.externalJoinUrl);
     }
 
     const nextLeaderIds =

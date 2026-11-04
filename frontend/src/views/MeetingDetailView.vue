@@ -65,6 +65,25 @@ const joinPlatformMeeting = () => {
   }
 }
 
+/**
+ * 只有会议号、没有链接时的入会方式。
+ *
+ * 腾讯会议的入会链接带的是随机 dm 串，没法从会议号拼出来，
+ * 所以退一步：复制号码，让人到腾讯会议里输入。
+ */
+const copyMeetingCode = async () => {
+  const code = meeting.value?.externalCode
+
+  if (!code) return
+
+  try {
+    await navigator.clipboard.writeText(code)
+    ElMessage.success('会议号已复制，打开腾讯会议输入即可')
+  } catch {
+    ElMessage.warning(`复制失败，请手动输入：${code}`)
+  }
+}
+
 /** 个人主页名片：点负责人 / 成员 / 待办负责人 / 验收人 / 提交人都会打开 */
 const profileVisible = ref(false)
 const profileUserId = ref<number | null>(null)
@@ -1750,6 +1769,11 @@ onMounted(async () => {
               <!-- 从平台同步来的会议，入会链接是最常用的入口，放最前 -->
               <el-button v-if="meeting.externalJoinUrl" type="primary" @click="joinPlatformMeeting">
                 进入会议
+              </el-button>
+
+              <!-- 手填的只有会议号：拼不出链接，改为复制 -->
+              <el-button v-else-if="meeting.externalCode" type="primary" plain @click="copyMeetingCode">
+                复制会议号
               </el-button>
 
               <!-- 追问放最前：看完纪要最想做的事是先问一句，而不是导出 -->

@@ -851,6 +851,9 @@ export const createScheduledMeeting = async (data: {
   memberIds?: number[]
   /** 同时到会议平台建会；不传表示只记在 MeetMind */
   platform?: 'tencent'
+  /** 手动填写的会议号 / 入会链接（没有 API 权限时用） */
+  externalCode?: string
+  externalJoinUrl?: string
 }): Promise<MeetingRecord> => {
   const response = await api.post('/meetings/scheduled', data)
   const record = normalizeMeeting(response.data)

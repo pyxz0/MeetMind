@@ -252,7 +252,7 @@ onBeforeUnmount(stopPolling)
           :show-file-list="false"
           :http-request="handleUpload"
           :disabled="uploading"
-          accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.amr,.mp4,.txt,.md"
+          accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.amr,.mp4,.mov,.mkv,.webm,.m4v,.txt,.md"
         >
           <div class="up-main">
             <span class="up-title">
@@ -260,7 +260,7 @@ onBeforeUnmount(stopPolling)
             </span>
 
             <span class="up-sub">
-              支持 mp3 / wav / m4a / aac / flac / ogg / amr / mp4，单个不超过 300MB；纯文本 txt / md 直接读原文
+              支持 mp3 / wav / m4a / aac / flac / ogg / amr，以及 mp4 / mov / mkv / webm 等视频，单个不超过 300MB；纯文本 txt / md 直接读原文
             </span>
           </div>
         </el-upload>

@@ -104,6 +104,23 @@ export class CreateScheduledMeetingDto {
   @IsOptional()
   @IsIn(['tencent'])
   platform?: 'tencent';
+
+  /**
+   * 手动填写的会议号与入会链接。
+   *
+   * 走 OpenAPI 自动建会需要腾讯会议商业版；没有 API 权限时，
+   * 用户在腾讯会议里自己建会，把会议号或链接贴进来即可一键入会。
+   * 与 platform 同时传时，以接口返回的为准。
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  externalCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  externalJoinUrl?: string;
 }
 
 /** 修改未开始会议的预约信息 */
@@ -126,6 +143,17 @@ export class UpdateScheduledMeetingDto {
   @IsArray()
   @IsInt({ each: true })
   memberIds?: number[];
+
+  /** 补填或修改会议号 / 入会链接；传空串表示清空 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  externalCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  externalJoinUrl?: string;
 }
 
 export class UpdateMeetingTitleDto {
