@@ -94,6 +94,13 @@ services:
       TENCENT_MEETING_USER_ID: ${TENCENT_MEETING_USER_ID:-}
       TENCENT_MEETING_WEBHOOK_TOKEN: ${TENCENT_MEETING_WEBHOOK_TOKEN:-}
       TENCENT_MEETING_OWNER_PHONE: ${TENCENT_MEETING_OWNER_PHONE:-}
+
+      # 腾讯云语音识别（录音文件识别）。是云账号的 API 密钥，
+      # 与上面会议应用的 SecretId/Key 是两套东西，别混。
+      # 配齐这两个后启动日志会从「转写通道：mock」变成「tencent」。
+      TENCENT_SECRET_ID: ${TENCENT_SECRET_ID:-}
+      TENCENT_SECRET_KEY: ${TENCENT_SECRET_KEY:-}
+      TENCENT_ASR_REGION: ${TENCENT_ASR_REGION:-ap-guangzhou}
     volumes:
       # 录音必须落盘持久化，否则重建容器就丢音频
       - uploads:/app/uploads
