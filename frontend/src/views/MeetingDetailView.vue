@@ -186,8 +186,16 @@ const isUpcoming = computed(() => {
   return new Date(meeting.value.scheduledAt).getTime() > Date.now()
 })
 
-/** 只有未开始的正式会议才允许改预约信息 */
-const canEditSchedule = computed(() => isUpcoming.value && canEdit.value)
+/**
+ * 预约信息（时间/人员）只有未开始时才能改；
+ * 会议号是记录性的，开完也能补 —— 后端对「只改入会信息」单独放行。
+ */
+const canEditSchedule = computed(
+  () => canEdit.value && !!meeting.value?.scheduledAt
+)
+
+/** 已到时间：弹窗里时间与人员置灰，只留会议号可填 */
+const scheduleLocked = computed(() => !isUpcoming.value)
 
 const scheduleDialogVisible = ref(false)
 const scheduleSubmitting = ref(false)
@@ -252,18 +260,33 @@ const submitSchedule = async () => {
   scheduleSubmitting.value = true
 
   try {
-    const updated = await updateScheduledMeeting(meeting.value.id, {
-      title: scheduleForm.title.trim(),
-      scheduledAt: when.toISOString(),
-      leaderIds: scheduleForm.leaderIds,
-      memberIds: scheduleForm.memberIds,
-      joinText: scheduleForm.joinText.trim()
-    })
+    /**
+     * 会议已到时间时只提交会议号。
+     *
+     * 后端对「只改入会信息」单独放行，但只要请求里带上 scheduledAt，
+     * 就会被当成改预约而拒掉 —— 所以这里必须把时间人员整个省略。
+     */
+    const updated = await updateScheduledMeeting(
+      meeting.value.id,
+      scheduleLocked.value
+        ? { joinText: scheduleForm.joinText.trim() }
+        : {
+            title: scheduleForm.title.trim(),
+            scheduledAt: when.toISOString(),
+            leaderIds: scheduleForm.leaderIds,
+            memberIds: scheduleForm.memberIds,
+            joinText: scheduleForm.joinText.trim()
+          }
+    )
 
     meeting.value = updated
     scheduleDialogVisible.value = false
 
-    ElMessage.success('预约信息已更新，已通知参会人员')
+    ElMessage.success(
+      scheduleLocked.value
+        ? '会议号已保存'
+        : '预约信息已更新，已通知参会人员'
+    )
   } catch (error: any) {
     const message = error?.response?.data?.message ?? '修改失败'
     ElMessage.error(Array.isArray(message) ? message.join('；') : message)
@@ -2058,31 +2081,36 @@ onMounted(async () => {
   <!-- 个人主页：点任何一个人名都能打开 -->
   <UserProfileDialog v-model="profileVisible" :user-id="profileUserId" />
 
-  <el-dialog v-model="scheduleDialogVisible" title="编辑预约信息" width="520px">
+  <el-dialog v-model="scheduleDialogVisible" :title="scheduleLocked ? '补填会议号' : '编辑预约信息'" width="520px">
     <p class="note note-flat">
-      保存后会立即通知全部参会人员。会议一旦到达开会时间，就不能再改时间与人员。
+      <template v-if="scheduleLocked">
+        会议已到时间，时间与人员不能再改；会议号属于记录信息，随时可以补。
+      </template>
+      <template v-else>
+        保存后会立即通知全部参会人员。会议一旦到达开会时间，就不能再改时间与人员。
+      </template>
     </p>
 
     <el-form label-width="96px">
       <el-form-item label="会议标题">
-        <el-input v-model="scheduleForm.title" maxlength="200" placeholder="会议标题" />
+        <el-input v-model="scheduleForm.title" maxlength="200" placeholder="会议标题" :disabled="scheduleLocked" />
       </el-form-item>
 
       <el-form-item label="开会时间">
         <el-date-picker v-model="scheduleForm.scheduledAt" type="datetime" placeholder="选择开会时间"
-          format="YYYY-MM-DD HH:mm" style="width: 100%" />
+          format="YYYY-MM-DD HH:mm" style="width: 100%" :disabled="scheduleLocked" />
       </el-form-item>
 
       <el-form-item label="负责人">
         <el-select v-model="scheduleForm.leaderIds" multiple filterable placeholder="选择负责人"
-          :loading="contactsLoading" style="width: 100%">
+          :loading="contactsLoading" style="width: 100%" :disabled="scheduleLocked">
           <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
         </el-select>
       </el-form-item>
 
       <el-form-item label="参会成员">
         <el-select v-model="scheduleForm.memberIds" multiple filterable placeholder="选择参会成员"
-          :loading="contactsLoading" style="width: 100%">
+          :loading="contactsLoading" style="width: 100%" :disabled="scheduleLocked">
           <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
         </el-select>
       </el-form-item>
@@ -2101,7 +2129,7 @@ onMounted(async () => {
     <template #footer>
       <el-button @click="scheduleDialogVisible = false">取消</el-button>
       <el-button type="primary" :loading="scheduleSubmitting" @click="submitSchedule">
-        保存并通知
+        {{ scheduleLocked ? '保存会议号' : '保存并通知' }}
       </el-button>
     </template>
   </el-dialog>
