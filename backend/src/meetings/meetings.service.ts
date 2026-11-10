@@ -1409,6 +1409,14 @@ export class MeetingsService {
           createdAt: true,
           ownerId: true,
           audioOpen: true,
+          /*
+           * 列表要显示会议号和「入会」按钮。
+           * 不加这两行，mapper 拿到 undefined 一律输出 null，
+           * 前端 v-if 判断不成立 —— 列表上什么都不会出现，
+           * 而且不报错，只能靠对着界面才发现。
+           */
+          externalCode: true,
+          externalJoinUrl: true,
           leaders: { select: { user: { select: USER_BRIEF_SELECT } } },
           members: { select: { user: { select: USER_BRIEF_SELECT } } },
           shares: {
