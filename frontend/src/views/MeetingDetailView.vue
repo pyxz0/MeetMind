@@ -1788,7 +1788,7 @@ onMounted(async () => {
 
               <span v-if="meeting.pinnedAt" class="foot-pin">已置顶</span>
 
-              <span v-if="meeting.externalCode" class="num">会议号 {{ meeting.externalCode }}</span>
+              <span v-if="meeting.externalCode" class="num">会议号 {{ formatJoinCode(meeting.externalCode) }}</span>
             </div>
 
             <div class="foot-actions">
@@ -1797,9 +1797,7 @@ onMounted(async () => {
                 进入会议
               </el-button>
 
-              <el-button v-if="meeting.externalCode" type="primary" plain @click="copyMeetingCode">
-                复制会议号
-              </el-button>
+              <!-- 复制会议号只放顶部那条入会条里：底部已经有 7 个按钮，重复摆一个只会更挤 -->
 
               <!-- 追问放最前：看完纪要最想做的事是先问一句，而不是导出 -->
               <el-button @click="askDrawerVisible = true">
@@ -3134,8 +3132,9 @@ onMounted(async () => {
 }
 
 .foot-meta {
-  flex: 1;
-  min-width: 0;
+  /* 不小于 240px：不加的话按钮一多就把「创建于…」压成竖排单字 */
+  flex: 1 1 240px;
+  min-width: 240px;
 
   display: flex;
   flex-wrap: wrap;
