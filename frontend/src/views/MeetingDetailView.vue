@@ -1844,7 +1844,7 @@ onMounted(async () => {
               </el-button>
 
               <el-button v-if="canEditSchedule" @click="openScheduleDialog">
-                编辑预约信息
+                {{ isUpcoming ? '编辑预约信息' : '补填会议号' }}
               </el-button>
 
               <el-button v-if="canEdit" :loading="pinning" @click="handleTogglePin">
