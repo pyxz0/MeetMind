@@ -4,6 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadUserFile } from 'element-plus'
 import {
+  copyMeetingCode as copyCode,
+  formatJoinCode,
+  openMeeting
+} from '../utils/join'
+import {
   getMeeting,
   updateTodoStatus,
   createTodo,
@@ -56,39 +61,18 @@ const shareDialogVisible = ref(false)
 /** 追问抽屉：只读问答，不改任何数据 */
 const askDrawerVisible = ref(false)
 
-/** 打开平台入会链接；noopener 防止新页面拿到 window.opener */
+/** 一键入会；只判断能否入会，具体怎么打开在 utils/join 里 */
 const joinPlatformMeeting = () => {
-  const url = meeting.value?.externalJoinUrl
+  const current = meeting.value
 
-  if (url) {
-    window.open(url, '_blank', 'noopener')
+  if (current) {
+    openMeeting(current)
   }
 }
 
-/**
- * 会议号按 3-3-3 分组：「498 330 226」比「498330226」好念得多。
- * 只影响展示，复制时仍用原值。
- */
-const formatJoinCode = (code: string): string =>
-  code.replace(/(\d{3})(?=\d)/g, '$1 ').trim()
-
-/**
- * 只有会议号、没有链接时的入会方式。
- *
- * 腾讯会议的入会链接带的是随机 dm 串，没法从会议号拼出来，
- * 所以退一步：复制号码，让人到腾讯会议里输入。
- */
-const copyMeetingCode = async () => {
-  const code = meeting.value?.externalCode
-
-  if (!code) return
-
-  try {
-    await navigator.clipboard.writeText(code)
-    ElMessage.success('会议号已复制，打开腾讯会议输入即可')
-  } catch {
-    ElMessage.warning(`复制失败，请手动输入：${code}`)
-  }
+/** 模板里直接用，复制失败时由工具函数给提示 */
+const copyMeetingCode = () => {
+  void copyCode(meeting.value?.externalCode)
 }
 
 /** 个人主页名片：点负责人 / 成员 / 待办负责人 / 验收人 / 提交人都会打开 */
@@ -1662,11 +1646,11 @@ onMounted(async () => {
 
             <span v-if="meeting.externalCode" class="join-code num">{{ formatJoinCode(meeting.externalCode) }}</span>
 
-            <el-button v-if="meeting.externalJoinUrl" type="primary" size="small" @click="joinPlatformMeeting">
+            <el-button type="primary" size="small" @click="joinPlatformMeeting">
               进入会议
             </el-button>
 
-            <el-button v-else size="small" @click="copyMeetingCode">
+            <el-button v-if="meeting.externalCode" size="small" @click="copyMeetingCode">
               复制会议号
             </el-button>
           </div>
@@ -1792,13 +1776,12 @@ onMounted(async () => {
             </div>
 
             <div class="foot-actions">
-              <!-- 从平台同步来的会议，入会链接是最常用的入口，放最前 -->
-              <el-button v-if="meeting.externalJoinUrl" type="primary" @click="joinPlatformMeeting">
+              <!-- 入会是最常用的动作，无论有没有链接都放在最前 -->
+              <el-button v-if="meeting.externalJoinUrl || meeting.externalCode" type="primary" @click="joinPlatformMeeting">
                 进入会议
               </el-button>
 
-              <!-- 手填的只有会议号：拼不出链接，改为复制 -->
-              <el-button v-else-if="meeting.externalCode" type="primary" plain @click="copyMeetingCode">
+              <el-button v-if="meeting.externalCode" type="primary" plain @click="copyMeetingCode">
                 复制会议号
               </el-button>
 

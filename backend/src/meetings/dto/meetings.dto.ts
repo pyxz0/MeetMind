@@ -117,6 +117,18 @@ export class CreateScheduledMeetingDto {
   @MaxLength(32)
   externalCode?: string;
 
+  /**
+   * 会议号 / 入会链接 / 整段邀请文本，三者都能贴。
+   *
+   * 微信里复制的邀请是一整段（链接 + #腾讯会议：xxx），
+   * 让人自己拆成两个输入框填是没必要的负担。传了就整体解析，
+   * 与 externalCode / externalJoinUrl 二选一（前者优先）。
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  joinText?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(512)
@@ -154,6 +166,12 @@ export class UpdateScheduledMeetingDto {
   @IsString()
   @MaxLength(512)
   externalJoinUrl?: string;
+
+  /** 整段邀请文本 / 会议号 / 链接；传了就整体替换上面两项，空串表示清空 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  joinText?: string;
 }
 
 export class UpdateMeetingTitleDto {

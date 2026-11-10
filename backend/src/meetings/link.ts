@@ -51,3 +51,79 @@ export const normalizeJoinUrl = (raw?: string | null): string | null => {
   // 与 schema 的 VarChar(512) 对齐
   return value.slice(0, 512);
 };
+
+export interface JoinInfo {
+  /** 纯数字会议号（分隔符已去掉） */
+  code: string | null;
+  /** http/https 入会链接 */
+  joinUrl: string | null;
+}
+
+/** 从文本里挑出网址；中文标点要排除，否则「链接，」会把逗号吃进去 */
+const URL_PATTERN = /https?:\/\/[^\s<>"'，。、；：）】」》]+/i;
+
+/**
+ * 会议号前的标签，覆盖邀请文本里的常见写法：
+ *   #腾讯会议：498-330-226
+ *   会议号：498 330 226
+ *   会议 ID: 498330226
+ */
+const CODE_LABEL_PATTERN =
+  /(?:腾讯会议号?|会议号|会议\s*ID|Meeting\s*ID)\s*[:：#]?\s*(\d[\d\s-]{7,13}\d)/i;
+
+/** 客户端入会 scheme —— 用户可能从别处直接复制这条 */
+const WEMEET_SCHEME_PATTERN = /wemeet:\/\/[^\s]*meeting_code=(\d{9,11})/i;
+
+/** 链接本身带会议号的情况（少见，但解析成本为零） */
+const CODE_IN_URL_PATTERN = /[?&](?:meeting_code|meetingCode|code)=(\d{9,11})/i;
+
+/**
+ * 解析用户粘贴的一坨东西。
+ *
+ * 实际场景里没人只贴一个干净的会议号 —— 大多是微信里复制来的整段邀请：
+ *
+ *   张三 邀请你加入腾讯会议
+ *   点击链接直接加入会议：
+ *   https://meeting.tencent.com/dm/AbCd1234
+ *   #腾讯会议：498-330-226
+ *
+ * 让人自己从里面抠出会议号再分两次填，是没必要的负担。
+ */
+export const parseJoinInput = (raw?: string | null): JoinInfo => {
+  const text = (raw ?? '').trim();
+
+  if (!text) {
+    return { code: null, joinUrl: null };
+  }
+
+  const scheme = text.match(WEMEET_SCHEME_PATTERN);
+  const urlMatch = text.match(URL_PATTERN);
+  const joinUrl = urlMatch ? normalizeJoinUrl(urlMatch[0]) : null;
+
+  // 先把链接抠掉再找号，否则可能从 dm 串或参数里挖出一串数字当会议号
+  const rest = urlMatch ? text.replace(urlMatch[0], ' ') : text;
+
+  let code: string | null = null;
+
+  if (scheme) {
+    code = scheme[1];
+  } else {
+    const labeled = rest.match(CODE_LABEL_PATTERN);
+
+    if (labeled) {
+      code = normalizeMeetingCode(labeled[1]);
+    } else if (/^\s*\d[\d\s-]*$/.test(rest)) {
+      // 整段就是个号码，允许带空格和短横线
+      // 必须至少含一个数字：链接被抠掉后 rest 可能只剩空白
+      code = normalizeMeetingCode(rest);
+    } else if (joinUrl) {
+      code = joinUrl.match(CODE_IN_URL_PATTERN)?.[1] ?? null;
+    }
+  }
+
+  if (!code && !joinUrl) {
+    throw new BadRequestException('没认出会议号或入会链接，请检查后重试');
+  }
+
+  return { code, joinUrl };
+};

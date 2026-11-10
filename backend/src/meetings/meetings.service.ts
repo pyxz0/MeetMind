@@ -18,7 +18,11 @@ import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isOverdue, parseDeadlineAt } from './deadline';
 import { collectHits, type SearchHit } from './search';
-import { normalizeJoinUrl, normalizeMeetingCode } from './link';
+import {
+  normalizeJoinUrl,
+  normalizeMeetingCode,
+  parseJoinInput,
+} from './link';
 import { formatCstDate } from '../common/datetime';
 import { mapMeetingSummary } from './meeting.mapper';
 import { buildMeetingMarkdown, markdownFilename } from './meeting-markdown';
@@ -304,6 +308,7 @@ export class MeetingsService {
       platform?: 'tencent';
       externalCode?: string;
       externalJoinUrl?: string;
+      joinText?: string;
     },
     user: AuthenticatedUser,
   ) {
@@ -332,9 +337,17 @@ export class MeetingsService {
      * 用户手填的会议号/链接。
      *
      * 放在同步之前解析：格式不对要立刻报错，而不是等建完会议才发现。
+     * joinText 是「整段粘贴」入口（微信邀请文本），优先于两个分项字段。
      */
-    const manualCode = normalizeMeetingCode(input.externalCode);
-    const manualUrl = normalizeJoinUrl(input.externalJoinUrl);
+    const manual =
+      input.joinText !== undefined
+        ? parseJoinInput(input.joinText)
+        : {
+            code: normalizeMeetingCode(input.externalCode),
+            joinUrl: normalizeJoinUrl(input.externalJoinUrl),
+          };
+    const manualCode = manual.code;
+    const manualUrl = manual.joinUrl;
 
     /**
      * 会前同步到会议平台。
@@ -438,6 +451,7 @@ export class MeetingsService {
       memberIds?: number[];
       externalCode?: string;
       externalJoinUrl?: string;
+      joinText?: string;
     },
     user: AuthenticatedUser,
   ) {
@@ -497,12 +511,19 @@ export class MeetingsService {
     }
 
     // 补填或清空入会信息；传空串时 normalize 返回 null，等于清空
-    if (input.externalCode !== undefined) {
-      data.externalCode = normalizeMeetingCode(input.externalCode);
-    }
+    if (input.joinText !== undefined) {
+      // 整段文本是「整体替换」：解析出什么就是什么，解析不出就清空
+      const parsed = parseJoinInput(input.joinText);
+      data.externalCode = parsed.code;
+      data.externalJoinUrl = parsed.joinUrl;
+    } else {
+      if (input.externalCode !== undefined) {
+        data.externalCode = normalizeMeetingCode(input.externalCode);
+      }
 
-    if (input.externalJoinUrl !== undefined) {
-      data.externalJoinUrl = normalizeJoinUrl(input.externalJoinUrl);
+      if (input.externalJoinUrl !== undefined) {
+        data.externalJoinUrl = normalizeJoinUrl(input.externalJoinUrl);
+      }
     }
 
     const nextLeaderIds =

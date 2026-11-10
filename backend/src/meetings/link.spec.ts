@@ -13,7 +13,11 @@ jest.mock('@nestjs/common', () => {
 });
 
 import { BadRequestException } from '@nestjs/common';
-import { normalizeJoinUrl, normalizeMeetingCode } from './link';
+import {
+  normalizeJoinUrl,
+  normalizeMeetingCode,
+  parseJoinInput,
+} from './link';
 
 describe('normalizeMeetingCode', () => {
   it('去掉空格和短横线', () => {
@@ -87,5 +91,90 @@ describe('normalizeJoinUrl', () => {
     expect(normalizeJoinUrl('')).toBeNull();
     expect(normalizeJoinUrl('  ')).toBeNull();
     expect(normalizeJoinUrl(undefined)).toBeNull();
+  });
+});
+
+describe('parseJoinInput', () => {
+  it('只贴会议号', () => {
+    expect(parseJoinInput('498330226')).toEqual({
+      code: '498330226',
+      joinUrl: null,
+    });
+    expect(parseJoinInput('498 330 226')).toEqual({
+      code: '498330226',
+      joinUrl: null,
+    });
+  });
+
+  it('只贴链接', () => {
+    expect(parseJoinInput('https://meeting.tencent.com/dm/AbCd1234')).toEqual({
+      code: null,
+      joinUrl: 'https://meeting.tencent.com/dm/AbCd1234',
+    });
+  });
+
+  /** 主场景：微信里复制来的整段邀请 */
+  it('从整段邀请文本里同时取出链接和会议号', () => {
+    const invite = [
+      '张三 邀请你加入腾讯会议',
+      '会议主题：季度复盘',
+      '',
+      '点击链接直接加入会议：',
+      'https://meeting.tencent.com/dm/AbCd1234',
+      '',
+      '#腾讯会议：498-330-226',
+    ].join('\n');
+
+    expect(parseJoinInput(invite)).toEqual({
+      code: '498330226',
+      joinUrl: 'https://meeting.tencent.com/dm/AbCd1234',
+    });
+  });
+
+  it('认识「会议号：」和「会议 ID:」两种标签', () => {
+    expect(parseJoinInput('会议号：498 330 226').code).toBe('498330226');
+    expect(parseJoinInput('会议 ID: 498330226').code).toBe('498330226');
+  });
+
+  it('识别客户端 scheme，并且不把它当成 http 链接', () => {
+    expect(
+      parseJoinInput('wemeet://page/inmeeting?meeting_code=498330226'),
+    ).toEqual({ code: '498330226', joinUrl: null });
+  });
+
+  it('链接自带 meeting_code 时也能取到号', () => {
+    expect(
+      parseJoinInput(
+        'https://meeting.tencent.com/w/join?meeting_code=498330226',
+      ),
+    ).toEqual({
+      code: '498330226',
+      joinUrl: 'https://meeting.tencent.com/w/join?meeting_code=498330226',
+    });
+  });
+
+  /** 链接里那段 dm 串是字母数字混合，不能被当成会议号 */
+  it('不会从 dm 串里挖数字当会议号', () => {
+    expect(
+      parseJoinInput('https://meeting.tencent.com/dm/AbCd1234').code,
+    ).toBeNull();
+  });
+
+  it('链接末尾的中文标点不算进链接', () => {
+    expect(parseJoinInput('点击 https://meeting.tencent.com/dm/AbCd1234，即可入会')).toEqual({
+      code: null,
+      joinUrl: 'https://meeting.tencent.com/dm/AbCd1234',
+    });
+  });
+
+  it('认不出任何东西时给中文提示', () => {
+    expect(() => parseJoinInput('下午三点开会')).toThrow(BadRequestException);
+    expect(() => parseJoinInput('12345')).toThrow(BadRequestException);
+  });
+
+  it('空值返回两个 null，表示清空', () => {
+    expect(parseJoinInput('')).toEqual({ code: null, joinUrl: null });
+    expect(parseJoinInput('   ')).toEqual({ code: null, joinUrl: null });
+    expect(parseJoinInput(undefined)).toEqual({ code: null, joinUrl: null });
   });
 });

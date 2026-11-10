@@ -13,6 +13,7 @@ import {
   type MeetingRecord,
   type MeetingCompletionStatusValue
 } from '../api/meeting'
+import { formatJoinCode, openMeeting } from '../utils/join'
 
 const router = useRouter()
 
@@ -477,7 +478,7 @@ onMounted(() => {
 
                   <!-- 有会议号的会，在列表里就标出来，不用点进去才知道能不能入会 -->
                   <template v-if="meeting.externalCode">
-                    · 会议号 {{ meeting.externalCode }}
+                    · 会议号 {{ formatJoinCode(meeting.externalCode) }}
                   </template>
                 </span>
 
@@ -491,6 +492,12 @@ onMounted(() => {
                   </span>
                 </div>
               </div>
+
+              <!-- 入会入口放右侧：不用点进详情就能开会。stop 避免连带展开整行 -->
+              <button v-if="meeting.externalCode || meeting.externalJoinUrl" type="button" class="reg-join"
+                @click.stop="openMeeting(meeting)">
+                入会
+              </button>
 
               <span v-if="meeting.pinnedAt" class="reg-pin">置顶</span>
 

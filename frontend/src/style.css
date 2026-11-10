@@ -1251,6 +1251,28 @@ button.m-status:disabled {
   color: var(--ink-3);
 }
 
+/* 列表里的入会入口：描边小按钮，hover 才填色，不跟状态标记抢视线 */
+.reg-join {
+  flex-shrink: 0;
+  padding: 4px 13px;
+  border: 1px solid var(--brand);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--brand);
+  font-family: var(--num);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition:
+    background-color 0.16s,
+    color 0.16s;
+}
+
+.reg-join:hover {
+  background: var(--brand);
+  color: var(--paper);
+}
+
 /* 「置顶」徽标：琥珀字 + 纸底描边，前面一枚小方点当图钉，不抢状态色 */
 .reg-pin {
   flex-shrink: 0;
