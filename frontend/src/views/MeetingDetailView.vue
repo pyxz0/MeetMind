@@ -2447,6 +2447,8 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 窄屏（手机）下两个按钮会挤，允许换行 */
+  flex-wrap: wrap;
   padding: 10px 0;
   border-bottom: 1px solid var(--rule);
 }
