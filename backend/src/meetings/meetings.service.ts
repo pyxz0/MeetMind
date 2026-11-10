@@ -463,6 +463,8 @@ export class MeetingsService {
         id: true,
         title: true,
         scheduledAt: true,
+        externalCode: true,
+        externalJoinUrl: true,
         leaders: { select: { userId: true } },
         members: { select: { userId: true } },
       },
@@ -476,7 +478,23 @@ export class MeetingsService {
       throw new BadRequestException('只有预约的正式会议可以修改预约信息');
     }
 
-    if (current.scheduledAt.getTime() <= Date.now()) {
+    /**
+     * 只补会议号/链接时不受「会议已开始」限制。
+     *
+     * 时间、人员开完就定了，改了会误导参会人；但入会信息是记录性的，
+     * 会后补上一个会议号没有任何副作用 —— 而这恰恰是最常见的补填时机
+     * （会开完了才想起来把会议号记进 MeetMind）。
+     */
+    const onlyJoinInfo =
+      input.title === undefined &&
+      input.scheduledAt === undefined &&
+      input.leaderIds === undefined &&
+      input.memberIds === undefined &&
+      (input.joinText !== undefined ||
+        input.externalCode !== undefined ||
+        input.externalJoinUrl !== undefined);
+
+    if (current.scheduledAt.getTime() <= Date.now() && !onlyJoinInfo) {
       throw new BadRequestException('会议已开始，不能再修改预约信息');
     }
 
@@ -545,6 +563,35 @@ export class MeetingsService {
 
     // ---- 变更摘要，用于消息正文 ----
     const changes: string[] = [];
+
+    /**
+     * 入会信息也要算一次「修改」。
+     *
+     * 不算的话，只填会议号保存会命中下面那句「没有需要修改的内容」——
+     * 而补填会议号正是这个接口最常见的用法。
+     */
+    const touchedJoinInfo =
+      input.joinText !== undefined ||
+      input.externalCode !== undefined ||
+      input.externalJoinUrl !== undefined;
+
+    if (touchedJoinInfo) {
+      const nextCode =
+        data.externalCode === undefined
+          ? (current.externalCode ?? null)
+          : (data.externalCode as string | null);
+      const nextUrl =
+        data.externalJoinUrl === undefined
+          ? (current.externalJoinUrl ?? null)
+          : (data.externalJoinUrl as string | null);
+
+      if (
+        nextCode !== (current.externalCode ?? null) ||
+        nextUrl !== (current.externalJoinUrl ?? null)
+      ) {
+        changes.push(nextCode || nextUrl ? '入会信息已更新' : '入会信息已清空');
+      }
+    }
 
     if (data.title && data.title !== current.title) {
       changes.push(`名称改为「${data.title as string}」`);
