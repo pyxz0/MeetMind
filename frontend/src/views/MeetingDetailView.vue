@@ -196,7 +196,9 @@ const scheduleForm = reactive({
   title: '',
   scheduledAt: '' as string | number | Date | '',
   leaderIds: [] as number[],
-  memberIds: [] as number[]
+  memberIds: [] as number[],
+  /** 会议号 / 链接 / 整段邀请；编辑时回填现有值，允许会后补填 */
+  joinText: ''
 })
 
 const openScheduleDialog = async () => {
@@ -208,6 +210,19 @@ const openScheduleDialog = async () => {
     : ''
   scheduleForm.leaderIds = (meeting.value.leaders ?? []).map((l) => l.id)
   scheduleForm.memberIds = (meeting.value.members ?? []).map((m) => m.id)
+  /**
+   * 两个都回填。
+   *
+   * 只回填链接的话，保存后会议号会被清掉（解析出来是 null），
+   * 「复制会议号」按钮也随之消失 —— 编辑一次就丢一份信息，
+   * 用户根本发现不了是怎么没的。
+   */
+  scheduleForm.joinText = [
+    meeting.value.externalJoinUrl,
+    meeting.value.externalCode && formatJoinCode(meeting.value.externalCode)
+  ]
+    .filter(Boolean)
+    .join('\n')
 
   scheduleDialogVisible.value = true
 
@@ -241,7 +256,8 @@ const submitSchedule = async () => {
       title: scheduleForm.title.trim(),
       scheduledAt: when.toISOString(),
       leaderIds: scheduleForm.leaderIds,
-      memberIds: scheduleForm.memberIds
+      memberIds: scheduleForm.memberIds,
+      joinText: scheduleForm.joinText.trim()
     })
 
     meeting.value = updated
@@ -2071,6 +2087,16 @@ onMounted(async () => {
           :loading="contactsLoading" style="width: 100%">
           <el-option v-for="c in contacts" :key="c.id" :label="`${c.name}（${c.phone}）`" :value="c.id" />
         </el-select>
+      </el-form-item>
+
+      <!-- 建会时忘了填、或者会后才知道会议号，都靠这里补 -->
+      <el-form-item label="腾讯会议">
+        <el-input v-model="scheduleForm.joinText" type="textarea" :rows="2" resize="none" maxlength="1000"
+          placeholder="会议号、入会链接，或整段邀请文本；留空表示不填" />
+
+        <p class="note note-flat">
+          填了之后可以一键拉起腾讯会议入会
+        </p>
       </el-form-item>
     </el-form>
 

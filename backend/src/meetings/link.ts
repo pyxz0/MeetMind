@@ -116,8 +116,24 @@ export const parseJoinInput = (raw?: string | null): JoinInfo => {
       // 整段就是个号码，允许带空格和短横线
       // 必须至少含一个数字：链接被抠掉后 rest 可能只剩空白
       code = normalizeMeetingCode(rest);
-    } else if (joinUrl) {
-      code = joinUrl.match(CODE_IN_URL_PATTERN)?.[1] ?? null;
+    } else {
+      /**
+       * 单独一行的纯号码。
+       *
+       * 编辑会议时前端会把链接和会议号分两行回填，
+       * 带上「会议号：」这种标签反而显得多余。
+       * 只认「整行只有数字/空格/短横线」的行，避免误伤别的数字。
+       */
+      const lineCode = rest
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => /^\d[\d\s-]{7,13}$/.test(line));
+
+      if (lineCode) {
+        code = normalizeMeetingCode(lineCode);
+      } else if (joinUrl) {
+        code = joinUrl.match(CODE_IN_URL_PATTERN)?.[1] ?? null;
+      }
     }
   }
 

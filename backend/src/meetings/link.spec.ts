@@ -167,6 +167,16 @@ describe('parseJoinInput', () => {
     });
   });
 
+  it('链接和会议号分两行时都能取到', () => {
+    // 编辑会议时前端就是这么回填的：链接一行、号码一行，不带标签
+    expect(
+      parseJoinInput('https://meeting.tencent.com/dm/AbCd1234\n498 330 226'),
+    ).toEqual({
+      code: '498330226',
+      joinUrl: 'https://meeting.tencent.com/dm/AbCd1234',
+    });
+  });
+
   it('认不出任何东西时给中文提示', () => {
     expect(() => parseJoinInput('下午三点开会')).toThrow(BadRequestException);
     expect(() => parseJoinInput('12345')).toThrow(BadRequestException);

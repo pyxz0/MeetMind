@@ -877,6 +877,8 @@ export const updateScheduledMeeting = async (
     scheduledAt?: string
     leaderIds?: number[]
     memberIds?: number[]
+    /** 会议号 / 链接 / 整段邀请；空串表示清空 */
+    joinText?: string
   }
 ): Promise<MeetingRecord> => {
   const response = await api.patch(`/meetings/${id}/schedule`, data)
