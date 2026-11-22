@@ -16,6 +16,14 @@ import { formatCstShort } from '../common/datetime';
  */
 const INBOX_TODO_LIMIT = 200;
 
+/**
+ * 待认领池的展示上限。
+ *
+ * 池子比「我的待办」更容易堆东西 —— 一场会里 AI 没认出人名的待办会全部进来。
+ * 超过上限说明流程本身有问题（没人指派），不是靠翻更多页能解决的。
+ */
+const UNCLAIMED_LIMIT = 50;
+
 /** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 落库的会议消息 */
 export type InboxNotificationType =
   | 'leader'
@@ -98,6 +106,27 @@ export interface InboxReview {
   checklistDone: number;
   /** 指定的验收人；与当前用户不一致说明这条是代验收 */
   reviewerId: number | null;
+}
+
+/**
+ * 待认领的待办。
+ *
+ * 来源是「没有结构化负责人」的未完成待办 —— AI 提取时只给了「李总」「小王」
+ * 这类对不上账号的称呼，或者会上根本没点谁做。这类待办以前只能在会议详情里
+ * 干挂着，没人认领也就没人处理，闭环在这里断掉。
+ *
+ * 池子只对**可写会议**开放：只读共享给你的人看得见却点不了，不如不显示。
+ */
+export interface InboxUnclaimed {
+  id: number;
+  meetingId: number;
+  meetingTitle: string;
+  content: string;
+  /** AI 给出的姓名文本；认领人据此判断「这是不是我」 */
+  assigneeHint: string | null;
+  deadline: string | null;
+  deadlineAt: string | null;
+  overdue: boolean;
 }
 
 @Injectable()
@@ -335,6 +364,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       shares,
       todoItems,
       reviewItems,
+      unclaimedItems,
       seenAt,
       readRows,
       notices,
@@ -370,6 +400,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
         }),
         this.collectTodos(user),
         this.collectReviews(user),
+        this.collectUnclaimed(user),
         this.prisma.user.findUnique({
           where: { id: user.id },
           select: { inboxSeenAt: true },
@@ -475,6 +506,8 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       reviews: reviewItems.reviews,
       /** 被验收人打回、需要我重新提交的待办 */
       rejected: reviewItems.rejected,
+      /** 还没人负责的待办：谁认谁做 */
+      unclaimed: unclaimedItems,
       unreadCount,
       seenAt: seenAtDate?.toISOString() ?? null,
     };
@@ -623,6 +656,69 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 
       return aTime - bTime;
     });
+  }
+
+  /**
+   * 可认领的待办：没有结构化负责人、且还没结束。
+   *
+   * 认领权限按「可写会议」算，不是按「可见会议」算 —— 只读共享的人
+   * 在池子里看到一条却点不动，比看不见更糟。
+   */
+  private async collectUnclaimed(
+    user: AuthenticatedUser,
+  ): Promise<InboxUnclaimed[]> {
+    const rows = await this.prisma.todo.findMany({
+      where: {
+        assigneeUserId: null,
+        status: { in: ['OPEN', 'IN_PROGRESS'] },
+        meeting: { is: this.writableMeetingWhere(user) },
+      },
+      select: {
+        id: true,
+        content: true,
+        assignee: true,
+        deadline: true,
+        deadlineAt: true,
+        status: true,
+        meeting: { select: { id: true, title: true } },
+      },
+      // 快到期、已逾期的排前面；PG 的 ASC 默认 NULLS LAST
+      orderBy: [{ deadlineAt: 'asc' }, { id: 'asc' }],
+      take: UNCLAIMED_LIMIT,
+    });
+
+    return rows.map((todo) => ({
+      id: todo.id,
+      meetingId: todo.meeting.id,
+      meetingTitle: todo.meeting.title,
+      content: todo.content,
+      assigneeHint: todo.assignee,
+      deadline: todo.deadline,
+      deadlineAt: todo.deadlineAt?.toISOString() ?? null,
+      overdue: isOverdue(todo.deadlineAt, todo.status),
+    }));
+  }
+
+  /**
+   * 可写会议范围：能改这场会待办的会议。
+   *
+   * 与 visibleMeetingWhere 的差别只有一个：共享要 EDIT 权限。
+   */
+  private writableMeetingWhere(
+    user: AuthenticatedUser,
+  ): Prisma.MeetingWhereInput {
+    if (hasGlobalMeetingAccess(user)) {
+      return {};
+    }
+
+    return {
+      OR: [
+        { ownerId: user.id },
+        { leaders: { some: { userId: user.id } } },
+        { members: { some: { userId: user.id } } },
+        { shares: { some: { userId: user.id, permission: 'EDIT' } } },
+      ],
+    };
   }
 
   /**

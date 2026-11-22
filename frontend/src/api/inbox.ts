@@ -60,6 +60,19 @@ export interface InboxReview {
   reviewerId?: number | null
 }
 
+/** 还没人负责的待办：谁认谁做 */
+export interface InboxUnclaimed {
+  id: number
+  meetingId: number
+  meetingTitle: string
+  content: string
+  /** AI 给出的姓名文本，认领人据此判断是不是自己 */
+  assigneeHint: string | null
+  deadline: string | null
+  deadlineAt?: string | null
+  overdue?: boolean
+}
+
 export interface InboxData {
   notifications: InboxNotification[]
   todos: InboxTodo[]
@@ -67,6 +80,8 @@ export interface InboxData {
   reviews?: InboxReview[]
   /** 被我打回、需要重新提交的 */
   rejected?: InboxReview[]
+  /** 没有负责人的待办，可认领 */
+  unclaimed?: InboxUnclaimed[]
   unreadCount: number
   seenAt: string | null
 }

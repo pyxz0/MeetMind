@@ -6,8 +6,10 @@ import {
   getInbox,
   markInboxRead,
   type InboxData,
-  type InboxNotification
+  type InboxNotification,
+  type InboxUnclaimed
 } from '../api/inbox'
+import { claimTodo } from '../api/meeting'
 import { useInboxStore } from '../composables/inboxStore'
 import UserProfileDialog from '../components/UserProfileDialog.vue'
 import InboxTodoDrawer from '../components/InboxTodoDrawer.vue'
@@ -35,6 +37,7 @@ const activeTab = ref<'notifications' | 'todos' | 'reviews'>('notifications')
 const unreadCount = computed(() => data.value.unreadCount)
 const notificationCount = computed(() => data.value.notifications.length)
 const todoCount = computed(() => data.value.todos.length)
+const unclaimedCount = computed(() => data.value.unclaimed?.length ?? 0)
 const reviewCount = computed(() => data.value.reviews?.length ?? 0)
 const rejectedCount = computed(() => data.value.rejected?.length ?? 0)
 const reviewTotal = computed(() => reviewCount.value + rejectedCount.value)
@@ -180,6 +183,36 @@ const handleDrawerChanged = async () => {
 const handleDrawerOpenMeeting = (meetingId: number) => {
   router.push(`/history/${meetingId}`)
 }
+
+/* ---------- 待认领 ---------- */
+
+const claimingId = ref<number | null>(null)
+
+/**
+ * 认领。
+ *
+ * 先到先得：别人抢先一步时后端返回 409，这里刷新列表让那条从池子里消失，
+ * 而不是停在原地让用户反复点。
+ */
+const handleClaim = async (item: InboxUnclaimed) => {
+  if (claimingId.value) return
+
+  claimingId.value = item.id
+
+  try {
+    await claimTodo(item.id)
+
+    ElMessage.success('已认领，现在可以提交交付了')
+    await load()
+  } catch (error: any) {
+    const message = error?.response?.data?.message ?? '认领失败，请重试'
+    ElMessage.error(Array.isArray(message) ? message.join('；') : message)
+
+    await load()
+  } finally {
+    claimingId.value = null
+  }
+}
 </script>
 
 <template>
@@ -247,13 +280,46 @@ const handleDrawerOpenMeeting = (meetingId: number) => {
             <template #label>
               <span class="tab-label">
                 待办
-                <span v-if="todoCount > 0" class="tab-total">{{ todoCount }}</span>
+                <span v-if="todoCount + unclaimedCount > 0" class="tab-total">{{ todoCount + unclaimedCount }}</span>
               </span>
             </template>
 
-            <el-empty v-if="!loading && todoCount === 0" description="没有需要跟进的待办" />
+            <el-empty v-if="!loading && todoCount === 0 && unclaimedCount === 0" description="没有需要跟进的待办" />
 
-            <ul v-else class="todo-list">
+            <template v-else>
+              <!-- 待认领：AI 没认出负责人，或会上没点谁做 -->
+              <div v-if="unclaimedCount > 0" class="review-group">
+                <p class="review-title">
+                  待认领
+                  <span class="group-hint">没指定负责人，谁认谁做</span>
+                </p>
+
+                <ul class="todo-list">
+                  <li v-for="item in data.unclaimed" :key="`unclaimed-${item.id}`" class="todo-row">
+                    <div class="todo-main">
+                      <p class="todo-content">
+                        {{ item.content }}
+                      </p>
+
+                      <div class="todo-meta">
+                        <span class="todo-meeting">{{ item.meetingTitle }}</span>
+                        <span v-if="item.assigneeHint" class="todo-who">
+                          原文写「{{ item.assigneeHint }}」
+                        </span>
+                        <span v-if="item.deadline" class="num todo-when">截止 {{ item.deadline }}</span>
+                        <span v-if="item.overdue" class="overdue-pill">逾期</span>
+                      </div>
+                    </div>
+
+                    <el-button size="small" type="primary" plain :loading="claimingId === item.id"
+                      @click.stop="handleClaim(item)">
+                      我来负责
+                    </el-button>
+                  </li>
+                </ul>
+              </div>
+
+              <ul v-if="todoCount > 0" class="todo-list">
               <li v-for="item in data.todos" :key="item.id" class="todo-row"
                 @click="openTodoDrawer(item.meetingId, item.id)">
                 <div class="todo-main">
@@ -282,7 +348,8 @@ const handleDrawerOpenMeeting = (meetingId: number) => {
                   会议
                 </button>
               </li>
-            </ul>
+              </ul>
+            </template>
           </el-tab-pane>
 
           <!-- 验收：待我验收 + 被打回 -->
@@ -523,6 +590,15 @@ const handleDrawerOpenMeeting = (meetingId: number) => {
   font-size: 11px;
   letter-spacing: 0.08em;
   color: var(--ink-3);
+}
+
+/** 分组标题后的一句说明，用来解释「待认领」到底是什么意思 */
+.group-hint {
+  margin-left: 6px;
+  letter-spacing: 0;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  opacity: 0.75;
 }
 
 .review-reason {

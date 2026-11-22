@@ -544,6 +544,15 @@ export const toggleTodoCheckItem = async (
    待办交付与验收
    ========================= */
 
+/** 认领：把没有负责人的待办揽到自己名下，先到先得 */
+export const claimTodo = async (
+  todoId: number
+): Promise<{ id: number; assigneeUserId: number; assignee: string }> => {
+  const response = await api.post(`/meetings/todos/${todoId}/claim`)
+
+  return response.data
+}
+
 /**
  * 催办。
  *

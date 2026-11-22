@@ -2326,6 +2326,99 @@ export class MeetingsService {
   }
 
   /**
+   * 认领：把没人负责的待办揽到自己名下。
+   *
+   * 典型场景是 AI 只认出「李总」「小王」这类对不上账号的称呼，
+   * 待办挂着 assigneeUserId=null，谁都不认。以前这类待办只能等
+   * 会议负责人手动指派，现在挂进收件箱的池子，谁认谁负责。
+   */
+  async claimTodo(todoId: number, user: AuthenticatedUser) {
+    const todo = await this.prisma.todo.findUnique({
+      where: { id: todoId },
+      select: {
+        id: true,
+        meetingId: true,
+        content: true,
+        status: true,
+        assigneeUserId: true,
+        meeting: { select: { leaders: { select: { userId: true } } } },
+      },
+    })
+
+    if (!todo) throw new NotFoundException('待办事项不存在')
+
+    await assertCanWrite(this.prisma, user, todo.meetingId)
+
+    if (todo.assigneeUserId !== null) {
+      throw new ConflictException('这条待办已经有负责人了')
+    }
+
+    if (todo.status !== 'OPEN' && todo.status !== 'IN_PROGRESS') {
+      throw new BadRequestException('这条待办已提交或已结束，不能再认领')
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      /**
+       * CAS：两个人同时点「我来负责」时只有一个能成。
+       *
+       * 用带条件的 updateMany 而不是 update，是为了让冲突变成 count=0，
+       * 而不是悄悄覆盖掉前一个人的认领 —— 后者会让两个人以为自己都接了。
+       */
+      const claimed = await tx.todo.updateMany({
+        where: {
+          id: todoId,
+          assigneeUserId: null,
+          status: { in: ['OPEN', 'IN_PROGRESS'] },
+        },
+        data: { assigneeUserId: user.id, assignee: user.name },
+      })
+
+      if (!claimed.count) {
+        throw new ConflictException('这条待办刚被别人认领了')
+      }
+
+      // 认领人可能只是共享编辑者，补一条成员关系才打得开这场会议
+      await tx.meetingMember.upsert({
+        where: {
+          meetingId_userId: { meetingId: todo.meetingId, userId: user.id },
+        },
+        create: { meetingId: todo.meetingId, userId: user.id },
+        update: {},
+      })
+
+      await tx.todoEvent.create({
+        data: {
+          todoId,
+          actorId: user.id,
+          type: 'claimed',
+          fromStatus: todo.status,
+          toStatus: todo.status,
+          metadata: { assignee: user.name } as Prisma.InputJsonValue,
+        },
+      })
+
+      // 告诉会议负责人「这条有人接了」，免得他们再去手动指派一遍
+      const leaders = todo.meeting.leaders
+        .map((leader) => leader.userId)
+        .filter((id) => id !== user.id)
+
+      await this.notifyTodo(
+        tx,
+        todo.meetingId,
+        leaders,
+        'todo_claimed',
+        `${user.name} 认领了待办「${todo.content}」`,
+      )
+    })
+
+    return {
+      id: todoId,
+      assigneeUserId: user.id,
+      assignee: user.name,
+    }
+  }
+
+  /**
    * 提交交付。
    *
    * 权限：负责人本人，或会议负责人代为提交。

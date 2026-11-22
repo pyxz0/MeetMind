@@ -362,6 +362,15 @@ export class MeetingsController {
     return this.meetingsService.nudgeTodo(id, dto.to, dto.message, user);
   }
 
+  /** 认领：把没有负责人的待办揽到自己名下，先到先得 */
+  @Post('todos/:id/claim')
+  claimTodo(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.claimTodo(id, user);
+  }
+
   /** 提交交付：有验收人时进入待验收，否则直接完成 */
   @Post('todos/:id/submissions')
   submitTodo(
