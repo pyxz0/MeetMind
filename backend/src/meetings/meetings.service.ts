@@ -17,13 +17,14 @@ import { PrismaService } from '../common/prisma.service';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isOverdue, parseDeadlineAt } from './deadline';
+import { buildTodoNotices } from './todo-notices';
 import { collectHits, type SearchHit } from './search';
 import {
   normalizeJoinUrl,
   normalizeMeetingCode,
   parseJoinInput,
 } from './link';
-import { formatCstDate } from '../common/datetime';
+import { formatCstDate, startOfCstDay } from '../common/datetime';
 import { mapMeetingSummary } from './meeting.mapper';
 import { buildMeetingMarkdown, markdownFilename } from './meeting-markdown';
 import { MeetingAudioService } from './meeting-audio.service';
@@ -241,7 +242,14 @@ export class MeetingsService {
         todos: {
           create: todos.map((todo, sortOrder) => ({
             content: todo.content,
-            assignee: todo.assignee ?? null,
+            /**
+             * 姓名统一 trim 后落库。
+             *
+             * 收件箱的兜底匹配（assigneeUserId 为空时按姓名精确比对）
+             * 依赖这个干净值；AI 提取时多一个空格，那条待办就永远
+             * 不会出现在负责人的收件箱里。
+             */
+            assignee: todo.assignee?.trim() || null,
             assigneeUserId:
               todo.assigneeUserId ??
               (todo.assignee ? nameToId.get(todo.assignee.trim()) ?? null : null),
@@ -1111,6 +1119,30 @@ export class MeetingsService {
         },
       })
 
+      /**
+       * 改派、改验收人、改截止时间，都必须让当事人知道。
+       *
+       * 这里之前只写 todoEvent 流水：查得到，但没人会去翻。待办换了负责人，
+       * 对方既不收到站内消息，也不会主动打开这场会议 —— 于是「改派」在
+       * 用户感知里等于没有发生，活还是压在原负责人身上。
+       */
+      const notices = buildTodoNotices({
+        before: todo,
+        after: updated,
+        actorId: user.id,
+        deadlineChanged,
+      })
+
+      for (const notice of notices) {
+        await this.notifyTodo(
+          tx,
+          todo.meetingId,
+          [notice.userId],
+          notice.kind,
+          notice.content,
+        )
+      }
+
       return updated
     })
   }
@@ -1278,6 +1310,194 @@ export class MeetingsService {
       reworkCount,
       avgReviewHours,
       totalDecisions,
+    }
+  }
+
+  /**
+   * 按人汇总待办负载。
+   *
+   * getStats 回答的是「会议开得怎么样」，这里回答「活压在谁身上」——
+   * 管理者真正会问的第二个问题。数据本来就在 TodoSubmission 里攒着
+   * （attemptNo、reviewedAt、rejectReason），只是没人把它按人摊开。
+   *
+   * 口径：
+   * - 只统计当前用户可见的会议，与其它接口保持同一套数据隔离
+   * - 「未完成」= OPEN / IN_PROGRESS；「待验收」= 我交了、卡在别人手里
+   * - 返工次数与平均验收时长都按**提交人**归属，不是按待办负责人
+   */
+  async getTodoWorkload(user: AuthenticatedUser) {
+    const visible = this.visibleMeetingWhere(user)
+
+    /**
+     * 平均验收时长用内存算：Prisma 的 groupBy 不支持
+     * `reviewedAt - createdAt` 这类表达式聚合，写原生 SQL 又要
+     * 把 visible 那套 OR 条件重拼一遍。取最近 2000 条足够反映现状，
+     * 也避免整表扫。
+     */
+    const [statusGroups, overdueGroups, rejectedGroups, acceptedRows] =
+      await Promise.all([
+        this.prisma.todo.groupBy({
+          by: ['assigneeUserId', 'status'],
+          where: {
+            assigneeUserId: { not: null },
+            meeting: { is: visible },
+          },
+          _count: { _all: true },
+        }),
+
+        this.prisma.todo.groupBy({
+          by: ['assigneeUserId'],
+          where: {
+            assigneeUserId: { not: null },
+            status: { notIn: ['COMPLETED', 'CANCELLED'] },
+            deadlineAt: { not: null, lt: new Date() },
+            meeting: { is: visible },
+          },
+          _count: { _all: true },
+        }),
+
+        this.prisma.todoSubmission.groupBy({
+          by: ['submitterId'],
+          where: {
+            status: 'REJECTED',
+            todo: { meeting: visible },
+          },
+          _count: { _all: true },
+        }),
+
+        this.prisma.todoSubmission.findMany({
+          where: {
+            status: 'ACCEPTED',
+            reviewedAt: { not: null },
+            todo: { meeting: visible },
+          },
+          select: { submitterId: true, createdAt: true, reviewedAt: true },
+          orderBy: { reviewedAt: 'desc' },
+          take: 2000,
+        }),
+      ])
+
+    const buckets = new Map<
+      number,
+      {
+        openCount: number
+        submittedCount: number
+        completedCount: number
+        overdueCount: number
+        reworkCount: number
+        reviewHours: number[]
+      }
+    >()
+
+    const bucketOf = (userId: number) => {
+      const existing = buckets.get(userId)
+
+      if (existing) return existing
+
+      const created = {
+        openCount: 0,
+        submittedCount: 0,
+        completedCount: 0,
+        overdueCount: 0,
+        reworkCount: 0,
+        reviewHours: [] as number[],
+      }
+
+      buckets.set(userId, created)
+
+      return created
+    }
+
+    for (const row of statusGroups) {
+      const userId = row.assigneeUserId
+
+      if (userId === null) continue
+
+      const bucket = bucketOf(userId)
+
+      if (row.status === 'OPEN' || row.status === 'IN_PROGRESS') {
+        bucket.openCount += row._count._all
+      } else if (row.status === 'SUBMITTED') {
+        bucket.submittedCount += row._count._all
+      } else if (row.status === 'COMPLETED') {
+        bucket.completedCount += row._count._all
+      }
+    }
+
+    for (const row of overdueGroups) {
+      if (row.assigneeUserId === null) continue
+
+      bucketOf(row.assigneeUserId).overdueCount = row._count._all
+    }
+
+    for (const row of rejectedGroups) {
+      bucketOf(row.submitterId).reworkCount = row._count._all
+    }
+
+    for (const row of acceptedRows) {
+      if (!row.reviewedAt) continue
+
+      const hours =
+        (row.reviewedAt.getTime() - row.createdAt.getTime()) / 3_600_000
+
+      if (hours >= 0) {
+        bucketOf(row.submitterId).reviewHours.push(hours)
+      }
+    }
+
+    const userIds = [...buckets.keys()]
+
+    if (!userIds.length) {
+      return { members: [], scope: 'visible' }
+    }
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: userIds }, isActive: true },
+      select: { id: true, name: true, avatar: true },
+    })
+
+    const nameOf = new Map(users.map((row) => [row.id, row]))
+
+    const members = userIds
+      .map((userId) => {
+        const bucket = buckets.get(userId)!
+        const profile = nameOf.get(userId)
+
+        // 账号已停用或删除：待办仍留着，但不该出现在负载榜上
+        if (!profile) return null
+
+        const avgReviewHours = bucket.reviewHours.length
+          ? Math.round(
+            (bucket.reviewHours.reduce((sum, h) => sum + h, 0) /
+              bucket.reviewHours.length) *
+            10,
+          ) / 10
+          : null
+
+        return {
+          userId,
+          name: profile.name,
+          avatar: profile.avatar,
+          openCount: bucket.openCount,
+          submittedCount: bucket.submittedCount,
+          completedCount: bucket.completedCount,
+          overdueCount: bucket.overdueCount,
+          reworkCount: bucket.reworkCount,
+          avgReviewHours,
+        }
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null)
+      // 活多的排前面；一样多时先看逾期，让真正堵住的人浮上来
+      .sort(
+        (a, b) =>
+          b.openCount + b.submittedCount - (a.openCount + a.submittedCount) ||
+          b.overdueCount - a.overdueCount,
+      )
+
+    return {
+      members,
+      /** 告诉前端这份数据只覆盖当前账号可见的会议 */
+      scope: 'visible' as const,
     }
   }
 
@@ -1966,6 +2186,144 @@ export class MeetingsService {
   /* =========================
      待办交付与验收
      ========================= */
+
+  /**
+   * 催办：人主动推一把。
+   *
+   * 与系统自动提醒的分工：
+   * - OverdueReminderService 是兜底，每天一封、最多 7 次，面向所有逾期；
+   * - 这里是当事人临时起意的一次提醒，指向具体的一个人。
+   *
+   * 少了这一环，「进度卡住了」只能靠开会解决。
+   */
+  async nudgeTodo(
+    todoId: number,
+    to: 'assignee' | 'reviewer',
+    message: string | undefined,
+    user: AuthenticatedUser,
+  ) {
+    const todo = await this.prisma.todo.findUnique({
+      where: { id: todoId },
+      select: {
+        id: true,
+        meetingId: true,
+        content: true,
+        status: true,
+        assigneeUserId: true,
+        reviewerId: true,
+        meeting: { select: { leaders: { select: { userId: true } } } },
+      },
+    })
+
+    if (!todo) throw new NotFoundException('待办事项不存在')
+
+    // 读权限先过：跟这场会无关的人统一 404，不泄露待办是否存在
+    const access = await assertCanRead(this.prisma, user, todo.meetingId)
+
+    const isLeader =
+      access.access === 'owner' || access.leaderIds.includes(user.id)
+    const isAssignee = todo.assigneeUserId === user.id
+    const isReviewer = todo.reviewerId === user.id
+    const isSuper = user.role === 'SUPER_ADMIN'
+
+    let targetIds: number[]
+    let content: string
+
+    if (to === 'assignee') {
+      if (!isReviewer && !isLeader && !isSuper) {
+        throw new ForbiddenException('只有验收人或会议负责人可以催办负责人')
+      }
+
+      if (!todo.assigneeUserId) {
+        throw new BadRequestException('这条待办还没有指定负责人')
+      }
+
+      if (todo.assigneeUserId === user.id) {
+        throw new BadRequestException('不能催自己')
+      }
+
+      targetIds = [todo.assigneeUserId]
+      content = `待办「${todo.content}」被催办：请尽快推进`
+    } else {
+      if (!isAssignee && !isLeader && !isSuper) {
+        throw new ForbiddenException('只有待办负责人或会议负责人可以催验收人')
+      }
+
+      if (todo.status !== 'SUBMITTED') {
+        throw new BadRequestException('这条待办还没有待验收的交付')
+      }
+
+      // 没指定验收人时，验收责任落在会议负责人身上
+      targetIds = todo.reviewerId
+        ? [todo.reviewerId]
+        : todo.meeting.leaders.map((leader) => leader.userId)
+      content = `待办「${todo.content}」已提交，等你验收`
+    }
+
+    // 操作者本人不需要被自己催
+    targetIds = [...new Set(targetIds)].filter((id) => id !== user.id)
+
+    if (!targetIds.length) {
+      throw new BadRequestException('没有可催办的对象')
+    }
+
+    const note = message?.trim()
+
+    if (note) {
+      content = `${content}；留言：${note}`
+    }
+
+    /**
+     * 频率：同一条待办、同一个对象、同一个人，每天最多一次。
+     *
+     * 不限的话「催办」会变成刷屏工具 —— 被催的人一旦开始无视，
+     * 真正紧急的那条也就失效了。
+     */
+    const todaysNudges = await this.prisma.todoEvent.findMany({
+      where: {
+        todoId,
+        actorId: user.id,
+        type: 'nudged',
+        createdAt: { gte: startOfCstDay(new Date()) },
+      },
+      select: { metadata: true },
+    })
+
+    const alreadyNudged = todaysNudges.some(
+      (row) => (row.metadata as { to?: string } | null)?.to === to,
+    )
+
+    if (alreadyNudged) {
+      throw new ConflictException('今天已经催过了，给对方一点时间')
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.todoEvent.create({
+        data: {
+          todoId,
+          actorId: user.id,
+          type: 'nudged',
+          fromStatus: todo.status,
+          toStatus: todo.status,
+          metadata: {
+            to,
+            targetIds,
+            message: note ?? null,
+          } as Prisma.InputJsonValue,
+        },
+      })
+
+      await this.notifyTodo(
+        tx,
+        todo.meetingId,
+        targetIds,
+        'todo_nudged',
+        content,
+      )
+    })
+
+    return { ok: true, to, targetIds }
+  }
 
   /**
    * 提交交付。
@@ -3001,6 +3359,17 @@ export class MeetingsService {
             create: { meetingId, userId },
             update: {},
           })
+        }
+
+        // 创建时就指派了负责人：对方不会自己去翻这场会议，得主动告诉他
+        if (created.assigneeUserId && created.assigneeUserId !== user.id) {
+          await this.notifyTodo(
+            tx,
+            meetingId,
+            [created.assigneeUserId],
+            'todo_assigned',
+            `你被指派了待办「${created.content}」`,
+          )
         }
 
         return [

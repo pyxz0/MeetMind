@@ -7,6 +7,15 @@ import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 import { isOverdue } from '../meetings/deadline';
 import { formatCstShort } from '../common/datetime';
 
+/**
+ * 收件箱待办列表的展示上限。
+ *
+ * 超出的不截断到「悄悄少几条」—— 命中上限会打一条 warn，
+ * 让「收件箱里没有」这件事有迹可循。真正需要全量时该走待办列表页，
+ * 而不是把收件箱当报表用。
+ */
+const INBOX_TODO_LIMIT = 200;
+
 /** 通知类型：被加为负责人 / 被加为成员 / 被共享 / 落库的会议消息 */
 export type InboxNotificationType =
   | 'leader'
@@ -75,6 +84,20 @@ export interface InboxReview {
   /** 待验收也能看出逾期：过了截止时间还在等验收 */
   deadlineAt: string | null;
   overdue: boolean;
+  /**
+   * 交付说明。
+   *
+   * 收件箱里要能直接看到，否则验收人得先跳进会议详情才知道对方交了什么 ——
+   * 那正是「收件箱只能当通知栏」的根因。
+   */
+  note: string | null;
+  /** 附件数量；有附件时列表上直接标出来，别让人以为只有一句话 */
+  attachmentCount: number;
+  /** 验收要点进度：「3/5 已勾」比「有 5 条要点」有用得多 */
+  checklistTotal: number;
+  checklistDone: number;
+  /** 指定的验收人；与当前用户不一致说明这条是代验收 */
+  reviewerId: number | null;
 }
 
 @Injectable()
@@ -501,66 +524,90 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
    * 待办提醒：只看「未完成（OPEN / IN_PROGRESS）」的待办。
    *
    * 入选条件（满足其一）：
-   * - 待办负责人文本里包含我的名字（待办负责人是自由文本，只能模糊匹配）
-   * - 所在会议的负责人包含我（我负责的会议里的待办由我盯着）
+   * - 待办的结构化负责人是我（assigneeUserId）
+   * - 我是该待办所属会议的负责人（这场会的待办都由我盯着）
+   * - 兜底：assigneeUserId 没解析出来，但负责人姓名与我的账号完全一致
+   *
+   * 归属判定只认 assigneeUserId，不用 `assignee.includes(name)`：
+   * 用户名「张三」会把「张三丰」的待办也捞进来，反向的别名（「李总」）
+   * 又永远匹配不上。schema.prisma 里 Todo.assignee 的注释写的就是这件事。
+   *
+   * 兜底那一条不能省：AI 提取时负责人只给姓名，重名或匹配不上就留空
+   * assigneeUserId。只按 ID 判定会让这批历史待办从收件箱里彻底消失，
+   * 比误报更难被发现。
+   *
+   * 兜底只对 assigneeUserId 为空的待办生效，所以即便姓名存在包含关系
+   * （张三 / 张三丰），多出来的那条也只影响「看不看得见」，不影响
+   * 「能不能提交」—— 提交权始终按 assigneeUserId 判定。
    */
   private async collectTodos(user: AuthenticatedUser): Promise<InboxTodo[]> {
-    const meetings = await this.prisma.meeting.findMany({
+    const ownName = user.name?.trim();
+
+    const ownership: Prisma.TodoWhereInput[] = [
+      { assigneeUserId: user.id },
+      { meeting: { is: { leaders: { some: { userId: user.id } } } } },
+    ];
+
+    if (ownName) {
+      ownership.push({ assigneeUserId: null, assignee: ownName });
+    }
+
+    /**
+     * 过滤直接下推到数据库。
+     *
+     * 旧写法是「先捞 50 场会议、把待办全拉进内存再筛」：第 51 场会议的待办
+     * 永远进不了收件箱，而且是静默丢 —— 用户只会觉得「我明明有这条待办」。
+     * 下推之后只取真正跟我有关的行，代价是一个覆盖索引就够。
+     */
+    const rows = await this.prisma.todo.findMany({
       where: {
-        AND: [
-          this.visibleMeetingWhere(user),
-          { todos: { some: { status: { in: ['OPEN', 'IN_PROGRESS'] } } } },
-        ],
+        status: { in: ['OPEN', 'IN_PROGRESS'] },
+        meeting: { is: this.visibleMeetingWhere(user) },
+        OR: ownership,
       },
       select: {
         id: true,
-        title: true,
-        leaders: { where: { userId: user.id }, select: { id: true } },
-        todos: {
-          where: { status: { in: ['OPEN', 'IN_PROGRESS'] } },
+        content: true,
+        assignee: true,
+        assigneeUserId: true,
+        deadline: true,
+        deadlineAt: true,
+        status: true,
+        meeting: {
           select: {
             id: true,
-            content: true,
-            assignee: true,
-            deadline: true,
-            deadlineAt: true,
-            status: true,
+            title: true,
+            leaders: { where: { userId: user.id }, select: { id: true } },
           },
-          orderBy: { sortOrder: 'asc' },
         },
       },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
+      // 有截止时间的排前面；PG 的 ASC 默认把 NULL 放最后，正是想要的
+      orderBy: [{ deadlineAt: 'asc' }, { id: 'asc' }],
+      // 多取一条，用来判断是否被截断
+      take: INBOX_TODO_LIMIT + 1,
     });
 
-    const items: InboxTodo[] = [];
-
-    for (const meeting of meetings) {
-      const leaderOwned = meeting.leaders.length > 0;
-
-      for (const todo of meeting.todos) {
-        const mine =
-          !!todo.assignee && todo.assignee.includes(user.name);
-
-        if (!mine && !leaderOwned) {
-          continue;
-        }
-
-        items.push({
-          id: todo.id,
-          meetingId: meeting.id,
-          meetingTitle: meeting.title,
-          content: todo.content,
-          assignee: todo.assignee,
-          deadline: todo.deadline,
-          deadlineAt: todo.deadlineAt?.toISOString() ?? null,
-          overdue: isOverdue(todo.deadlineAt, todo.status),
-          status: todo.status as 'OPEN' | 'IN_PROGRESS',
-          mine,
-          leaderOwned,
-        });
-      }
+    if (rows.length > INBOX_TODO_LIMIT) {
+      this.logger.warn(
+        `收件箱待办超过 ${INBOX_TODO_LIMIT} 条（用户 ${user.id}），已截断展示`,
+      );
     }
+
+    const items: InboxTodo[] = rows.slice(0, INBOX_TODO_LIMIT).map((todo) => ({
+      id: todo.id,
+      meetingId: todo.meeting.id,
+      meetingTitle: todo.meeting.title,
+      content: todo.content,
+      assignee: todo.assignee,
+      deadline: todo.deadline,
+      deadlineAt: todo.deadlineAt?.toISOString() ?? null,
+      overdue: isOverdue(todo.deadlineAt, todo.status),
+      status: todo.status as 'OPEN' | 'IN_PROGRESS',
+      mine:
+        todo.assigneeUserId === user.id ||
+        (todo.assigneeUserId === null && !!ownName && todo.assignee === ownName),
+      leaderOwned: todo.meeting.leaders.length > 0,
+    }));
 
     /**
      * 排序优先级：逾期 → 指派给我 → 截止时间近的。
@@ -603,6 +650,8 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
         rejectReason: true,
         submitterId: true,
         reviewerId: true,
+        note: true,
+        _count: { select: { attachments: true } },
         submitter: { select: { name: true } },
         todo: {
           select: {
@@ -611,6 +660,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
             assignee: true,
             deadlineAt: true,
             status: true,
+            checkItems: { select: { done: true } },
             meeting: {
               select: {
                 id: true,
@@ -648,6 +698,11 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
         rejectReason: row.rejectReason,
         deadlineAt: row.todo.deadlineAt?.toISOString() ?? null,
         overdue: isOverdue(row.todo.deadlineAt, row.todo.status),
+        note: row.note,
+        attachmentCount: row._count.attachments,
+        checklistTotal: row.todo.checkItems.length,
+        checklistDone: row.todo.checkItems.filter((entry) => entry.done).length,
+        reviewerId: row.reviewerId,
       }
 
       if (row.status === 'PENDING') {

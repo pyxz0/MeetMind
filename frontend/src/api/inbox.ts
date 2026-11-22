@@ -49,6 +49,15 @@ export interface InboxReview {
   /** 过了截止时间还在等验收 */
   deadlineAt?: string | null
   overdue?: boolean
+  /** 交付说明：验收人据此判断该不该通过 */
+  note?: string | null
+  /** 附件数量 */
+  attachmentCount?: number
+  /** 验收要点进度 */
+  checklistTotal?: number
+  checklistDone?: number
+  /** 指定的验收人；与我不同说明是代验收 */
+  reviewerId?: number | null
 }
 
 export interface InboxData {

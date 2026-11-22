@@ -19,6 +19,7 @@ import {
   buildOverdueText,
   type OverdueItem,
 } from './overdue-digest';
+import { WeComNotifier } from './wecom-notifier.service';
 
 /** 每天几点（UTC+8）之后开始提醒。早上 9 点：开始一天的时候看到最有用 */
 const REMIND_HOUR = 9;
@@ -73,11 +74,18 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
     private readonly jobs: JobRunService,
+    private readonly wecom: WeComNotifier,
   ) {}
 
   onModuleInit() {
-    if (!this.mail.configured) {
-      this.logger.warn('未配置 SMTP，待办逾期提醒不会发出');
+    /**
+     * 邮件和企微群是两条独立的出口，任意一条可用就该跑。
+     *
+     * 只按 SMTP 判断会导致「配了企微但没配邮箱」时整条链路不启动 ——
+     * 而只想要群提醒的团队并不少。
+     */
+    if (!this.mail.configured && !this.wecom.configured) {
+      this.logger.warn('未配置 SMTP 和企微 webhook，待办逾期提醒不会发出');
 
       // 与邮件投递同理：登记「跳过」，让人能区分「没配」和「卡住」
       void this.jobs.track('overdue-reminder', async () => ({
@@ -86,6 +94,10 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
       }));
 
       return;
+    }
+
+    if (!this.mail.configured) {
+      this.logger.log('未配置 SMTP，逾期提醒只推企业微信群');
     }
 
     // 启动先检查一次：服务在 9 点之后才启动时，当天不该漏掉
@@ -124,7 +136,7 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
    * 错过那一秒就整天不提醒。改成「过了 9 点且今天没跑过」，重启后能自己补上。
    */
   async runIfDue(now: Date = new Date()) {
-    if (!this.mail.configured || this.running) {
+    if ((!this.mail.configured && !this.wecom.configured) || this.running) {
       return { sent: 0, ran: false };
     }
 
@@ -224,6 +236,7 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
       select: {
         id: true,
         name: true,
+        phone: true,
         email: true,
         notifyEmail: true,
         isActive: true,
@@ -238,14 +251,27 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
     for (const [userId, rows] of byRecipient) {
       const user = userMap.get(userId);
 
+      if (!user || !user.isActive) {
+        continue;
+      }
+
       /**
-       * 没邮箱 / 关了提醒 / 账号停用：跳过且**不标记**。
+       * 只配了群机器人、没配 SMTP：没有个人邮箱可发，但这条待办
+       * 今天确实被提醒过了 —— 不标记的话群里每天重复推同一条。
+       */
+      if (!this.mail.configured) {
+        rows.forEach((row) => delivered.add(row.id));
+        continue;
+      }
+
+      /**
+       * 没邮箱 / 关了提醒：跳过且**不标记**。
        *
        * 和站内消息不同，逾期不是一次性事件 —— 用户明天绑了邮箱，
        * 这条待办仍然该提醒他。不标记的代价只是每天多查一次，
        * 而 lastRunDay 保证一天只跑一轮。
        */
-      if (!user || !user.email || !user.notifyEmail || !user.isActive) {
+      if (!user.email || !user.notifyEmail) {
         continue;
       }
 
@@ -303,11 +329,77 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `逾期提醒已发出：${delivered.size} 条待办，覆盖 ${byRecipient.size} 人`,
       );
+
+      // 邮件之外再往群里说一句：谁还没交，是团队该看见的事
+      await this.pushWeComSummary(delivered, byRecipient, userMap, now);
     }
 
     // 一天只跑一次，顺手清掉 30 天前的任务记录，避免 job_runs 无限增长
     await this.jobs.prune().catch(() => undefined);
 
     return delivered.size;
+  }
+
+  /**
+   * 往企业微信群推一条逾期汇总。
+   *
+   * 刻意只给「每人最多 3 条、最多 8 人」：群消息的用处是让人知道
+   * 「今天有逾期」，不是替人做列表页。要看全量，点进收件箱。
+   *
+   * 未配置 webhook 时直接返回，不产生任何副作用。
+   */
+  private async pushWeComSummary(
+    delivered: Set<number>,
+    byRecipient: Map<number, OverdueTodoRow[]>,
+    userMap: Map<number, { name: string; phone: string }>,
+    now: Date,
+  ) {
+    if (!this.wecom.configured) {
+      return;
+    }
+
+    const groups = [...byRecipient.entries()]
+      .map(([userId, rows]) => ({
+        userId,
+        rows: rows.filter((row) => delivered.has(row.id)),
+      }))
+      .filter((group) => group.rows.length > 0)
+
+    if (!groups.length) {
+      return;
+    }
+
+    const total = groups.reduce((sum, group) => sum + group.rows.length, 0)
+    const lines = [
+      '**待办逾期提醒**',
+      `今日 ${total} 条待办逾期，涉及 ${groups.length} 人`,
+      '',
+    ]
+
+    for (const group of groups.slice(0, 8)) {
+      const name = userMap.get(group.userId)?.name ?? `用户 ${group.userId}`
+      const items = group.rows
+        .slice(0, 3)
+        .map((row) => {
+          const days = Math.max(1, daysBetweenCst(row.deadlineAt as Date, now))
+
+          return `${row.content}（逾期 ${days} 天）`
+        })
+
+      lines.push(`> ${name}：${items.join('；')}`)
+
+      if (group.rows.length > 3) {
+        lines.push(`> 等 ${group.rows.length} 条`)
+      }
+    }
+
+    if (groups.length > 8) {
+      lines.push('', `还有 ${groups.length - 8} 人有逾期，详见收件箱`)
+    }
+
+    await this.wecom.sendMarkdown(
+      lines.join('\n'),
+      groups.slice(0, 8).map((group) => userMap.get(group.userId)?.phone ?? ''),
+    )
   }
 }

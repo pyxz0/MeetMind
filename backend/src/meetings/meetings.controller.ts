@@ -23,6 +23,7 @@ import {
   ListMeetingsQueryDto,
   AudioOpenDto,
   MeetingUserDto,
+  NudgeTodoDto,
   PinMeetingDto,
   RejectSubmissionDto,
   SetChecklistDto,
@@ -230,6 +231,12 @@ export class MeetingsController {
     return this.meetingsService.getStats(user);
   }
 
+  /** 按人汇总待办负载：谁手上堆了多少、谁老被打回、谁的交付等验收最久 */
+  @Get('todo-workload')
+  getTodoWorkload(@CurrentUser() user: AuthenticatedUser) {
+    return this.meetingsService.getTodoWorkload(user);
+  }
+
   /** 通过整数 ID 查询单条会议；ParseIntPipe 会拦截非数字路径参数。 */
   @Get(':id')
   findOne(
@@ -344,6 +351,16 @@ export class MeetingsController {
   /* =========================
      待办交付与验收
      ========================= */
+
+  /** 催办：to=assignee 催负责人，to=reviewer 催验收人；每人每待办每对象每天一次 */
+  @Post('todos/:id/nudge')
+  nudgeTodo(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: NudgeTodoDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.meetingsService.nudgeTodo(id, dto.to, dto.message, user);
+  }
 
   /** 提交交付：有验收人时进入待验收，否则直接完成 */
   @Post('todos/:id/submissions')

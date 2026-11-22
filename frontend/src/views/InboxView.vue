@@ -10,6 +10,7 @@ import {
 } from '../api/inbox'
 import { useInboxStore } from '../composables/inboxStore'
 import UserProfileDialog from '../components/UserProfileDialog.vue'
+import InboxTodoDrawer from '../components/InboxTodoDrawer.vue'
 
 const router = useRouter()
 
@@ -152,6 +153,33 @@ const openNotification = async (item: InboxNotification) => {
 }
 
 onMounted(load)
+
+/* ---------- 待办抽屉：把「看」和「做」放在一起 ---------- */
+
+const drawerVisible = ref(false)
+const drawerTodoId = ref<number | null>(null)
+const drawerMeetingId = ref<number | null>(null)
+
+/**
+ * 点待办行打开抽屉，而不是直接跳会议详情。
+ *
+ * 跳转会把「看一眼这条要干什么」变成「离开收件箱、在新页面重新定位」，
+ * 五条待办就是五次来回。抽屉里能直接提交、验收、打回、改期。
+ */
+const openTodoDrawer = (meetingId: number, todoId: number) => {
+  drawerMeetingId.value = meetingId
+  drawerTodoId.value = todoId
+  drawerVisible.value = true
+}
+
+/** 抽屉里操作成功后，收件箱要重算（该走的条目会消失） */
+const handleDrawerChanged = async () => {
+  await load()
+}
+
+const handleDrawerOpenMeeting = (meetingId: number) => {
+  router.push(`/history/${meetingId}`)
+}
 </script>
 
 <template>
@@ -226,7 +254,8 @@ onMounted(load)
             <el-empty v-if="!loading && todoCount === 0" description="没有需要跟进的待办" />
 
             <ul v-else class="todo-list">
-              <li v-for="item in data.todos" :key="item.id" class="todo-row" @click="openMeeting(item.meetingId)">
+              <li v-for="item in data.todos" :key="item.id" class="todo-row"
+                @click="openTodoDrawer(item.meetingId, item.id)">
                 <div class="todo-main">
                   <p class="todo-content">
                     {{ item.content }}
@@ -247,6 +276,11 @@ onMounted(load)
                 <el-tag :type="item.status === 'IN_PROGRESS' ? 'warning' : 'info'" size="small">
                   {{ item.status === 'IN_PROGRESS' ? '进行中' : '待处理' }}
                 </el-tag>
+
+                <button type="button" class="row-go" title="在会议中查看"
+                  @click.stop="openMeeting(item.meetingId)">
+                  会议
+                </button>
               </li>
             </ul>
           </el-tab-pane>
@@ -268,11 +302,14 @@ onMounted(load)
 
                 <ul class="todo-list">
                   <li v-for="item in data.reviews" :key="`review-${item.submissionId}`" class="todo-row"
-                    @click="openMeeting(item.meetingId)">
+                    @click="openTodoDrawer(item.meetingId, item.todoId)">
                     <div class="todo-main">
                       <p class="todo-content">
                         {{ item.todoContent }}
                       </p>
+
+                      <!-- 交付说明：验收人不用点开就能判断该不该通过 -->
+                      <p v-if="item.note" class="todo-note">{{ item.note }}</p>
 
                       <div class="todo-meta">
                         <span class="todo-meeting">{{ item.meetingTitle }}</span>
@@ -282,12 +319,23 @@ onMounted(load)
                           </button>
                           提交 · 第 {{ item.attemptNo }} 次
                         </span>
+                        <span v-if="item.attachmentCount" class="todo-chip">
+                          附件 {{ item.attachmentCount }}
+                        </span>
+                        <span v-if="item.checklistTotal" class="todo-chip">
+                          要点 {{ item.checklistDone }}/{{ item.checklistTotal }}
+                        </span>
                         <span v-if="item.overdue" class="overdue-pill">逾期</span>
                         <span class="num todo-when">{{ formatTime(item.submittedAt) }}</span>
                       </div>
                     </div>
 
                     <el-tag type="warning" size="small">待验收</el-tag>
+
+                    <button type="button" class="row-go" title="在会议中查看"
+                      @click.stop="openMeeting(item.meetingId)">
+                      会议
+                    </button>
                   </li>
                 </ul>
               </div>
@@ -297,7 +345,7 @@ onMounted(load)
 
                 <ul class="todo-list">
                   <li v-for="item in data.rejected" :key="`rejected-${item.submissionId}`" class="todo-row"
-                    @click="openMeeting(item.meetingId)">
+                    @click="openTodoDrawer(item.meetingId, item.todoId)">
                     <div class="todo-main">
                       <p class="todo-content">
                         {{ item.todoContent }}
@@ -314,6 +362,11 @@ onMounted(load)
                     </div>
 
                     <el-tag type="danger" size="small" effect="plain">被打回</el-tag>
+
+                    <button type="button" class="row-go" title="在会议中查看"
+                      @click.stop="openMeeting(item.meetingId)">
+                      会议
+                    </button>
                   </li>
                 </ul>
               </div>
@@ -325,6 +378,10 @@ onMounted(load)
 
     <!-- 个人主页：点提交人打开 -->
     <UserProfileDialog v-model="profileVisible" :user-id="profileUserId" />
+
+    <!-- 待办处理抽屉：提交 / 验收 / 打回 / 改期 / 改派 -->
+    <InboxTodoDrawer v-model="drawerVisible" :todo-id="drawerTodoId" :meeting-id="drawerMeetingId"
+      @changed="handleDrawerChanged" @open-meeting="handleDrawerOpenMeeting" />
   </div>
 </template>
 
@@ -473,6 +530,62 @@ onMounted(load)
   font-size: 12px;
   line-height: 1.7;
   color: #a33;
+}
+
+/** 交付说明摘要：验收人在列表里就能判断该不该点开 */
+.todo-note {
+  margin: 5px 0 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--ink-3);
+}
+
+/** 附件数 / 要点进度这类小标记 */
+.todo-chip {
+  padding: 0 5px;
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--ink-3);
+}
+
+/** 「去会议」次要入口：行内默认隐藏，hover 才出现，避免和主点击抢注意力 */
+.row-go {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+
+  font-size: 10.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s, color 0.16s, border-color 0.16s;
+}
+
+.todo-row:hover .row-go {
+  opacity: 1;
+}
+
+.row-go:hover {
+  border-color: var(--brand-line);
+  background: var(--brand-wash);
+  color: var(--brand);
+}
+
+/** 触屏没有 hover，常显 */
+@media (hover: none) {
+  .row-go {
+    opacity: 1;
+  }
 }
 
 .overdue-pill {

@@ -544,6 +544,25 @@ export const toggleTodoCheckItem = async (
    待办交付与验收
    ========================= */
 
+/**
+ * 催办。
+ *
+ * `to='assignee'` 催负责人「什么时候交」，`to='reviewer'` 催验收人「什么时候验」。
+ * 后端限制「同一条待办、同一个对象、每天一次」，超了会返回 409。
+ */
+export const nudgeTodo = async (
+  todoId: number,
+  to: 'assignee' | 'reviewer',
+  message?: string
+): Promise<{ ok: boolean; to: string; targetIds: number[] }> => {
+  const response = await api.post(`/meetings/todos/${todoId}/nudge`, {
+    to,
+    message
+  })
+
+  return response.data
+}
+
 /** 提交交付：有验收人时进入待验收，否则直接完成 */
 export const submitTodo = async (
   todoId: number,
@@ -746,6 +765,41 @@ export const getMeetingStats = async (): Promise<MeetingStats> => {
   const response = await api.get<MeetingStats>(
     '/meetings/stats'
   )
+
+  return response.data
+}
+
+/** 一个人身上的待办负载 */
+export interface TodoWorkloadMember {
+  userId: number
+  name: string
+  avatar: string | null
+  /** 未完成（OPEN / IN_PROGRESS） */
+  openCount: number
+  /** 已提交、卡在验收环节 */
+  submittedCount: number
+  completedCount: number
+  overdueCount: number
+  /** 他交的活被打回过几次 */
+  reworkCount: number
+  /** 他交的活平均等验收多久（小时） */
+  avgReviewHours: number | null
+}
+
+/**
+ * 按人汇总的待办负载。
+ *
+ * 只覆盖当前账号可见的会议 —— 普通成员看到的是自己参与的那几场，
+ * 管理员看到全量。前端要如实标注这一点，否则会被当成全员排名。
+ */
+export const getTodoWorkload = async (): Promise<{
+  members: TodoWorkloadMember[]
+  scope: 'visible'
+}> => {
+  const response = await api.get<{
+    members: TodoWorkloadMember[]
+    scope: 'visible'
+  }>('/meetings/todo-workload')
 
   return response.data
 }

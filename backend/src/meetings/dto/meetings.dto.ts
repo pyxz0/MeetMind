@@ -275,6 +275,23 @@ export class SubmitTodoDto {
   note?: string;
 }
 
+/**
+ * 催办。
+ *
+ * `to` 决定催谁：催负责人「什么时候交」，或催验收人「什么时候验」。
+ * 不给默认值 —— 两种语义差别很大，猜错比报错更麻烦。
+ */
+export class NudgeTodoDto {
+  @IsIn(['assignee', 'reviewer'])
+  to!: 'assignee' | 'reviewer';
+
+  /** 附言，可选；会拼接在默认文案后面 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  message?: string;
+}
+
 /** 打回：原因必填，且不能是一两个字 */
 export class RejectSubmissionDto {
   @IsString()

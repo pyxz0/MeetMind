@@ -5,12 +5,16 @@ import { ElMessage } from 'element-plus'
 import {
     getMeetingStats,
     getMeetings,
+    getTodoWorkload,
     type MeetingStats,
-    type MeetingRecord
+    type MeetingRecord,
+    type TodoWorkloadMember
 } from '../api/meeting'
 
 const stats = ref<MeetingStats | null>(null)
 const recentMeetings = ref<MeetingRecord[]>([])
+/** 按人汇总的待办负载 */
+const workload = ref<TodoWorkloadMember[]>([])
 const loading = ref(false)
 
 const router = useRouter()
@@ -110,14 +114,24 @@ const loadStats = async () => {
     loading.value = true
 
     try {
-        const [statsData, meetingsData] = await Promise.all([
+        const [statsData, meetingsData, workloadData] = await Promise.all([
             getMeetingStats(),
-            getMeetings()
+            getMeetings(),
+            // 负载只影响一块卡片，失败不该让整页报错
+            getTodoWorkload().catch(() => ({ members: [], scope: 'visible' as const }))
         ])
 
         stats.value = statsData
 
         recentMeetings.value = meetingsData.slice(0, 5)
+
+        /**
+         * 只留有活在手的人。
+         * 全都交付完的同事挂在榜上没有信息量，只会把真正堵住的人挤下去。
+         */
+        workload.value = workloadData.members.filter(
+            (row) => row.openCount + row.submittedCount > 0
+        )
     } catch (error) {
         console.error('Dashboard 数据加载失败：', error)
 
@@ -386,6 +400,43 @@ onMounted(loadStats)
                         </template>
                     </section>
                 </div>
+
+                <!-- 待办负载：活压在谁身上 -->
+                <section v-if="workload.length" class="sheet block">
+                    <div class="block-head">
+                        <span class="sec-t">待办负载</span>
+
+                        <span class="sec-x">按负责人 · 仅统计你可见的会议</span>
+                    </div>
+
+                    <ul class="load-list">
+                        <li v-for="person in workload" :key="person.userId" class="load-row">
+                            <span class="load-name">{{ person.name }}</span>
+
+                            <span class="load-chips">
+                                <span class="load-chip">进行中 {{ person.openCount }}</span>
+
+                                <span v-if="person.submittedCount" class="load-chip">
+                                    待验收 {{ person.submittedCount }}
+                                </span>
+
+                                <span v-if="person.overdueCount" class="load-chip load-chip--danger">
+                                    逾期 {{ person.overdueCount }}
+                                </span>
+                            </span>
+
+                            <span class="load-metrics">
+                                <span v-if="person.reworkCount" class="num">
+                                    返工 {{ person.reworkCount }}
+                                </span>
+
+                                <span v-if="person.avgReviewHours !== null" class="num">
+                                    验收 {{ person.avgReviewHours }}h
+                                </span>
+                            </span>
+                        </li>
+                    </ul>
+                </section>
 
                 <!-- 最近会议 -->
                 <section class="sheet block recent">
@@ -686,6 +737,70 @@ onMounted(loadStats)
 /* ---------- 最近会议 ---------- */
 .recent {
     margin-top: 18px;
+}
+
+/* ---------- 待办负载 ---------- */
+
+.load-list {
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.load-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 2px;
+    border-bottom: 1px solid var(--rule-soft);
+}
+
+.load-row:last-child {
+    border-bottom: none;
+}
+
+.load-name {
+    flex-shrink: 0;
+    width: 84px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    font-size: 13px;
+    color: var(--ink);
+}
+
+.load-chips {
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+
+.load-chip {
+    padding: 0 6px;
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+
+    font-size: 11px;
+    line-height: 17px;
+    color: var(--ink-3);
+}
+
+.load-chip--danger {
+    border-color: var(--vermilion-wash);
+    background: var(--vermilion-wash);
+    color: var(--vermilion);
+}
+
+.load-metrics {
+    flex-shrink: 0;
+    display: flex;
+    gap: 12px;
+
+    font-size: 11px;
+    color: var(--ink-3);
 }
 
 .recent-list {
