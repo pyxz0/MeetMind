@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common'
 import { MeetingsController } from './meetings.controller'
 import { MeetingsService } from './meetings.service'
+import { TodosService } from './todos.service'
 import { MeetingAudioController } from './meeting-audio.controller'
 import { MeetingAudioService } from './meeting-audio.service'
 import { MeetingShareController } from './meeting-share.controller'
@@ -19,7 +20,7 @@ import { PlatformCoreModule } from '../platforms/platform-core.module'
     MeetingShareController,
     TodoAttachmentController,
   ],
-  providers: [MeetingsService, MeetingAudioService, MeetingShareService],
+  providers: [MeetingsService, TodosService, MeetingAudioService, MeetingShareService],
   // 平台回调需要复用录音存储（把云录制落到同一套 uploads 里）
   exports: [MeetingAudioService],
 })

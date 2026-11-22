@@ -18,7 +18,7 @@ import { unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { extname, join } from 'node:path';
 import type { Response } from 'express';
-import { MeetingsService } from './meetings.service';
+import { TodosService } from './todos.service';
 import { CurrentUser, type AuthenticatedUser } from '../auth/auth.decorators';
 
 /** 交付物根目录：与录音、转写文件分开，便于单独限制与清理 */
@@ -54,7 +54,7 @@ const storage = diskStorage({
 
 @Controller('meetings')
 export class TodoAttachmentController {
-  constructor(private readonly meetings: MeetingsService) {}
+  constructor(private readonly todos: TodosService) {}
 
   /** 给某次提交追加交付物（单文件，单次提交最多 5 个） */
   @Post('submissions/:id/attachments')
@@ -82,7 +82,7 @@ export class TodoAttachmentController {
     }
 
     try {
-      return await this.meetings.addSubmissionAttachment(
+      return await this.todos.addSubmissionAttachment(
         id,
         {
           originalname: file.originalname,
@@ -109,7 +109,7 @@ export class TodoAttachmentController {
     @CurrentUser() user: AuthenticatedUser,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const attachment = await this.meetings.resolveSubmissionAttachment(
+    const attachment = await this.todos.resolveSubmissionAttachment(
       todoId,
       submissionId,
       attachmentId,

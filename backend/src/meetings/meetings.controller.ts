@@ -12,6 +12,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { MeetingsService } from './meetings.service';
+import { TodosService } from './todos.service';
 import { AiService } from '../ai/ai.service';
 import { AskMeetingDto } from '../ai/dto/ai.dto';
 import {
@@ -51,6 +52,8 @@ import { PERMISSIONS } from '../auth/permissions';
 export class MeetingsController {
   constructor(
     private readonly meetingsService: MeetingsService,
+    // 待办相关接口已经拆到独立 service，路由前缀仍是 /meetings
+    private readonly todosService: TodosService,
     // 追问复用 AI 模块的模型客户端，但不把 AI 相关逻辑搬进会议服务
     private readonly aiService: AiService,
   ) {}
@@ -89,7 +92,7 @@ export class MeetingsController {
     @Body() dto: CreateTodoDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.createTodo(id, dto, user);
+    return this.todosService.createTodo(id, dto, user);
   }
 
   /** 编辑待办事项 */
@@ -99,7 +102,7 @@ export class MeetingsController {
     @Body() dto: UpdateTodoDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.updateTodo(id, dto, user);
+    return this.todosService.updateTodo(id, dto, user);
   }
 
   /** 手动修改会议完成状态 */
@@ -234,7 +237,7 @@ export class MeetingsController {
   /** 按人汇总待办负载：谁手上堆了多少、谁老被打回、谁的交付等验收最久 */
   @Get('todo-workload')
   getTodoWorkload(@CurrentUser() user: AuthenticatedUser) {
-    return this.meetingsService.getTodoWorkload(user);
+    return this.todosService.getTodoWorkload(user);
   }
 
   /** 通过整数 ID 查询单条会议；ParseIntPipe 会拦截非数字路径参数。 */
@@ -311,7 +314,7 @@ export class MeetingsController {
     @Body() dto: TodoStatusDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.updateTodoStatus(id, dto.status, user);
+    return this.todosService.updateTodoStatus(id, dto.status, user);
   }
 
   /** 删除单条待办事项 */
@@ -320,7 +323,7 @@ export class MeetingsController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.removeTodo(id, user);
+    return this.todosService.removeTodo(id, user);
   }
 
   /* =========================
@@ -334,7 +337,7 @@ export class MeetingsController {
     @Body() dto: SetChecklistDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.setTodoChecklist(id, dto.items, user);
+    return this.todosService.setTodoChecklist(id, dto.items, user);
   }
 
   /** 勾选 / 取消一条验收要点 */
@@ -345,7 +348,7 @@ export class MeetingsController {
     @Body() dto: ToggleCheckItemDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.toggleTodoCheckItem(id, itemId, dto.done, user);
+    return this.todosService.toggleTodoCheckItem(id, itemId, dto.done, user);
   }
 
   /* =========================
@@ -359,7 +362,7 @@ export class MeetingsController {
     @Body() dto: NudgeTodoDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.nudgeTodo(id, dto.to, dto.message, user);
+    return this.todosService.nudgeTodo(id, dto.to, dto.message, user);
   }
 
   /** 认领：把没有负责人的待办揽到自己名下，先到先得 */
@@ -368,7 +371,7 @@ export class MeetingsController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.claimTodo(id, user);
+    return this.todosService.claimTodo(id, user);
   }
 
   /** 提交交付：有验收人时进入待验收，否则直接完成 */
@@ -378,7 +381,7 @@ export class MeetingsController {
     @Body() dto: SubmitTodoDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.submitTodo(id, dto?.note, user);
+    return this.todosService.submitTodo(id, dto?.note, user);
   }
 
   /** 某条待办的提交时间线 */
@@ -387,7 +390,7 @@ export class MeetingsController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.listTodoSubmissions(id, user);
+    return this.todosService.listTodoSubmissions(id, user);
   }
 
   /** 待办流转时间线 */
@@ -396,7 +399,7 @@ export class MeetingsController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.listTodoEvents(id, user);
+    return this.todosService.listTodoEvents(id, user);
   }
 
   /** 撤回提交（仅待验收状态） */
@@ -405,7 +408,7 @@ export class MeetingsController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.withdrawSubmission(id, user);
+    return this.todosService.withdrawSubmission(id, user);
   }
 
   /** 验收通过 */
@@ -414,7 +417,7 @@ export class MeetingsController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.acceptSubmission(id, user);
+    return this.todosService.acceptSubmission(id, user);
   }
 
   /** 打回，原因必填 */
@@ -424,6 +427,6 @@ export class MeetingsController {
     @Body() dto: RejectSubmissionDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.meetingsService.rejectSubmission(id, dto.reason, user);
+    return this.todosService.rejectSubmission(id, dto.reason, user);
   }
 }
