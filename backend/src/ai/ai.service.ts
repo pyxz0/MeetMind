@@ -12,6 +12,7 @@ import { NotFoundException } from '@nestjs/common';
 import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
 import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
+import { cstDayKey } from '../common/datetime';
 import { assertCanRead, assertCanWrite } from '../meetings/meetings.access';
 import { buildAskSystemPrompt } from './meeting-context';
 
@@ -303,6 +304,8 @@ deadline：截止时间
     // 重新生成会覆盖摘要与待办，属于写操作，需要该会议的写权限
     await assertCanWrite(this.prisma, user, id);
 
+    this.consumeGenerateQuota(user.id);
+
     const meeting = await this.prisma.meeting.findUnique({
       where: { id },
       include: {
@@ -565,6 +568,8 @@ deadline：截止时间
       throw new InternalServerErrorException('会议内容不能为空');
     }
 
+    this.consumeGenerateQuota(user.id);
+
     const contentHash = createHash('sha256').update(trimmed).digest('hex');
 
     const running = await this.prisma.meetingGeneration.findFirst({
@@ -670,6 +675,15 @@ deadline：截止时间
   /** 追问的限流窗口与配额 */
   private static readonly ASK_WINDOW_MS = 60_000;
   private static readonly ASK_LIMIT = 8;
+
+  /** 生成纪要的日配额（每人每天） */
+  private static readonly GENERATE_DAILY_LIMIT = 30;
+
+  /** userId → { day, count }，跨天自动重置 */
+  private readonly generateUsage = new Map<
+    number,
+    { day: string; count: number }
+  >();
 
   /** 每个用户最近若干次提问的时间戳（进程内，单实例有效） */
   private readonly askHits = new Map<number, number[]>();
@@ -833,6 +847,45 @@ deadline：截止时间
    * 进程内计数，只对单实例有效；多副本部署需要换 Redis。
    * 这里不追求精确，目的是挡住「按住回车连发」和顺手写的小脚本。
    */
+  /**
+   * 生成纪要的日配额。
+   *
+   * 追问有 60 秒 8 次的窗口限制，能给出即时反馈；但生成是**长文本**调用，
+   * token 消耗是追问的几十倍，而且走异步任务，用户感知不到频率。
+   * 没有日配额的话，一个循环调用几分钟就能把整月额度烧完。
+   *
+   * 在入口计数而不是在真正调 API 时计数：排队中也算一次，
+   * 否则反复点「生成」能把任务队列塞满。
+   */
+  private consumeGenerateQuota(userId: number) {
+    const day = cstDayKey(new Date());
+    const record = this.generateUsage.get(userId);
+
+    if (!record || record.day !== day) {
+      this.generateUsage.set(userId, { day, count: 1 });
+
+      return;
+    }
+
+    if (record.count >= AiService.GENERATE_DAILY_LIMIT) {
+      throw new HttpException(
+        `今天已生成 ${AiService.GENERATE_DAILY_LIMIT} 次纪要，明天再试`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    record.count += 1;
+
+    // 跨天的旧记录没有意义，顺手清掉，防止 Map 随用户数增长
+    if (this.generateUsage.size > 500) {
+      for (const [id, item] of this.generateUsage) {
+        if (item.day !== day) {
+          this.generateUsage.delete(id);
+        }
+      }
+    }
+  }
+
   private assertAskQuota(userId: number) {
     const now = Date.now();
     const since = now - AiService.ASK_WINDOW_MS;
