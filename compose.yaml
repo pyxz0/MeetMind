@@ -39,6 +39,8 @@ services:
   # 复用 deps 阶段（含 prisma CLI），因此 runtime 镜像可以保持精简
   migrate:
     profiles: ["prod"]
+    # 生产用 CI 构建好并推到 GHCR 的镜像；本地不设这三个变量时仍走 build
+    image: ${MIGRATE_IMAGE:-meetmind-migrate:latest}
     build:
       context: ./backend
       target: deps
@@ -55,6 +57,7 @@ services:
 
   backend:
     profiles: ["prod"]
+    image: ${BACKEND_IMAGE:-meetmind-backend:latest}
     build:
       context: ./backend
       args:
@@ -114,6 +117,7 @@ services:
 
   frontend:
     profiles: ["prod"]
+    image: ${FRONTEND_IMAGE:-meetmind-frontend:latest}
     build:
       context: ./frontend
       args:
