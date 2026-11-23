@@ -1,0 +1,44 @@
+name: Uptime
+
+# 为什么要有这个：服务挂过一次，是用户先发现的，不是我们。
+# 没有告警时，宕机只能靠「刚好有人去打开网站」才知道。
+#
+# 这里是最低成本的兜底：定时探测线上首页和接口，任何一个不是 200
+# 就让 workflow 失败 —— GitHub 默认会给仓库 owner 发失败通知邮件。
+#
+# 局限要说清楚：
+# - GitHub 的 schedule 在高峰期会延迟，实测可能晚 5–15 分钟
+# - 通知只有邮件，半夜挂了未必看得到
+#
+# 要更快更可靠的告警，配阿里云云监控（短信 + 电话），见 README「可用性监控」。
+
+on:
+  schedule:
+    # 每 10 分钟。GitHub 会按自身负载排队，不保证准时。
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 探测站点与接口
+        run: |
+          set -u
+          fail=0
+
+          # /api 是健康检查端点，命中免费；首页用来验证 nginx 也能出内容
+          for url in "https://meetmind.asia/" "https://meetmind.asia/api"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --retry 2 --retry-delay 3 "$url" || echo 000)
+            echo "$url -> $code"
+            if [ "$code" != "200" ]; then
+              fail=1
+            fi
+          done
+
+          if [ "$fail" != "0" ]; then
+            echo "::error::站点探测失败，请检查 https://meetmind.asia 与服务器状态"
+          fi
+
+          exit $fail
