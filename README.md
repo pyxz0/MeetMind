@@ -505,13 +505,62 @@ cp .env.example .env      # 填好 JWT_SECRET、DEEPSEEK_API_KEY
 
 生产机是 2 核 2G，在上面跑全量 `docker build` 会把整台机压到用户态进程
 无法调度（2026-11-22 实际发生过，线上不可用十几分钟）。所以镜像改由
-GitHub Actions 构建并推到 GHCR，服务器只做 pull：
+GitHub Actions 构建并推到**阿里云 ACR**，服务器只做 pull。
+
+> 为什么不用 GHCR：`ghcr.io` 的 manifest 能拿到，但镜像层在国内被阻断，
+> 服务器 `docker pull` 会卡在零进度（实测 150 秒没有任何下载，NJU 镜像站同样不行）。
+> 同时 `docker pull redis:alpine` 只要 43 秒，说明不是 Docker 的问题。
+
+#### 一次性配置
+
+**1. 开通 ACR 个人版**
+
+阿里云控制台 → 容器镜像服务 → 个人版 → 创建实例，地域选**华南3（广州）**，
+与 ECS 同地域（跨地域也能用，只是走公网）。
+
+**2. 创建命名空间**
+
+实例内 → 命名空间 → 创建，填 `meetmind`。
+
+**3. 设置固定密码**
+
+实例内 → 访问凭证 → 设置 Registry 登录密码。
+**这不是阿里云账号的登录密码**，是单独设的一个密码。
+
+同一页面上会显示**登录域名**，它有两种格式，抄哪个取决于你创建的实例版本：
+
+```
+registry.cn-guangzhou.aliyuncs.com                 # 老版个人版
+crpi-xxxxxxxx.cn-guangzhou.personal.cr.aliyuncs.com  # 新版个人版
+```
+
+**4. 配 GitHub Secrets 与 Variables**
+
+仓库 Settings → Secrets and variables → Actions：
+
+| 类型 | 名称 | 值 |
+|---|---|---|
+| Secret | `ACR_USERNAME` | 阿里云账号全名，或 RAM 用户名 |
+| Secret | `ACR_PASSWORD` | 第 3 步设置的固定密码 |
+| Variable | `ACR_REGISTRY` | 第 3 步显示的域名（老版可省略，默认 `registry.cn-guangzhou.aliyuncs.com`） |
+| Variable | `ACR_NAMESPACE` | `meetmind`（可省略） |
+
+**5. 服务器 `.env` 填凭据**
+
+```bash
+ACR_REGISTRY=registry.cn-guangzhou.aliyuncs.com
+ACR_NAMESPACE=meetmind
+ACR_USERNAME=<同上>
+ACR_PASSWORD=<同上>
+```
+
+#### 日常部署
 
 ```bash
 ssh root@<server> "cd /opt/meetmind && bash scripts/deploy.sh"
 ```
 
-脚本依次：备份数据库 → 拉镜像 → 跑迁移 → `up -d --no-build`。
+脚本依次：登录 ACR → 备份数据库 → 拉镜像 → 跑迁移 → `up -d --no-build`。
 
 回滚到某次提交对应的镜像：
 
@@ -519,10 +568,23 @@ ssh root@<server> "cd /opt/meetmind && bash scripts/deploy.sh"
 bash scripts/deploy.sh <完整 git sha>
 ```
 
-镜像地址形如 `ghcr.io/pyxz0/meetmind-backend:latest`，由
+镜像地址形如 `<REGISTRY>/meetmind/meetmind-backend:latest`，由
 `.github/workflows/images.yml` 在每次 push 到 main 时构建（也可在 Actions 页手动触发）。
 三个服务通过 `.env` 的 `BACKEND_IMAGE` / `FRONTEND_IMAGE` / `MIGRATE_IMAGE` 覆盖，
 不设时仍走本地 `build`，所以本地开发流程不受影响。
+
+#### 没配好 ACR 时的退路
+
+在服务器上按服务逐个构建（只构建改动过的那个，约 4 分钟）：
+
+```bash
+cd /opt/meetmind
+git fetch --depth=1 origin main && git reset --hard FETCH_HEAD
+docker compose --profile prod build backend
+docker compose --profile prod up -d
+```
+
+**不要**一条命令构建全部三个服务 —— 内存峰值会顶到上限。
 
 ### 没有 CI 时的手工部署
 
