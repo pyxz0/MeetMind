@@ -102,6 +102,11 @@ jobs:
           context: ${{ matrix.context }}
           target: ${{ matrix.target }}
           push: true
+          # 必须关掉：buildx 默认生成 provenance/attestation 的 OCI 索引，
+          # ACR 个人版不认识 `application/vnd.oci.empty.v1+json` 这个 media type，
+          # 会直接拒收整个 manifest —— 报错是 "unknown manifest class"，
+          # 看起来像权限问题，其实是格式问题。
+          provenance: false
           # latest 给生产用，sha 用于回滚到任意一次提交
           tags: |
             ${{ env.IMAGE_PREFIX }}-${{ matrix.name }}:latest
