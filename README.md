@@ -501,7 +501,30 @@ cp .env.example .env      # 填好 JWT_SECRET、DEEPSEEK_API_KEY
 后端与 Docker 编排都读**仓库根目录的 `.env`**（后端按 `.env` → `../.env` 顺序查找），
 不再需要维护多份环境变量文件。缺少 `DATABASE_URL` 或 `JWT_SECRET` 时服务启动即报错。
 
-### 一条命令部署（Docker）
+### 生产部署（CI 构建镜像，服务器只拉取）
+
+生产机是 2 核 2G，在上面跑全量 `docker build` 会把整台机压到用户态进程
+无法调度（2026-11-22 实际发生过，线上不可用十几分钟）。所以镜像改由
+GitHub Actions 构建并推到 GHCR，服务器只做 pull：
+
+```bash
+ssh root@<server> "cd /opt/meetmind && bash scripts/deploy.sh"
+```
+
+脚本依次：备份数据库 → 拉镜像 → 跑迁移 → `up -d --no-build`。
+
+回滚到某次提交对应的镜像：
+
+```bash
+bash scripts/deploy.sh <完整 git sha>
+```
+
+镜像地址形如 `ghcr.io/pyxz0/meetmind-backend:latest`，由
+`.github/workflows/images.yml` 在每次 push 到 main 时构建（也可在 Actions 页手动触发）。
+三个服务通过 `.env` 的 `BACKEND_IMAGE` / `FRONTEND_IMAGE` / `MIGRATE_IMAGE` 覆盖，
+不设时仍走本地 `build`，所以本地开发流程不受影响。
+
+### 没有 CI 时的手工部署
 
 ```bash
 docker compose --profile prod up -d --build
@@ -522,6 +545,81 @@ Windows 也可以直接双击根目录的 `start-backend.cmd` / `start-frontend.
 在独立命令提示符窗口中运行并查看日志。
 
 > 基础镜像拉不动时，在 `.env` 里设置 `NODE_IMAGE` / `NGINX_IMAGE` 为国内镜像源。
+
+## 💾 备份与恢复
+
+### 自动备份
+
+服务器 crontab 每天 03:20 执行 `scripts/backup.sh`：
+
+- `pg_dump -Fc` 压缩后写到 `/opt/meetmind/backups/db-<时间>.dump.gz`
+- 保留 14 天，更早的自动清理
+- 先写临时文件、成功后才改名 —— dump 中途失败不会留下半个文件冒充有效备份
+- 文件小于 1KB 视为异常并丢弃（空库约 100 字节，真实数据在 100KB 量级）
+
+手动执行一次：
+
+```bash
+ssh root@<server> "cd /opt/meetmind && bash scripts/backup.sh"
+```
+
+日志在 `/var/log/meetmind-backup.log`。
+
+### 验证备份可用（建议每月一次）
+
+备份不验证等于没备份。还原到临时库比对行数，全程不影响生产库：
+
+```bash
+cd /opt/meetmind
+F=$(ls -t backups/db-*.dump.gz | head -1)
+
+docker exec meetmind-db-1 dropdb -U meetmind --if-exists mm_verify
+docker exec meetmind-db-1 createdb -U meetmind mm_verify
+gunzip -c "$F" | docker exec -i meetmind-db-1 pg_restore -U meetmind -d mm_verify --no-owner
+
+for t in users meetings meeting_todos; do
+  printf '%-16s ' "$t"
+  docker exec meetmind-db-1 psql -U meetmind -d mm_verify -tAc "select count(*) from $t"
+done
+
+docker exec meetmind-db-1 dropdb -U meetmind mm_verify
+```
+
+### 恢复
+
+```bash
+cd /opt/meetmind
+F=backups/db-20261123-0320.dump.gz
+
+docker compose --profile prod stop backend frontend
+docker exec -i meetmind-db-1 psql -U meetmind -d postgres -c 'drop database meetmind'
+docker exec -i meetmind-db-1 psql -U meetmind -d postgres -c 'create database meetmind'
+gunzip -c "$F" | docker exec -i meetmind-db-1 pg_restore -U meetmind -d meetmind --no-owner
+docker compose --profile prod start backend frontend
+```
+
+> **局限**：备份和数据库在同一块磁盘上。它能挡住误删和数据损坏（日常概率最高），
+> 挡不住磁盘故障。要真正异地，用 `rclone` 或阿里云 `ossutil` 把 `backups/` 同步到对象存储，
+> 成本每月几毛钱。
+
+## 📡 可用性监控
+
+### 内置：GitHub Actions 定时探测
+
+`.github/workflows/uptime.yml` 每 10 分钟探测首页与 `/api`，任一不是 200 就让
+workflow 失败，GitHub 会给仓库 owner 发失败通知邮件。
+
+局限：GitHub 的 `schedule` 在高峰期会延迟（实测 5–15 分钟），且只有邮件，
+半夜挂了未必看得到。
+
+### 更可靠：阿里云云监控（短信 + 电话）
+
+1. 云监控控制台 → 站点监控 → 新建任务
+2. 监控地址 `https://meetmind.asia/api`，频率 5 分钟，探测点选 3 个以上地域
+3. 报警规则：连续 3 次不可用 → 通知「短信 + 邮件」
+4. 报警联系人填自己的手机号
+
+站点监控有免费额度，通常够单站点使用。
 
 ## 1. 环境要求
 
