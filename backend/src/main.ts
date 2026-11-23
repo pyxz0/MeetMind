@@ -7,6 +7,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
+import { createRateLimit } from './common/rate-limit.middleware';
 
 /** 录音文件的存放目录，与 MeetingAudioService 使用同一规则 */
 const UPLOAD_DIR = join(process.cwd(), 'uploads');
@@ -56,6 +57,21 @@ async function bootstrap() {
 
     next();
   });
+
+  /**
+   * 全局兜底限流：300 次/分钟/IP。
+   *
+   * 阈值远高于正常使用，只拦得住脚本刷接口和密码爆破 ——
+   * 真正花钱的 AI 生成由 AiService 按用户单独算日配额。
+   * 健康检查豁免：监控探测很频繁，别把它算进额度。
+   */
+  app.use(
+    createRateLimit({
+      windowMs: 60_000,
+      limit: 300,
+      skip: (req) => req.path === '/api' || req.path === '/api/health',
+    }),
+  );
 
   /**
    * 全局参数校验：
