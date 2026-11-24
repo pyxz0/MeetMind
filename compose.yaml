@@ -68,7 +68,10 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meetmind}:${POSTGRES_PASSWORD:-meetmind}@db:5432/${POSTGRES_DB:-meetmind}?schema=public
+      # connection_limit：Prisma 默认按 CPU 核数算（2 核 → 5 个连接），
+      # 而收件箱这类接口一次要并发 6 个查询，自己就会排队。
+      # 数据库 max_connections 是 100，10 个连接不会造成压力。
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meetmind}:${POSTGRES_PASSWORD:-meetmind}@db:5432/${POSTGRES_DB:-meetmind}?schema=public&connection_limit=10&pool_timeout=20
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 必须在 .env 中设置}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}

@@ -4,7 +4,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -16,9 +15,7 @@ import { MailService } from '../common/mail.service';
 import type { AuthenticatedUser } from './auth.decorators';
 import type { AppRole } from './permissions';
 import { ROLE_PERMISSIONS, ROLE_LABELS } from './permissions';
-
-/** bcrypt 代价因子。12 约 250ms/次，兼顾安全与登录体验。 */
-const BCRYPT_ROUNDS = 12;
+import { hashPassword, needsRehash, verifyPassword } from './password-hash';
 
 /**
  * 中国大陆手机号：1 开头、第二位 3-9、共 11 位。
@@ -91,7 +88,7 @@ export class AuthService {
       throw new UnauthorizedException('手机号或密码不正确');
     }
 
-    const matched = await bcrypt.compare(password, user.passwordHash);
+    const matched = await verifyPassword(password, user.passwordHash);
 
     if (!matched) {
       throw new UnauthorizedException('手机号或密码不正确');
@@ -99,6 +96,23 @@ export class AuthService {
 
     if (!user.isActive) {
       throw new UnauthorizedException('账号已被停用，请联系管理员');
+    }
+
+    /**
+     * 老用户的 bcrypt 哈希在登录成功这一刻透明升级成 scrypt。
+     *
+     * 不阻塞响应：升级失败也没关系，下次登录会再试一次，
+     * 用户完全无感（这也是唯一能大规模迁移哈希、又不用强制重置密码的办法）。
+     */
+    if (needsRehash(user.passwordHash)) {
+      void hashPassword(password)
+        .then((passwordHash) =>
+          this.prisma.user.update({
+            where: { id: user.id },
+            data: { passwordHash },
+          }),
+        )
+        .catch(() => undefined);
     }
 
     await this.audit.record(user, {
@@ -147,16 +161,31 @@ export class AuthService {
       throw new BadRequestException('该手机号已被注册');
     }
 
-    const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
+    const passwordHash = await hashPassword(input.password);
 
-    const user = await this.prisma.user.create({
-      data: {
-        phone,
-        passwordHash,
-        name: name.slice(0, 80),
-        role: 'USER',
-      },
-    });
+    /**
+     * 先查再插有竞态：两个请求同时通过上面的 existing 检查时，
+     * 后一个会在电话唯一索引上撞车。抓住 P2002 转成同样的业务提示，
+     * 而不是把原始数据库错误抛成 500。
+     */
+    let user;
+
+    try {
+      user = await this.prisma.user.create({
+        data: {
+          phone,
+          passwordHash,
+          name: name.slice(0, 80),
+          role: 'USER',
+        },
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2002') {
+        throw new BadRequestException('该手机号已被注册');
+      }
+
+      throw error;
+    }
 
     await this.audit.record(user, {
       action: 'auth.login',
@@ -301,7 +330,7 @@ export class AuthService {
         throw new BadRequestException('修改密码需要提供原密码');
       }
 
-      const matched = await bcrypt.compare(
+      const matched = await verifyPassword(
         input.currentPassword,
         user.passwordHash,
       );
@@ -315,10 +344,7 @@ export class AuthService {
         throw new BadRequestException('新密码不能与原密码相同');
       }
 
-      data.passwordHash = await bcrypt.hash(
-        input.newPassword,
-        BCRYPT_ROUNDS,
-      );
+      data.passwordHash = await hashPassword(input.newPassword);
       /** 改密即作废此前所有会话（守卫比对 tv） */
       data.tokenVersion = { increment: 1 };
     }
@@ -413,7 +439,8 @@ export class AuthService {
     }
 
     if (password.length > 72) {
-      // bcrypt 只取前 72 字节，超长密码会被静默截断
+      // 上限沿用历史约定：老 bcrypt 哈希只取前 72 字节，
+      // 若不拦住，改密后超过 72 位的部分在新旧哈希下的语义会不一致
       throw new BadRequestException('密码不能超过 72 位');
     }
 
@@ -611,7 +638,7 @@ export class AuthService {
     await this.prisma.user.update({
       where: { id: user.id },
       data: {
-        passwordHash: await bcrypt.hash(newPassword, BCRYPT_ROUNDS),
+        passwordHash: await hashPassword(newPassword),
         passwordResetTokenHash: null,
         passwordResetExpiresAt: null,
         tokenVersion: { increment: 1 },

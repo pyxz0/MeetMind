@@ -1652,6 +1652,18 @@ export class TodosService {
     tx: Prisma.TransactionClient,
     meetingId: number,
   ): Promise<MeetingCompletionStatus> {
+    /**
+     * 锁住会议行再统计待办。
+     *
+     * 同一场会议的两条待办同时被勾完时，两个事务各自读待办列表（都读不到
+     * 对方未提交的改动），都算出「还有未完成」，后提交的那个会把先提交的
+     * COMPLETED 覆盖回 IN_PROGRESS —— 会议永远停在「进行中」。
+     *
+     * 加行锁后这两个事务串行执行：后一个提交前会重新读一次（READ COMMITTED
+     * 下每条语句取新快照），看到前一个的结果再推算，状态就正确了。
+     */
+    await tx.$queryRaw`SELECT id FROM meetings WHERE id = ${meetingId} FOR UPDATE`;
+
     const meeting = await tx.meeting.findUnique({
       where: { id: meetingId },
       select: { completionStatus: true },

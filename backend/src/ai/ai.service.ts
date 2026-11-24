@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -322,23 +323,35 @@ deadline：截止时间
       throw new Error('会议原文为空，无法重新生成');
     }
 
+    /**
+     * 抢占这场会议。同时点两次「重新生成」时，只让一个进去 ——
+     * 否则两次调用都会先删掉旧纪要再各自重建，最后留下谁的待办全靠时序。
+     *
+     * 用带条件的 updateMany 做成一次 CAS，抢不到直接 409。
+     * 允许抢占「卡在 PROCESSING 超过 10 分钟」的记录：进程崩溃或
+     * 上游超时会把状态留在 PROCESSING，不能让人永远无法重试。
+     */
+    const staleBefore = new Date(Date.now() - 10 * 60 * 1000);
+
+    const claimed = await this.prisma.meeting.updateMany({
+      where: {
+        id,
+        OR: [
+          { status: { not: 'PROCESSING' } },
+          { updatedAt: { lt: staleBefore } },
+        ],
+      },
+      data: { status: 'PROCESSING' },
+    });
+
+    if (!claimed.count) {
+      throw new ConflictException('这场会议正在重新生成，请稍后再试');
+    }
+
     try {
       /**
-       * 第一步：
-       * 将会议状态改为 PROCESSING。
-       */
-      await this.prisma.meeting.update({
-        where: { id },
-        data: {
-          status: 'PROCESSING',
-        },
-      });
-
-      /**
-       * 第二步：
-       * 删除之前可能存在的 AI 结果。
-       *
-       * 防止重新生成后出现重复的决策和待办。
+       * 删掉旧的 AI 结果，防止重新生成后出现重复的决策和待办。
+       * （状态已在上面用 CAS 置为 PROCESSING，这里不再重复 update）
        */
       await this.prisma.decision.deleteMany({
         where: {
@@ -353,8 +366,7 @@ deadline：截止时间
       });
 
       /**
-       * 第三步：
-       * 调用 DeepSeek。
+       * 第二步：调用 DeepSeek。
        */
       const response =
         await this.client.chat.completions.create({
@@ -572,28 +584,49 @@ deadline：截止时间
 
     const contentHash = createHash('sha256').update(trimmed).digest('hex');
 
-    const running = await this.prisma.meetingGeneration.findFirst({
-      where: {
-        userId: user.id,
-        contentHash,
-        status: { in: ['PENDING', 'RUNNING'] },
-      },
-      select: { id: true, meetingId: true, status: true },
-    });
+    /**
+     * 「查有没有在跑」和「建一条任务」之间有竞态：同一份内容连点两下，
+     * 两个请求都查不到在跑的任务，于是各自建一条，结果是两次大模型调用、
+     * 两条会议记录、双倍费用。
+     *
+     * 用事务级 advisory lock 按（用户 + 内容哈希）串行化这一段：
+     * 后到的请求会等前一个事务提交，然后看到 running 直接复用。
+     * 锁随事务结束自动释放，不需要额外维护一张锁表。
+     */
+    const { generation, reused } = await this.prisma.$transaction(
+      async (tx) => {
+        const lockKey = `meeting-gen:${user.id}:${contentHash}`;
 
-    if (running) {
-      return { ...running, reused: true };
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+        const running = await tx.meetingGeneration.findFirst({
+          where: {
+            userId: user.id,
+            contentHash,
+            status: { in: ['PENDING', 'RUNNING'] },
+          },
+          select: { id: true, meetingId: true, status: true },
+        });
+
+        if (running) {
+          return { generation: running, reused: true };
+        }
+
+        const created = await tx.meetingGeneration.create({
+          data: { userId: user.id, contentHash, status: 'PENDING' },
+          select: { id: true, meetingId: true, status: true },
+        });
+
+        return { generation: created, reused: false };
+      },
+    );
+
+    // 后台执行，不阻塞 HTTP 响应；复用的任务不能重复跑
+    if (!reused) {
+      void this.runGeneration(generation.id, content, user);
     }
 
-    const generation = await this.prisma.meetingGeneration.create({
-      data: { userId: user.id, contentHash, status: 'PENDING' },
-      select: { id: true, meetingId: true, status: true },
-    });
-
-    // 后台执行，不阻塞 HTTP 响应
-    void this.runGeneration(generation.id, content, user);
-
-    return { ...generation, reused: false };
+    return { ...generation, reused };
   }
 
   /** 后台执行生成；无论成功失败都会把状态落到任务上 */
