@@ -106,4 +106,42 @@ describe('createRateLimit', () => {
     expect(run(mw, makeReq('6.6.6.6', '/api/meetings')).passed).toBe(true);
     expect(run(mw, makeReq('6.6.6.6', '/api/meetings')).passed).toBe(false);
   });
+
+  it('keyOf 生效时按自定义键分桶，同一 IP 的不同用户互不影响', () => {
+    // 典型办公网：出口 IP 相同，但两个人应该各算各的
+    const users: Record<string, string> = {
+      aaa: 'u:1',
+      bbb: 'u:2',
+    };
+
+    const mw = createRateLimit({
+      windowMs: 60_000,
+      limit: 1,
+      keyOf: (req) => users[req.headers['x-token'] as string] ?? null,
+    });
+
+    const withToken = (token: string) =>
+      ({
+        headers: { 'x-real-ip': '7.7.7.7', 'x-token': token },
+        path: '/api/meetings',
+        socket: { remoteAddress: '172.18.0.5' },
+      }) as unknown as Request;
+
+    expect(run(mw, withToken('aaa')).passed).toBe(true);
+    // 换个人：虽然 IP 相同，但不该被前一个人的额度挡住
+    expect(run(mw, withToken('bbb')).passed).toBe(true);
+    // 同一用户第二次才被拦
+    expect(run(mw, withToken('aaa')).passed).toBe(false);
+  });
+
+  it('keyOf 返回 null 时退回按 IP', () => {
+    const mw = createRateLimit({
+      windowMs: 60_000,
+      limit: 1,
+      keyOf: () => null,
+    });
+
+    expect(run(mw, makeReq('8.8.8.8')).passed).toBe(true);
+    expect(run(mw, makeReq('8.8.8.8')).passed).toBe(false);
+  });
 });

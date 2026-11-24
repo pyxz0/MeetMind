@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { createRateLimit } from './common/rate-limit.middleware';
+import { readBearerSubject } from './auth/bearer-subject';
 
 /** 录音文件的存放目录，与 MeetingAudioService 使用同一规则 */
 const UPLOAD_DIR = join(process.cwd(), 'uploads');
@@ -59,17 +60,51 @@ async function bootstrap() {
   });
 
   /**
-   * 全局兜底限流：300 次/分钟/IP。
+   * 全局兜底限流：默认 600 次/分钟，**已登录按用户、未登录按 IP**。
    *
-   * 阈值远高于正常使用，只拦得住脚本刷接口和密码爆破 ——
-   * 真正花钱的 AI 生成由 AiService 按用户单独算日配额。
+   * 为什么不再只按 IP：办公网几十个人共用一个出口 IP 时，
+   * 人均额度被稀释成个位数，正常翻页就会撞 429，而用户只会看到
+   * 「请求过于频繁」，根本想不到是同事在用。
+   *
+   * 阈值可以用 RATE_LIMIT_MAX 覆盖，改之前不用重新构建镜像。
    * 健康检查豁免：监控探测很频繁，别把它算进额度。
    */
+  const rateLimitMax = Number(process.env.RATE_LIMIT_MAX ?? 600);
+  const jwtSecret = process.env.JWT_SECRET ?? '';
+
   app.use(
     createRateLimit({
       windowMs: 60_000,
-      limit: 300,
+      limit: Number.isFinite(rateLimitMax) && rateLimitMax > 0 ? rateLimitMax : 600,
       skip: (req) => req.path === '/api' || req.path === '/api/health',
+      keyOf: (req) => {
+        const userId = readBearerSubject(req.headers.authorization, jwtSecret);
+
+        return userId === null ? null : `u:${userId}`;
+      },
+    }),
+  );
+
+  /**
+   * 认证接口单独更严：默认 30 次/分钟/IP。
+   *
+   * 登录每次都要算一次 KDF（约 120ms CPU），按压测数据这台 2 核机器
+   * 满打满算 17 次/秒 —— 也就是说，光靠全局的 600/min 就足以让
+   * 有人用登录接口把 CPU 打满。这一层是专门堵这个口子的。
+   */
+  const authLimit = Number(process.env.RATE_LIMIT_AUTH_MAX ?? 30);
+
+  app.use(
+    [
+      '/api/auth/login',
+      '/api/auth/register',
+      '/api/auth/password-reset/request',
+      '/api/auth/password-reset/inspect',
+      '/api/auth/password-reset/confirm',
+    ],
+    createRateLimit({
+      windowMs: 60_000,
+      limit: Number.isFinite(authLimit) && authLimit > 0 ? authLimit : 30,
     }),
   );
 

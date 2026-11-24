@@ -18,6 +18,14 @@ export interface RateLimitOptions {
   limit: number;
   /** 返回 true 的请求不参与限流，用于健康检查等 */
   skip?: (req: Request) => boolean;
+  /**
+   * 自定义分桶键。返回 null 时退回按 IP。
+   *
+   * 存在的意义：只按 IP 分桶时，办公网几十个人共用一个出口 IP，
+   * 人均配额被稀释到个位数，正常使用就会撞 429 —— 而且用户完全
+   * 不知道是同事把额度用掉了。
+   */
+  keyOf?: (req: Request) => string | null;
 }
 
 const clientIp = (req: Request): string => {
@@ -34,6 +42,7 @@ export const createRateLimit = ({
   windowMs,
   limit,
   skip,
+  keyOf,
 }: RateLimitOptions) => {
   /** key → 命中时间戳（升序） */
   const buckets = new Map<string, number[]>();
@@ -65,7 +74,7 @@ export const createRateLimit = ({
       lastSweep = now;
     }
 
-    const key = clientIp(req);
+    const key = keyOf?.(req) ?? clientIp(req);
     const hits = (buckets.get(key) ?? []).filter((time) => now - time < windowMs);
 
     if (hits.length >= limit) {
