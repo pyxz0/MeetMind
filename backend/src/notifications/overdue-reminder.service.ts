@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../common/prisma.service';
 import { MailService } from '../common/mail.service';
 import { JobRunService } from '../system/job-run.service';
+import { isSchedulerWorker } from '../common/worker-role';
 import {
   cstDayKey,
   cstHour,
@@ -78,6 +79,16 @@ export class OverdueReminderService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    /**
+     * 同上：逾期汇总是「一天一次」，两个 worker 各跑一遍就是两封邮件。
+     * 只让 0 号 worker 执行。
+     */
+    if (!isSchedulerWorker()) {
+      this.logger.log('非 0 号 worker，跳过逾期提醒（由 0 号负责）');
+
+      return;
+    }
+
     /**
      * 邮件和企微群是两条独立的出口，任意一条可用就该跑。
      *

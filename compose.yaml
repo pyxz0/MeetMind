@@ -76,6 +76,10 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
       PORT: 3000
+      # Node 单进程只能用满一个核。2 核机器开 2 个 worker，读接口吞吐约翻倍。
+      # 代价：进程内计数器（限流、AI 日配额）每个 worker 各算一份，
+      # 实际额度会乘以 worker 数；定时任务只由 0 号 worker 执行。
+      APP_WORKERS: ${APP_WORKERS:-2}
       TZ: Asia/Shanghai
 
       # 邮件里拼链接用（重置密码、会议提醒、待办逾期）。

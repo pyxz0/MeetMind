@@ -70,4 +70,7 @@ USER app
 
 # 迁移不在启动命令里执行：由 compose 的 migrate 服务先跑完，
 # 避免多副本同时迁移，也让 runtime 镜像不需要 prisma CLI。
-CMD ["node", "dist/main.js"]
+#
+# 入口用 cluster.js 而不是 main.js：APP_WORKERS>1 时它会 fork 多个 worker
+# （2 核机器能吃满两个核）；默认 1，行为与直接跑 main.js 完全一致。
+CMD ["node", "dist/cluster.js"]

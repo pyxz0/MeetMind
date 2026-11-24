@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../common/prisma.service';
 import { MailService } from '../common/mail.service';
 import { JobRunService } from '../system/job-run.service';
+import { isSchedulerWorker } from '../common/worker-role';
 import {
   buildDigestHtml,
   buildDigestSubject,
@@ -45,6 +46,17 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    /**
+     * 多进程下只有 0 号 worker 发邮件。
+     * 两个 worker 各跑一遍轮询，用户会收到两封同样的提醒 ——
+     * 邮件发出去收不回来，不像站内消息还能当作重复未读忽略。
+     */
+    if (!isSchedulerWorker()) {
+      this.logger.log('非 0 号 worker，跳过邮件轮询（由 0 号负责）');
+
+      return;
+    }
+
     if (!this.mail.configured) {
       this.logger.warn(
         '未配置 SMTP，邮件提醒不会发出（站内收件箱不受影响）',
