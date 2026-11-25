@@ -1638,8 +1638,20 @@ export class TodosService {
 
     if (!targets.length) return
 
+    /**
+     * 通知要带上会议的归属空间。
+     * 多查一次是必要的：调用方只传了 meetingId，而 meeting_notices.tenant_id 是 NOT NULL。
+     */
+    const meeting = await tx.meeting.findUnique({
+      where: { id: meetingId },
+      select: { tenantId: true },
+    })
+
+    if (!meeting) return
+
     await tx.meetingNotice.createMany({
       data: targets.map((userId) => ({
+        tenantId: meeting.tenantId,
         userId,
         meetingId,
         kind,

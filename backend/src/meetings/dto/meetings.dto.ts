@@ -8,6 +8,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -61,6 +62,17 @@ export class CreateMeetingDto {
   @IsString()
   summary?: string;
 
+  /**
+   * 保存到哪个空间。
+   *
+   * 不传 = 当前浏览的空间（active_tenant_id），绝大多数情况都不用传。
+   * 传了会被服务端校验是否属于该用户 —— **不能信前端**。
+   * 企业会议与个人会议的可邀请范围不同，见文档 §2.6。
+   */
+  @IsOptional()
+  @IsUUID('all', { message: 'tenantId 必须是合法的空间 id' })
+  tenantId?: string;
+
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
@@ -83,6 +95,11 @@ export class CreateScheduledMeetingDto {
   /** ISO 时间字符串，具体格式由服务层解析并给出中文提示 */
   @IsString()
   scheduledAt!: string;
+
+  /** 保存到哪个空间；不传 = 当前空间（见 CreateMeetingDto 的说明） */
+  @IsOptional()
+  @IsUUID('all', { message: 'tenantId 必须是合法的空间 id' })
+  tenantId?: string;
 
   @IsOptional()
   @IsArray()
@@ -322,6 +339,11 @@ export class CreateDraftDto {
 
   @IsString()
   content!: string;
+
+  /** 草稿也要归属到空间；不传 = 当前空间 */
+  @IsOptional()
+  @IsUUID('all', { message: 'tenantId 必须是合法的空间 id' })
+  tenantId?: string;
 }
 /** 把 "true"/"1" 这类查询串转成布尔值 */
 const toBoolean = ({ value }: { value: unknown }) =>

@@ -11,8 +11,8 @@ import { AuthService } from '../auth/auth.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import type { AppRole } from '../auth/permissions';
-import { PERMISSIONS, ROLE_LABELS, roleHasPermission } from '../auth/permissions';
-import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
+import { PERMISSIONS, ROLE_LABELS, hasPermission } from '../auth/permissions';
+import { visibleMeetingScope } from '../meetings/meetings.scope';
 import {
   createResetToken,
   hashResetToken,
@@ -75,24 +75,26 @@ export class UsersService {
   ) {
     const keyword = query.keyword?.trim();
 
-    const where: Record<string, unknown> = {};
-
-    if (operator.role === 'ADMIN') {
-      where.role = { in: ['USER', 'ADMIN'] };
-    }
+    /**
+     * 用户列表是**租户内**功能：只看当前空间的成员。
+     *
+     * 多租户前这里是空对象（查全库）。现在平台超管默认读不到任何企业的人 ——
+     * 他要管的是租户，不是某家企业的员工。超管账号本身也不出现在列表里，
+     * 与其他人的选人范围保持一致。
+     */
+    const where: Record<string, unknown> = {
+      memberships: { some: { tenantId: operator.activeTenantId } },
+      role: { not: 'SUPER_ADMIN' },
+    };
 
     if (query.role) {
       const role = query.role.toUpperCase() as AppRole;
 
-      if (!ROLE_RANK[role]) {
+      if (!ROLE_RANK[role] || role === 'SUPER_ADMIN') {
         throw new BadRequestException('无效的角色');
       }
 
-      // 与上面的可见范围取交集，防止管理员通过 role 参数越权查看
-      where.role =
-        operator.role === 'ADMIN' && role === 'SUPER_ADMIN'
-          ? { in: ['USER', 'ADMIN'] }
-          : role;
+      where.role = role;
     }
 
     if (keyword) {
@@ -105,7 +107,18 @@ export class UsersService {
 
     const users = await this.prisma.user.findMany({
       where,
-      select: publicUserSelect,
+      select: {
+        ...publicUserSelect,
+        /**
+         * 这一批人都是当前空间的成员，但角色是**租户角色**
+         * （OWNER / ADMIN / MEMBER），不是 users.role。
+         * 前端要按它决定"能不能移出"、"显示成管理员还是成员"。
+         */
+        memberships: {
+          where: { tenantId: operator.activeTenantId },
+          select: { role: true, createdAt: true },
+        },
+      },
       orderBy: [{ role: 'desc' }, { createdAt: 'asc' }],
     });
 
@@ -114,23 +127,34 @@ export class UsersService {
       phone: user.phone,
       name: user.name,
       role: user.role,
+      /** 在当前空间里的角色；数据一致时一定有值 */
+      tenantRole: user.memberships[0]?.role ?? null,
+      /** 加入当前空间的时间 */
+      joinedAt: user.memberships[0]?.createdAt.toISOString() ?? null,
       isActive: user.isActive,
       createdAt: user.createdAt.toISOString(),
     }));
   }
 
   /**
-   * 通讯录：任何登录用户可见的最简账号集合。
+   * 通讯录：**本空间**里任何登录用户可见的最简账号集合。
    *
    * 只给姓名与手机号，不含角色/启停等管理字段，
    * 因为普通用户也需要在会议里指定负责人与成员。
    *
+   * 多租户后必须按当前空间过滤：不加这一条，企业 A 的员工能在选人列表里
+   * 看到企业 B 的全部员工 —— 这是最容易被发现、也最伤客户信任的一类泄露。
+   *
    * 超级管理员从此处隐藏：超管是系统级账号，
    * 不应出现在其他用户的选人列表里（避免被拉进会议或推断出账号存在）。
    */
-  async listContacts() {
+  async listContacts(operator: AuthenticatedUser) {
     const users = await this.prisma.user.findMany({
-      where: { isActive: true, role: { not: 'SUPER_ADMIN' } },
+      where: {
+        isActive: true,
+        role: { not: 'SUPER_ADMIN' },
+        memberships: { some: { tenantId: operator.activeTenantId } },
+      },
       select: { id: true, name: true, phone: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -165,7 +189,7 @@ export class UsersService {
     }
 
     const isSelf = operator.id === target.id;
-    const isAdmin = roleHasPermission(operator.role, PERMISSIONS.USER_READ);
+    const isAdmin = hasPermission(operator, PERMISSIONS.USER_READ);
 
     if (
       target.role === 'SUPER_ADMIN' &&
@@ -179,17 +203,48 @@ export class UsersService {
       throw new NotFoundException('账号不存在');
     }
 
-    /** 当前用户可见的会议；超管 / 管理员走全局可见 */
-    const visibleMeetings: Prisma.MeetingWhereInput = hasGlobalMeetingAccess(operator)
-      ? {}
-      : {
-          OR: [
-            { ownerId: operator.id },
-            { leaders: { some: { userId: operator.id } } },
-            { members: { some: { userId: operator.id } } },
-            { shares: { some: { userId: operator.id } } },
-          ],
-        };
+    /**
+     * 同空间才能看名片。
+     *
+     * 多租户前这里是「任何登录用户可看」；跨租户后那等于泄露
+     * 「某某公司在用这个系统、有这些人」。唯一豁免是「有共同会议」——
+     * 个人会议邀请的外部好友需要能看到对方是谁。
+     */
+    if (!isSelf) {
+      const myTenantIds = operator.memberships.map((m) => m.tenantId);
+
+      const sharesTenant = myTenantIds.length
+        ? await this.prisma.membership.count({
+            where: { userId: targetId, tenantId: { in: myTenantIds } },
+          })
+        : 0;
+
+      if (!sharesTenant) {
+        const commonMeeting = await this.prisma.meeting.count({
+          where: {
+            AND: [
+              visibleMeetingScope(operator),
+              {
+                OR: [
+                  { ownerId: targetId },
+                  { leaders: { some: { userId: targetId } } },
+                  { members: { some: { userId: targetId } } },
+                ],
+              },
+            ],
+          },
+        });
+
+        if (!commonMeeting) {
+          // 与其他无权场景一致：404 而不是 403，不泄露账号是否存在
+          throw new NotFoundException('账号不存在');
+        }
+      }
+    }
+
+    /** 当前用户可见的会议；已按当前空间隔离（见 meetings.scope.ts） */
+    const visibleMeetings: Prisma.MeetingWhereInput =
+      visibleMeetingScope(operator);
 
     /** 共同会议：双方都能看到的正式会议（排除草稿与 AI 失败） */
     const sharedMeetingsWhere: Prisma.MeetingWhereInput = {
@@ -281,6 +336,16 @@ export class UsersService {
       throw new BadRequestException(SINGLE_SUPER_ADMIN_MESSAGE);
     }
 
+    /**
+     * 只能在企业空间里加人。
+     *
+     * 个人空间只有自己一个人，不存在"加成员"这回事；放行的话会造出
+     * 「个人空间里有第二个成员」这种违反产品模型的数据。
+     */
+    if (operator.tenantType !== 'COMPANY') {
+      throw new BadRequestException('个人空间不能添加成员');
+    }
+
     // 复用 AuthService 的归一化与格式校验，保证与自助注册完全一致
     const phone = this.authService.normalizePhone(input.phone ?? '');
 
@@ -303,21 +368,60 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
 
-    const user = await this.prisma.user.create({
-      data: {
-        phone,
-        passwordHash,
-        name: name.slice(0, 80),
-        role,
-      },
-      select: publicUserSelect,
+    /**
+     * 多租户后创建成员要建四样东西，一个事务内完成（文档 §6.12）：
+     *
+     *   个人空间 → 用户 → 企业成员关系 → 个人空间归属
+     *
+     * 顺序不能反：users.active_tenant_id 是 NOT NULL，建用户时就得有空间。
+     *
+     * 注意平台角色固定为 USER —— `ADMIN` 在 v2 里已废弃，
+     * 租户内的管理员身份由 membership.role 承担。管理员建人时选的"管理员"
+     * 映射到 membership.ADMIN，不是 users.role。
+     */
+    const tenantRole: 'ADMIN' | 'MEMBER' = role === 'ADMIN' ? 'ADMIN' : 'MEMBER';
+
+    const user = await this.prisma.$transaction(async (tx) => {
+      // 每个人都要有个人空间，否则他切不回私人空间（也过不了"每人恰好一个 PERSONAL"的校验）
+      const personal = await tx.tenant.create({
+        data: {
+          name: `${name.slice(0, 80)} 的空间`,
+          type: 'PERSONAL',
+        },
+      });
+
+      const created = await tx.user.create({
+        data: {
+          phone,
+          passwordHash,
+          name: name.slice(0, 80),
+          role: 'USER',
+          /** 新成员直接进企业空间工作，不是先落在个人空间 */
+          activeTenantId: operator.activeTenantId,
+        },
+        select: publicUserSelect,
+      });
+
+      await tx.membership.create({
+        data: {
+          tenantId: operator.activeTenantId,
+          userId: created.id,
+          role: tenantRole,
+        },
+      });
+
+      await tx.membership.create({
+        data: { tenantId: personal.id, userId: created.id, role: 'OWNER' },
+      });
+
+      return created;
     });
 
     await this.audit.record(operator, {
       action: 'user.create',
       resourceType: 'user',
       resourceId: user.id,
-      metadata: { role },
+      metadata: { role: tenantRole, tenantId: operator.activeTenantId },
     });
 
     return { ...user, createdAt: user.createdAt.toISOString() };

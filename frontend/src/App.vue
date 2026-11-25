@@ -10,6 +10,7 @@ import {
   formatRecordingTime,
 } from './composables/recordingStatus'
 import { authStore } from './stores/auth'
+import TenantSwitcher from './components/TenantSwitcher.vue'
 import {
   getMeetingsPage,
   type MeetingRecord,
@@ -33,6 +34,15 @@ const isPublicPage = computed(() => route.meta.requiresAuth === false)
 
 const currentUser = computed(() => authStore.user)
 
+/**
+ * 当前空间 id，用作 router-view 的 key。
+ *
+ * 切换空间后 key 变化 → 页面组件整体重建 → 各页 onMounted 重新拉数据。
+ * 这比 location.reload() 好：不白屏、不丢滚动位置之外的状态，
+ * 也比让每个页面自己 watch 空间变化可靠 —— 新增页面不会漏。
+ */
+const spaceKey = computed(() => authStore.user?.activeTenantId ?? 'no-space')
+
 /** 当前是否处于「以他人身份浏览」状态 */
 const impersonation = computed(() => authStore.state.impersonation)
 
@@ -49,22 +59,45 @@ const backToRecording = async () => {
    顶部导航
    ========================= */
 
-const navItems = computed(() => [
-  { path: '/minutes', label: '智能纪要', count: 0 },
-  { path: '/dashboard', label: '数据看板', count: 0 },
-  { path: '/history', label: '历史会议', count: 0 },
-  { path: '/drafts', label: '草稿箱', count: draftStore.count },
-  {
-    path: '/inbox',
-    label: '收件箱',
-    count: inboxStore.unreadCount.value,
-  },
-  {
-    path: '/messages',
-    label: '私信',
-    count: messageStore.unreadCount.value,
-  },
-])
+/** 企业空间的所有者 / 管理员才看得到「成员管理」入口 */
+const canManageMembers = computed(() => {
+  const user = authStore.user
+
+  if (user?.tenantType !== 'COMPANY') return false
+
+  return user.tenantRole === 'OWNER' || user.tenantRole === 'ADMIN'
+})
+
+const navItems = computed(() => {
+  const items = [
+    { path: '/minutes', label: '智能纪要', count: 0 },
+    { path: '/dashboard', label: '数据看板', count: 0 },
+    { path: '/history', label: '历史会议', count: 0 },
+    { path: '/drafts', label: '草稿箱', count: draftStore.count },
+    {
+      path: '/inbox',
+      label: '收件箱',
+      count: inboxStore.unreadCount.value,
+    },
+    {
+      path: '/messages',
+      label: '私信',
+      count: messageStore.unreadCount.value,
+    },
+  ]
+
+  /**
+   * 成员管理只对企业空间的管理者显示。
+   *
+   * 个人空间只有自己一个人，放一个入口进去只会看到"就你一个"。
+   * 普通成员也不该看到 —— 那份列表带角色，属于管理信息。
+   */
+  if (canManageMembers.value) {
+    items.push({ path: '/settings/members', label: '成员管理', count: 0 })
+  }
+
+  return items
+})
 
 /* =========================
    左侧登记簿：最近生成的几份纪要
@@ -154,6 +187,23 @@ watch(
     }
   }
 )
+
+/**
+ * 切换空间后重拉侧栏数据。
+ *
+ * router-view 的 key 会让页面组件自己重建，但侧栏的登记簿、草稿数、
+ * 未读角标挂在 App 上，不会跟着重建 —— 不主动刷新就会看到上一个空间的数字。
+ */
+watch(spaceKey, async () => {
+  if (!authStore.isAuthenticated.value) return
+
+  await Promise.all([
+    draftStore.refresh(),
+    inboxStore.refresh(),
+    messageStore.refresh(),
+  ])
+  await loadRecent()
+})
 </script>
 
 <template>
@@ -168,6 +218,9 @@ watch(
           <img class="brand-logo" src="/meetmind-logo.svg" alt="MeetMind" width="111" height="30" />
           <span class="brand-sub">AI 智能会议纪要</span>
         </router-link>
+
+        <!-- 空间切换器：决定下面所有数据属于哪个空间，层级高于导航 -->
+        <TenantSwitcher />
 
         <nav class="nav" aria-label="主导航">
           <router-link
@@ -278,7 +331,7 @@ watch(
             回到该页时计时与转写内容都保持原样。
           -->
           <keep-alive :include="['MinutesInstant']">
-            <component :is="Component" />
+            <component :is="Component" :key="spaceKey" />
           </keep-alive>
         </router-view>
       </main>

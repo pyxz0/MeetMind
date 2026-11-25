@@ -13,8 +13,12 @@ import {
 } from './password-reset-token';
 import { MailService } from '../common/mail.service';
 import type { AuthenticatedUser } from './auth.decorators';
-import type { AppRole } from './permissions';
-import { ROLE_PERMISSIONS, ROLE_LABELS } from './permissions';
+import type {
+  AppRole,
+  TenantRoleName,
+  TenantTypeName,
+} from './permissions';
+import { permissionsOf, ROLE_LABELS } from './permissions';
 import { hashPassword, needsRehash, verifyPassword } from './password-hash';
 
 /**
@@ -51,6 +55,15 @@ export interface PublicUser {
   email: string | null;
   /** 是否接收邮件提醒；站内收件箱不受该开关影响 */
   notifyEmail: boolean;
+  /**
+   * 当前空间。只有登录 / me / 切换空间这类"需要让前端知道我在哪"的接口会带上，
+   * 用户列表之类的场景不传。
+   */
+  activeTenantId?: string;
+  /** 当前空间里的角色；前端据此显示"成员管理"等入口 */
+  tenantRole?: TenantRoleName;
+  /** 空间类型：COMPANY 才显示成员/邀请相关入口 */
+  tenantType?: TenantTypeName;
   permissions: string[];
   createdAt: string;
 }
@@ -78,6 +91,15 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({
       where: { phone: normalizedPhone },
+      include: {
+        memberships: {
+          select: {
+            tenantId: true,
+            role: true,
+            tenant: { select: { type: true } },
+          },
+        },
+      },
     });
 
     /**
@@ -128,7 +150,7 @@ export class AuthService {
         user.phone,
         user.tokenVersion,
       ),
-      user: this.toPublicUser(user),
+      user: this.toPublicUser(user, this.resolveSpace(user)),
     };
   }
 
@@ -171,13 +193,49 @@ export class AuthService {
     let user;
 
     try {
-      user = await this.prisma.user.create({
-        data: {
-          phone,
-          passwordHash,
-          name: name.slice(0, 80),
-          role: 'USER',
-        },
+      /**
+       * 多租户后注册要建三样东西，**顺序不能变**（文档 §6.12）：
+       *
+       *   1. 先建空间（此刻还没有 userId，只能靠入参姓名命名）
+       *   2. 再建用户（active_tenant_id 是 NOT NULL，此时有值可填）
+       *   3. 最后建归属关系
+       *
+       * 反过来会在第 2 步卡住。tenants 表刻意没有 owner_user_id 外键 ——
+       * 那会把这里的循环依赖搬到表结构里，只能用可空外键或延迟约束来解。
+       */
+      user = await this.prisma.$transaction(async (tx) => {
+        const tenant = await tx.tenant.create({
+          data: {
+            name: `${name.slice(0, 80)} 的空间`,
+            type: 'PERSONAL',
+          },
+        });
+
+        const created = await tx.user.create({
+          data: {
+            phone,
+            passwordHash,
+            name: name.slice(0, 80),
+            role: 'USER',
+            activeTenantId: tenant.id,
+          },
+        });
+
+        await tx.membership.create({
+          data: { tenantId: tenant.id, userId: created.id, role: 'OWNER' },
+        });
+
+        /** 带上 memberships，让下面的 toPublicUser 能算出权限，省一次查询 */
+        return {
+          ...created,
+          memberships: [
+            {
+              tenantId: tenant.id,
+              role: 'OWNER',
+              tenant: { type: 'PERSONAL' },
+            },
+          ],
+        };
       });
     } catch (error) {
       if ((error as { code?: string }).code === 'P2002') {
@@ -200,19 +258,30 @@ export class AuthService {
         user.phone,
         user.tokenVersion,
       ),
-      user: this.toPublicUser(user),
+      user: this.toPublicUser(user, this.resolveSpace(user)),
     };
   }
 
   /** 读取当前登录用户（守卫已校验，这里只做视图转换） */
   async getProfile(userId: number): Promise<PublicUser> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        memberships: {
+          select: {
+            tenantId: true,
+            role: true,
+            tenant: { select: { type: true } },
+          },
+        },
+      },
+    });
 
     if (!user || !user.isActive) {
       throw new UnauthorizedException('账号不可用');
     }
 
-    return this.toPublicUser(user);
+    return this.toPublicUser(user, this.resolveSpace(user));
   }
 
   /**
@@ -356,6 +425,15 @@ export class AuthService {
     const updated = await this.prisma.user.update({
       where: { id: userId },
       data,
+      include: {
+        memberships: {
+          select: {
+            tenantId: true,
+            role: true,
+            tenant: { select: { type: true } },
+          },
+        },
+      },
     });
 
     /**
@@ -381,7 +459,7 @@ export class AuthService {
       },
     });
 
-    const view = this.toPublicUser(updated);
+    const view = this.toPublicUser(updated, this.resolveSpace(updated));
 
     /**
      * 改密后旧令牌全部失效，这里给当前会话补发一枚新的，
@@ -402,19 +480,31 @@ export class AuthService {
     return view;
   }
 
-  /** 供其他模块复用：把数据库用户转为不含敏感字段的视图 */
-  toPublicUser(user: {
-    id: number;
-    phone: string;
-    name: string;
-    avatar: string | null;
-    email: string | null;
-    role: string;
-    isActive: boolean;
-    createdAt: Date;
-    /** 旧调用方可能不传，缺省按「开启」处理，与数据库默认值一致 */
-    notifyEmail?: boolean;
-  }): PublicUser {
+  /**
+   * 供其他模块复用：把数据库用户转为不含敏感字段的视图。
+   *
+   * `space` 是当前空间信息。不传时 permissions 只含平台能力 ——
+   * 用户列表这类场景不需要，登录 / me 必须传，否则前端拿不到按钮权限。
+   */
+  toPublicUser(
+    user: {
+      id: number;
+      phone: string;
+      name: string;
+      avatar: string | null;
+      email: string | null;
+      role: string;
+      isActive: boolean;
+      createdAt: Date;
+      /** 旧调用方可能不传，缺省按「开启」处理，与数据库默认值一致 */
+      notifyEmail?: boolean;
+    },
+    space?: {
+      activeTenantId: string;
+      tenantRole: TenantRoleName;
+      tenantType: TenantTypeName;
+    },
+  ): PublicUser {
     const role = user.role as AppRole;
 
     return {
@@ -427,8 +517,49 @@ export class AuthService {
       avatar: user.avatar ?? null,
       email: user.email ?? null,
       notifyEmail: user.notifyEmail ?? true,
-      permissions: ROLE_PERMISSIONS[role] ?? [],
+      permissions: permissionsOf({ role, tenantRole: space?.tenantRole ?? null }),
+      ...(space
+        ? {
+            activeTenantId: space.activeTenantId,
+            tenantRole: space.tenantRole,
+            tenantType: space.tenantType,
+          }
+        : {}),
       createdAt: user.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * 从「用户 + 所属空间」算出当前空间信息。
+   *
+   * 找不到对应 membership 只有两种情况：刚被移出企业、数据不一致。
+   * 这时宁可让登录失败，也不要静默给一份空权限 —— 后者会表现成
+   * 「能登进去但什么都点不了」，排查成本高得多。
+   */
+  private resolveSpace(user: {
+    activeTenantId: string;
+    memberships: Array<{
+      tenantId: string;
+      role: string;
+      tenant: { type: string };
+    }>;
+  }): {
+    activeTenantId: string;
+    tenantRole: TenantRoleName;
+    tenantType: TenantTypeName;
+  } {
+    const membership = user.memberships.find(
+      (m) => m.tenantId === user.activeTenantId,
+    );
+
+    if (!membership) {
+      throw new UnauthorizedException('账号空间异常，请联系管理员');
+    }
+
+    return {
+      activeTenantId: user.activeTenantId,
+      tenantRole: membership.role as TenantRoleName,
+      tenantType: membership.tenant.type as TenantTypeName,
     };
   }
 
@@ -552,7 +683,7 @@ export class AuthService {
     );
 
     await this.audit.record(
-      { id: user.id },
+      { id: user.id, activeTenantId: user.activeTenantId },
       {
         action: 'user.password_reset_request',
         resourceType: 'user',
@@ -646,7 +777,7 @@ export class AuthService {
     });
 
     await this.audit.record(
-      { id: user.id },
+      { id: user.id, activeTenantId: user.activeTenantId },
       {
         action: 'user.password_reset',
         resourceType: 'user',

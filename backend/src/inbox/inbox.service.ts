@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { JobRunService } from '../system/job-run.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
-import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
+import { hasTenantWideMeetingAccess } from '../meetings/meetings.access';
 import { isOverdue } from '../meetings/deadline';
 import { formatCstShort } from '../common/datetime';
 
@@ -210,6 +210,8 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
           id: true,
           title: true,
           scheduledAt: true,
+          /** 通知要跟着会议的归属空间走，收件箱按空间隔离时靠它 */
+          tenantId: true,
           leaders: { select: { userId: true } },
           members: { select: { userId: true } },
         },
@@ -221,6 +223,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
       }
 
       const rows: Array<{
+        tenantId: string;
         userId: number;
         meetingId: number;
         kind: string;
@@ -243,6 +246,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 
         for (const userId of recipients) {
           rows.push({
+            tenantId: meeting.tenantId,
             userId,
             meetingId: meeting.id,
             kind: 'reminder',
@@ -299,6 +303,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
               meeting: {
                 select: {
                   title: true,
+                  tenantId: true,
                   leaders: { select: { userId: true } },
                 },
               },
@@ -329,6 +334,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 
         await this.prisma.meetingNotice.createMany({
           data: targets.map((userId) => ({
+            tenantId: row.todo.meeting.tenantId,
             userId,
             meetingId: row.todo.meetingId,
             kind: 'todo_review_overdue',
@@ -521,7 +527,11 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 
     if (targets.length) {
       await this.prisma.inboxRead.createMany({
-        data: targets.map((itemKey) => ({ userId: user.id, itemKey })),
+        data: targets.map((itemKey) => ({
+          tenantId: user.activeTenantId,
+          userId: user.id,
+          itemKey,
+        })),
         // 重复点击同一条不报错
         skipDuplicates: true,
       });
@@ -707,7 +717,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
   private writableMeetingWhere(
     user: AuthenticatedUser,
   ): Prisma.MeetingWhereInput {
-    if (hasGlobalMeetingAccess(user)) {
+    if (hasTenantWideMeetingAccess(user)) {
       return {};
     }
 
@@ -822,7 +832,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
   private visibleMeetingWhere(
     user: AuthenticatedUser,
   ): Prisma.MeetingWhereInput {
-    if (hasGlobalMeetingAccess(user)) {
+    if (hasTenantWideMeetingAccess(user)) {
       return {};
     }
 

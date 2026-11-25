@@ -15,8 +15,17 @@ export type Permission =
   | 'user:manage'
   | 'user:manage:admin'
   | 'audit:read'
+  | 'system:read'
+  | 'tenant:read'
+  | 'tenant:manage'
 
 export type Role = 'SUPER_ADMIN' | 'ADMIN' | 'USER'
+
+/** 租户内角色，与后端 membership.role 一致 */
+export type TenantRole = 'OWNER' | 'ADMIN' | 'MEMBER'
+
+/** 空间类型：企业 / 个人 */
+export type TenantType = 'PERSONAL' | 'COMPANY'
 
 export interface CurrentUser {
   id: number
@@ -34,6 +43,15 @@ export interface CurrentUser {
   isActive: boolean
   permissions: Permission[]
   createdAt: string
+  /**
+   * 当前浏览的空间。
+   *
+   * 这三个字段只在登录 / `/auth/me` / 切换空间时返回 ——
+   * 用户列表之类的接口不带，所以是可选的。
+   */
+  activeTenantId?: string
+  tenantRole?: TenantRole
+  tenantType?: TenantType
 }
 
 const TOKEN_KEY = 'meetmind.token'

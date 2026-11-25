@@ -11,7 +11,7 @@ import { extname, join } from 'node:path';
 import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
-import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
+import { hasTenantWideMeetingAccess } from '../meetings/meetings.access';
 import {
   buildFileUrl,
   isAllowedFile,
@@ -103,6 +103,14 @@ export class AsrService implements OnModuleInit {
 
     const base = {
       userId: user.id,
+      /**
+       * 转写任务也要记空间归属。
+       *
+       * 不加这一列的话，任务详情接口只判「不是自己的 + 是管理员」，
+       * A 企业的管理员就能读到 B 企业的任务、甚至删掉别人的录音文件。
+       * 它同时是按企业统计 ASR 成本（按分钟计费）的前提。
+       */
+      tenantId: user.activeTenantId,
       filename: filename.slice(0, 255),
       storedPath: file.storedPath,
       sizeBytes: file.sizeBytes,
@@ -222,7 +230,7 @@ export class AsrService implements OnModuleInit {
       throw new NotFoundException('转写任务不存在');
     }
 
-    if (job.userId !== user.id && !hasGlobalMeetingAccess(user)) {
+    if (job.userId !== user.id && !hasTenantWideMeetingAccess(user)) {
       throw new ForbiddenException('无权查看该转写任务');
     }
 
@@ -248,7 +256,7 @@ export class AsrService implements OnModuleInit {
       throw new NotFoundException('转写任务不存在');
     }
 
-    if (job.userId !== user.id && !hasGlobalMeetingAccess(user)) {
+    if (job.userId !== user.id && !hasTenantWideMeetingAccess(user)) {
       throw new ForbiddenException('无权删除该转写任务');
     }
 

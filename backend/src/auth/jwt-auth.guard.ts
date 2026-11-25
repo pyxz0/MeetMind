@@ -15,9 +15,11 @@ import {
   type AuthenticatedUser,
 } from './auth.decorators';
 import {
-  roleHasAnyPermission,
+  hasAnyPermission,
   type AppRole,
   type Permission,
+  type TenantRoleName,
+  type TenantTypeName,
 } from './permissions';
 
 /**
@@ -75,8 +77,13 @@ export class JwtAuthGuard implements CanActivate {
 
     /**
      * 每次请求都回库读用户，而不是只信 JWT 里的角色。
-     * 原因：停用账号或降级角色后，旧 token 必须立刻失效，
+     * 原因：停用账号、降级角色、被移出企业之后，旧 token 必须立刻失效，
      * 否则权限回收要等到 token 过期才生效。
+     *
+     * 多租户后顺带把所属空间一起取出来：
+     * - tenantRole 决定这个人在**当前空间**里能做什么
+     * - memberships 让权限判定能回答「他是不是那场会议所属空间的成员」
+     *   （个人会议的受邀好友不是成员，不能靠 activeTenantId 判断）
      */
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -87,6 +94,14 @@ export class JwtAuthGuard implements CanActivate {
         role: true,
         isActive: true,
         tokenVersion: true,
+        activeTenantId: true,
+        memberships: {
+          select: {
+            tenantId: true,
+            role: true,
+            tenant: { select: { type: true } },
+          },
+        },
       },
     });
 
@@ -106,12 +121,37 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('登录状态已失效，请重新登录');
     }
 
+    const memberships = user.memberships.map((m) => ({
+      tenantId: m.tenantId,
+      role: m.role as TenantRoleName,
+      type: m.tenant.type as TenantTypeName,
+    }));
+
+    const activeMembership = memberships.find(
+      (m) => m.tenantId === user.activeTenantId,
+    );
+
+    /**
+     * 当前空间必须仍然属于他。出现这种情况只有两种可能：
+     * 刚被移出企业、或数据不一致。
+     *
+     * **不静默回落到个人空间** —— 那会让用户看到"我的数据怎么没了"，
+     * 比直接要求重新登录更糟。
+     */
+    if (!activeMembership) {
+      throw new UnauthorizedException('你已不在当前空间，请重新登录');
+    }
+
     const currentUser: AuthenticatedUser = {
       id: user.id,
       phone: user.phone,
       name: user.name,
       role: user.role as AppRole,
       isActive: user.isActive,
+      activeTenantId: user.activeTenantId,
+      tenantRole: activeMembership.role,
+      tenantType: activeMembership.type,
+      memberships,
       ...(impersonatedBy !== undefined ? { impersonatedBy } : {}),
     };
 
@@ -133,7 +173,7 @@ export class JwtAuthGuard implements CanActivate {
 
     if (
       requiredPermissions?.length &&
-      !roleHasAnyPermission(currentUser.role, requiredPermissions)
+      !hasAnyPermission(currentUser, requiredPermissions)
     ) {
       throw new ForbiddenException('当前角色无权执行该操作');
     }

@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
-import { assertCanOwn, hasGlobalMeetingAccess } from './meetings.access';
+import { assertCanOwn, hasTenantWideMeetingAccess } from './meetings.access';
 
 export type SharePermissionInput = 'READ' | 'EDIT';
 
@@ -141,7 +141,7 @@ export class MeetingShareService {
     user: AuthenticatedUser,
   ) {
     const isSelf = targetUserId === user.id;
-    const isPrivileged = hasGlobalMeetingAccess(user);
+    const isPrivileged = hasTenantWideMeetingAccess(user);
 
     if (!isSelf && !isPrivileged) {
       // 非本人操作时要求是会议归属者

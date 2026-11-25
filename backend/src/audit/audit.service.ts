@@ -32,13 +32,24 @@ export class AuditService {
 
   /** 记录一次操作；内部吞掉所有异常 */
   async record(
-    actor: Pick<AuthenticatedUser, 'id' | 'impersonatedBy'> | null,
+    actor:
+      | (Pick<AuthenticatedUser, 'id' | 'impersonatedBy'> & {
+          activeTenantId?: string;
+        })
+      | null,
     entry: AuditEntry,
   ): Promise<void> {
     try {
       await this.prisma.auditLog.create({
         data: {
           actorId: actor?.id ?? null,
+          /**
+           * 系统动作（actor 为 null）没有归属企业，留空。
+           *
+           * 这一列是可空的：硬塞一个租户进去会让那家企业的审计导出里
+           * 混进别人的系统日志。企业视角查询时按 tenantId 过滤，NULL 自然被排除。
+           */
+          tenantId: actor?.activeTenantId,
           impersonatedBy: actor?.impersonatedBy ?? null,
           action: entry.action,
           resourceType: entry.resourceType,

@@ -1,10 +1,25 @@
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class GenerateMeetingDto {
   @IsString()
   @MinLength(1)
   @MaxLength(10000)
   content!: string;
+
+  /**
+   * 生成的会议要落到哪个空间；不传 = 当前空间。
+   *
+   * 和企业/个人会议一样，服务端会校验它是否属于该用户（见 §2.5）。
+   */
+  @IsOptional()
+  @IsUUID('all', { message: 'tenantId 必须是合法的空间 id' })
+  tenantId?: string;
 }
 
 /**

@@ -10,7 +10,8 @@ import {
 import OpenAI from 'openai';
 import { createHash } from 'node:crypto';
 import { NotFoundException } from '@nestjs/common';
-import { hasGlobalMeetingAccess } from '../meetings/meetings.access';
+import { hasTenantWideMeetingAccess } from '../meetings/meetings.access';
+import { resolveMeetingSpace } from '../meetings/meetings.invite';
 import { PrismaService } from '../common/prisma.service';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
 import { cstDayKey } from '../common/datetime';
@@ -36,6 +37,8 @@ export class AiService {
   async generateMeetingSummary(
     content: string,
     user: AuthenticatedUser,
+    /** 会议归属的空间；不传 = 当前空间 */
+    tenantId?: string,
   ) {
     if (!content || !content.trim()) {
       throw new Error('会议内容不能为空');
@@ -60,6 +63,8 @@ export class AiService {
           status: 'PROCESSING',
           // 归属发起该请求的用户，保证生成结果不会跨用户可见
           ownerId: user.id,
+          // 会议归属的空间。由调用方透传（用户在表单里选的），缺省为当前空间。
+          tenantId: tenantId ?? user.activeTenantId,
           // 每场会议至少一位负责人，AI 生成的会议由发起者担任（多负责人是关联表）
           leaders: { create: [{ userId: user.id }] },
         },
@@ -573,12 +578,25 @@ deadline：截止时间
     this.logger.warn(`已清理 ${stale.length} 个中断的生成任务（服务重启）`);
   }
 
-  async startGeneration(content: string, user: AuthenticatedUser) {
+  async startGeneration(
+    content: string,
+    user: AuthenticatedUser,
+    /** 会议要落到哪个空间；不传 = 当前空间 */
+    tenantId?: string,
+  ) {
     const trimmed = content?.trim() ?? '';
 
     if (!trimmed) {
       throw new InternalServerErrorException('会议内容不能为空');
     }
+
+    /**
+     * 先校验空间归属再建任务。
+     *
+     * 任务的 tenantId 必须和它将要创建的会议一致，否则按租户恢复任务时会错位
+     * （见 runGeneration 里的说明）。校验不通过抛 404，不消耗额度。
+     */
+    const space = resolveMeetingSpace(user, tenantId);
 
     this.consumeGenerateQuota(user.id);
 
@@ -613,7 +631,13 @@ deadline：截止时间
         }
 
         const created = await tx.meetingGeneration.create({
-          data: { userId: user.id, contentHash, status: 'PENDING' },
+          // 任务和它将要创建的会议必须同租户，否则按租户恢复任务时会错位
+          data: {
+            userId: user.id,
+            tenantId: space.tenantId,
+            contentHash,
+            status: 'PENDING',
+          },
           select: { id: true, meetingId: true, status: true },
         });
 
@@ -623,7 +647,7 @@ deadline：截止时间
 
     // 后台执行，不阻塞 HTTP 响应；复用的任务不能重复跑
     if (!reused) {
-      void this.runGeneration(generation.id, content, user);
+      void this.runGeneration(generation.id, content, user, space.tenantId);
     }
 
     return { ...generation, reused };
@@ -634,6 +658,8 @@ deadline：截止时间
     generationId: number,
     content: string,
     user: AuthenticatedUser,
+    /** 与任务上的 tenantId 一致，用来创建会议 */
+    tenantId: string,
   ) {
     await this.prisma.meetingGeneration.update({
       where: { id: generationId },
@@ -641,7 +667,7 @@ deadline：截止时间
     });
 
     try {
-      const meeting = await this.generateMeetingSummary(content, user);
+      const meeting = await this.generateMeetingSummary(content, user, tenantId);
 
       await this.prisma.meetingGeneration.update({
         where: { id: generationId },
@@ -686,7 +712,7 @@ deadline：截止时间
       throw new NotFoundException('生成任务不存在');
     }
 
-    if (generation.userId !== user.id && !hasGlobalMeetingAccess(user)) {
+    if (generation.userId !== user.id && !hasTenantWideMeetingAccess(user)) {
       // 与会议一致：无权访问返回 404，避免探测任务是否存在
       throw new NotFoundException('生成任务不存在');
     }

@@ -29,7 +29,7 @@ import { AuditService } from '../audit/audit.service';
 import { PLATFORM_PROVIDER } from '../platforms/platform-core.module';
 import type { MeetingPlatformProvider } from '../platforms/platform-provider';
 import type { AuthenticatedUser } from '../auth/auth.decorators';
-import { PERMISSIONS, roleHasPermission } from '../auth/permissions';
+import { PERMISSIONS, hasPermission } from '../auth/permissions';
 import {
   assertCanManageMembers,
   assertCanOwn,
@@ -37,14 +37,20 @@ import {
   assertCanToggleAudio,
   assertCanWrite,
   computeMeetingCapabilities,
-  hasGlobalMeetingAccess,
+  hasTenantWideMeetingAccess,
   type MeetingAccess,
   type MeetingCapabilities,
 } from './meetings.access';
+import { assertInvitable, resolveMeetingSpace } from './meetings.invite';
 
-/** 是否具备「编辑任意会议」的全局权限 */
-const roleHasUpdateAll = (role: AuthenticatedUser['role']) =>
-  roleHasPermission(role, PERMISSIONS.MEETING_UPDATE_ALL);
+/**
+ * 是否具备「编辑本租户任意会议」的权限。
+ *
+ * 多租户后不能再只看 users.role —— ADMIN 已废弃，这个能力来自
+ * membership.role（OWNER / ADMIN）。所以传整个 user 而不是 role。
+ */
+const roleHasUpdateAll = (user: AuthenticatedUser) =>
+  hasPermission(user, PERMISSIONS.MEETING_UPDATE_ALL);
 
 /** 前端保存纪要时允许提交的字段；标题、决策和待办均可省略。 */
 export interface CreateMeetingInput {
@@ -62,6 +68,11 @@ export interface CreateMeetingInput {
     /** ISO 日期；解析不了的自然语言只保留 deadline 文本 */
     deadlineAt?: string | null;
   }>;
+  /**
+   * 会议归属的空间；不传 = 当前空间。
+   * 服务端会校验是否属于该用户，见 meetings.invite.ts 的 resolveMeetingSpace。
+   */
+  tenantId?: string;
 }
 
 /** 截止日期解析放在 deadline.ts（纯函数、可单测），这里只负责调用 */
@@ -209,6 +220,12 @@ export class MeetingsService {
 
   /** 创建会议并通过嵌套写入原文、摘要、决策和待办，保证一次提交完成。 */
   async create(input: CreateMeetingInput, user: AuthenticatedUser) {
+    /**
+     * 归属空间：调用方指定就校验后使用，否则用当前空间。
+     * 校验不通过抛 404（不泄露该空间是否存在）。
+     */
+    const space = resolveMeetingSpace(user, input.tenantId);
+
     const todos = input.todos ?? [];
 
     /**
@@ -228,6 +245,13 @@ export class MeetingsService {
         status: 'READY',
         // 归属者为当前登录用户，是数据隔离的依据
         ownerId: user.id,
+        /**
+         * 会议归属的空间（文档 §2.5）。
+         *
+         * 由 resolveMeetingSpace 解析：不传 tenantId 就是当前空间，
+         * 传了就校验是否属于该用户。**不能用前端传的值直接落库**。
+         */
+        tenantId: space.tenantId,
         // 「每场会议至少一位负责人」：创建者默认成为首位负责人，后续可追加
         leaders: { create: [{ userId: user.id }] },
         audioOpen: true,
@@ -309,6 +333,8 @@ export class MeetingsService {
     input: {
       title?: string;
       scheduledAt: string;
+      /** 保存到哪个空间；不传 = 当前空间 */
+      tenantId?: string;
       leaderIds?: number[];
       memberIds?: number[];
       platform?: 'tencent';
@@ -335,7 +361,16 @@ export class MeetingsService {
     // 没有指定负责人时由创建者担任，保证「至少一位负责人」
     const finalLeaderIds = leaderIds.length ? leaderIds : [user.id];
 
-    await this.assertUsersUsable([...finalLeaderIds, ...memberIds]);
+    const space = resolveMeetingSpace(user, input.tenantId);
+
+    /**
+     * 邀请范围按会议类型校验（文档 §2.6）：
+     * 企业会议只能拉本企业成员，个人会议只能拉好友。
+     */
+    await assertInvitable(this.prisma, user, space, [
+      ...finalLeaderIds,
+      ...memberIds,
+    ]);
 
     const title = input.title?.trim() || '未命名会议';
 
@@ -403,6 +438,7 @@ export class MeetingsService {
         summary: null,
         status: 'READY',
         ownerId: user.id,
+        tenantId: space.tenantId,
         scheduledAt: when,
         leaders: { create: finalLeaderIds.map((userId) => ({ userId })) },
         members: { create: memberIds.map((userId) => ({ userId })) },
@@ -471,6 +507,10 @@ export class MeetingsService {
         scheduledAt: true,
         externalCode: true,
         externalJoinUrl: true,
+        /** 通知要跟着会议的空间走 */
+        tenantId: true,
+        /** 邀请范围校验需要知道是企业会议还是个人会议 */
+        tenant: { select: { type: true } },
         leaders: { select: { userId: true } },
         members: { select: { userId: true } },
       },
@@ -565,7 +605,22 @@ export class MeetingsService {
       throw new BadRequestException('至少需要一位负责人');
     }
 
-    await this.assertUsersUsable([...nextLeaderIds, ...nextMemberIds]);
+    /**
+     * 邀请范围按**会议已有的空间**校验，不是当前浏览的空间 ——
+     * 用户可能在个人空间里改一场企业会议的成员，那时该按企业规则来。
+     *
+     * 这里刻意不用 resolveMeetingSpace：它要求调用者是该空间成员，
+     * 而改会议的人可能只是这场会议的受邀者（个人会议的好友）。
+     */
+    await assertInvitable(
+      this.prisma,
+      user,
+      {
+        tenantId: current.tenantId,
+        tenantType: current.tenant.type,
+      },
+      [...nextLeaderIds, ...nextMemberIds],
+    );
 
     // ---- 变更摘要，用于消息正文 ----
     const changes: string[] = [];
@@ -686,6 +741,7 @@ export class MeetingsService {
 
     await this.prisma.meetingNotice.createMany({
       data: [...recipients].map((userId) => ({
+        tenantId: current.tenantId,
         userId,
         meetingId: id,
         content: stillParticipating.has(userId)
@@ -735,31 +791,25 @@ export class MeetingsService {
     );
   }
 
-  /** 校验账号存在且未停用，避免把停用账号设为负责人/成员 */
-  private async assertUsersUsable(ids: number[]) {
-    if (!ids.length) return;
+  /**
+   * 原来这里是「账号存在且未停用」的校验。
+   *
+   * 多租户后不能只校验账号本身了 —— 还得看它和会议所属空间的关系
+   * （企业会议只能是本企业成员，个人会议只能是好友）。
+   * 已移到 meetings.invite.ts 的 assertInvitable，这里不再保留旧实现，
+   * 避免有人新加接口时又用回"只要有账号就能拉进会"的版本。
+   */
 
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, isActive: true },
-    });
-
-    if (users.length !== ids.length) {
-      throw new NotFoundException('指定的参会人员中有账号不存在');
-    }
-
-    if (users.some((u) => !u.isActive)) {
-      throw new BadRequestException('指定的参会人员中有账号已被停用');
-    }
-  }
-
-  /** 手动将会议内容保存到草稿箱 */  async createDraft(
-    input: { title?: string; content: string },
+  /** 手动将会议内容保存到草稿箱 */
+  async createDraft(
+    input: { title?: string; content: string; tenantId?: string },
     user: AuthenticatedUser,
   ) {
     if (!input.content?.trim()) {
       throw new BadRequestException('会议内容不能为空');
     }
+
+    const space = resolveMeetingSpace(user, input.tenantId);
 
     const draft = await this.prisma.meeting.create({
       data: {
@@ -770,6 +820,8 @@ export class MeetingsService {
         completionStatus: 'NOT_STARTED',
         // 草稿同样有归属者，否则草稿箱会跨用户可见
         ownerId: user.id,
+        // 草稿也要归属到空间，否则草稿箱会混进其他空间的草稿
+        tenantId: space.tenantId,
         // 草稿也要满足「至少一位负责人」
         leaders: { create: [{ userId: user.id }] },
       },
@@ -1372,8 +1424,8 @@ export class MeetingsService {
     if (row.leaders?.some((l) => l.user.id === user.id)) return 'leader';
     if (row.members?.some((m) => m.user.id === user.id)) return 'member';
     if (row.shares?.some((s) => s.permission === 'EDIT')) return 'edit';
-    if (hasGlobalMeetingAccess(user)) {
-      return roleHasUpdateAll(user.role) ? 'edit' : 'read';
+    if (hasTenantWideMeetingAccess(user)) {
+      return roleHasUpdateAll(user) ? 'edit' : 'read';
     }
 
     return 'read';
@@ -1435,7 +1487,20 @@ export class MeetingsService {
    * 重复添加按幂等处理。
    */
   async addLeader(id: number, leaderUserId: number, user: AuthenticatedUser) {
-    await assertCanManageMembers(this.prisma, user, id);
+    const access = await assertCanManageMembers(this.prisma, user, id);
+
+    /**
+     * 邀请范围按会议类型校验（文档 §2.6）：
+     * 企业会议只能拉本企业成员，个人会议只能拉好友。
+     *
+     * 空间信息直接从权限判定结果里取，不再查一次会议。
+     */
+    await assertInvitable(
+      this.prisma,
+      user,
+      { tenantId: access.tenantId, tenantType: access.tenantType },
+      [leaderUserId],
+    );
 
     const target = await this.prisma.user.findUnique({
       where: { id: leaderUserId },
@@ -1562,7 +1627,15 @@ export class MeetingsService {
     memberUserId: number,
     user: AuthenticatedUser,
   ) {
-    await assertCanManageMembers(this.prisma, user, id);
+    const access = await assertCanManageMembers(this.prisma, user, id);
+
+    /** 同 addLeader：邀请范围由会议类型决定 */
+    await assertInvitable(
+      this.prisma,
+      user,
+      { tenantId: access.tenantId, tenantType: access.tenantType },
+      [memberUserId],
+    );
 
     const target = await this.prisma.user.findUnique({
       where: { id: memberUserId },
@@ -1669,9 +1742,9 @@ export class MeetingsService {
       } else if (meeting.shares?.some((s) => s.permission === 'EDIT')) {
         // 共享明确给了编辑权
         access = 'edit';
-      } else if (hasGlobalMeetingAccess(user)) {
+      } else if (hasTenantWideMeetingAccess(user)) {
         // 管理员及以上，无显式共享时仍可按全局权限编辑
-        access = roleHasUpdateAll(user.role) ? 'edit' : 'read';
+        access = roleHasUpdateAll(user) ? 'edit' : 'read';
       } else {
         access = 'read';
       }

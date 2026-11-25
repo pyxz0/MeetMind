@@ -200,9 +200,9 @@ export class PlatformEventService {
      * 否则会冒出一堆「没有负责人、没有成员」的孤儿会议，
      * 谁都看不到（数据隔离按 owner 判），只是白白占库。
      */
-    const ownerId = await this.resolveOwnerId();
+    const owner = await this.resolveOwnerId();
 
-    if (!ownerId) {
+    if (!owner) {
       this.logger.warn(
         `收到未关联的腾讯会议 ${externalId}，但未配置 TENCENT_MEETING_OWNER_PHONE，跳过新建`,
       );
@@ -216,8 +216,16 @@ export class PlatformEventService {
         content: '',
         summary: null,
         status: 'DRAFT',
-        ownerId,
-        leaders: { create: [{ userId: ownerId }] },
+        ownerId: owner.id,
+        /**
+         * 平台回调**没有登录上下文**，Prisma 扩展不会注入 tenantId，
+         * 而该列 NOT NULL —— 不显式给就会全线失败（腾讯会议同步不进来）。
+         *
+         * 归属规则：会议跟着配置的那个归属人走，落在他的当前空间里。
+         * 他后来换了企业的话，新同步的会议进新企业，历史会议留在原企业。
+         */
+        tenantId: owner.tenantId,
+        leaders: { create: [{ userId: owner.id }] },
         sourcePlatform: 'tencent',
         externalId,
         externalJoinUrl: joinUrl || null,
@@ -342,7 +350,10 @@ export class PlatformEventService {
   }
 
   /** 归属人：配置的手机号；用于接收「直接在腾讯会议开的会」 */
-  private async resolveOwnerId(): Promise<number | null> {
+  private async resolveOwnerId(): Promise<{
+    id: number;
+    tenantId: string;
+  } | null> {
     const phone = process.env.TENCENT_MEETING_OWNER_PHONE?.trim();
 
     if (!phone) {
@@ -351,10 +362,12 @@ export class PlatformEventService {
 
     const user = await this.prisma.user.findUnique({
       where: { phone },
-      select: { id: true, isActive: true },
+      select: { id: true, isActive: true, activeTenantId: true },
     });
 
-    return user?.isActive ? user.id : null;
+    return user?.isActive
+      ? { id: user.id, tenantId: user.activeTenantId }
+      : null;
   }
 
   /** 不同事件的字段名不完全一致，按候选列表取第一个有效值 */

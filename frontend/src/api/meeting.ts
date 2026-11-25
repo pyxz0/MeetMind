@@ -2,6 +2,8 @@ import api from './http'
 
 export interface GenerateMeetingRequest {
   content: string
+  /** 会议归属的空间；不传 = 当前空间 */
+  tenantId?: string
 }
 
 /** 待办最近一次提交的摘要（详情接口附带，完整时间线走独立接口） */
@@ -836,6 +838,8 @@ export const createDraftMeeting = async (
   data: {
     title?: string
     content: string
+    /** 草稿归属的空间；不传 = 当前空间 */
+    tenantId?: string
   }
 ): Promise<MeetingRecord> => {
   const response = await api.post<any>(
@@ -910,6 +914,8 @@ export const uploadMeetingAudio = async (
 export const createScheduledMeeting = async (data: {
   title?: string
   scheduledAt: string
+  /** 会议归属的空间；不传 = 当前空间 */
+  tenantId?: string
   leaderIds?: number[]
   memberIds?: number[]
   /** 同时到会议平台建会；不传表示只记在 MeetMind */

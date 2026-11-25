@@ -30,8 +30,8 @@ export class UsersController {
    * 必须声明在 `:id` 相关路由之前，避免被当成 id 参数解析。
    */
   @Get('contacts')
-  contacts() {
-    return this.usersService.listContacts();
+  contacts(@CurrentUser() user: AuthenticatedUser) {
+    return this.usersService.listContacts(user);
   }
 
   /**

@@ -45,12 +45,38 @@ enum SubmissionStatus {
   WITHDRAWN
 }
 
-/// 用户角色，三级分级。
-/// SUPER_ADMIN 管理管理员与系统；ADMIN 管理普通用户与全部会议；USER 只能管理自己的数据。
+/// 用户角色（**平台层**），与租户层角色 TenantRole 是两个维度，不要合并。
+///
+/// - SUPER_ADMIN：平台运维，开租户、看租户清单，默认无权读任何企业的会议
+/// - ADMIN：**已废弃**。多租户之前它是"能看全部会议的管理员"，
+///   现在这个职责由 membership.role = ADMIN 承担；存量数据由迁移降级为 USER
+/// - USER：普通平台账号
 enum Role {
   SUPER_ADMIN
   ADMIN
   USER
+}
+
+/// 租户类型。
+///
+/// - PERSONAL：注册时自动创建，一人一个，只有本人
+/// - COMPANY：企业空间，可邀请成员
+///
+/// 个人空间也是租户，这样所有数据模型统一：Meeting.tenantId 永不为空，
+/// 查询不用写"有租户/没租户"两套分支。
+enum TenantType {
+  PERSONAL
+  COMPANY
+}
+
+/// 租户内角色。决定这个人在**这个空间里**能做什么。
+enum TenantRole {
+  /// 创建者/所有者：可转让、可解散、可管 ADMIN
+  OWNER
+  /// 管理员：可管成员、可看本租户全部会议
+  ADMIN
+  /// 成员：只能看自己相关（拥有/负责/参与/被共享）的会议
+  MEMBER
 }
 
 /// 私信消息类型。
@@ -66,6 +92,12 @@ enum MessageKind {
 /// actor 可空：账号被删除后历史记录仍需保留（外键 SET NULL）。
 model AuditLog {
   id             Int      @id @default(autoincrement())
+  /// 所属租户。
+  ///
+  /// **可空**：系统级动作（定时任务、平台回调）没有操作者，本来就不属于任何企业。
+  /// 硬塞一个租户进去，会让那家企业的审计导出里混进别人的系统日志。
+  /// 企业视角查审计时按 `tenantId = X` 过滤，NULL 行自然被排除。
+  tenantId       String?  @map("tenant_id") @db.Uuid
   /// 操作者；账号被删后置空
   actorId        Int?     @map("actor_id")
   /// 代登场景下的真实操作者
@@ -82,11 +114,13 @@ model AuditLog {
   ip             String?  @db.VarChar(64)
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actor  User?  @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
   @@index([createdAt(sort: Desc)])
   @@index([actorId])
   @@index([resourceType, resourceId])
+  @@index([tenantId, createdAt(sort: Desc)])
   @@map("audit_logs")
 }
 
@@ -103,6 +137,109 @@ enum GenerationStatus {
 enum SharePermission {
   READ
   EDIT
+}
+
+/// 租户 = 一个工作空间。企业是 COMPANY，个人空间是 PERSONAL。
+///
+/// 设计要点见 docs/multi-tenant-plan-v2.md：
+/// - id 用 UUID 而不是自增，因为租户 id 会出现在 URL、日志、审计里，
+///   自增会暴露平台上有多少客户
+/// - 归属关系放在 memberships，这里**不要**加 ownerUserId 外键 ——
+///   那会让"先建空间还是先建用户"变成循环依赖（见文档 §6.12）
+model Tenant {
+  id         String     @id @default(uuid()) @db.Uuid
+  name       String     @db.VarChar(120)
+  type       TenantType @default(COMPANY)
+  /// feishu / wecom / tencent / standalone
+  platform   String     @default("standalone") @db.VarChar(32)
+  /// 平台侧企业标识（飞书 tenant_key、企微 corpid）；standalone 为空
+  externalId String?    @map("external_id") @db.VarChar(120)
+  /// ACTIVE / SUSPENDED
+  status     String     @default("ACTIVE") @db.VarChar(20)
+  plan       String     @default("free") @db.VarChar(32)
+  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  memberships Membership[]
+  meetings    Meeting[]
+  /// 把这里当作"当前空间"的用户
+  activeUsers User[]         @relation("ActiveTenant")
+  invites     TenantInvite[]
+
+  /// 租户维度的侧表（子表如 todos/decisions 不直接挂租户，经会议继承）
+  auditLogs          AuditLog[]
+  asrJobs            AsrJob[]
+  meetingGenerations MeetingGeneration[]
+  meetingNotices     MeetingNotice[]
+  inboxReads         InboxRead[]
+
+  /// 同一平台的企业只能装一次；standalone 的 external_id 为 NULL，
+  /// PG 唯一索引允许多个 NULL，不影响自建租户
+  @@unique([platform, externalId])
+  @@index([type])
+  @@map("tenants")
+}
+
+/// 用户与租户的归属关系。
+///
+/// 产品约束（应用层，不在库里）：一个用户最多一条 COMPANY membership。
+/// 放在应用层是为了将来放开"一人多企业"时只改一个判断，不用改表。
+model Membership {
+  id        Int        @id @default(autoincrement())
+  tenantId  String     @map("tenant_id") @db.Uuid
+  userId    Int        @map("user_id")
+  role      TenantRole @default(MEMBER)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("memberships")
+}
+
+/// 邀请链接。Phase 3 才用，建表放在第一版迁移里，
+/// 避免后面再动一次 tenants 相关的外键。
+model TenantInvite {
+  id        Int        @id @default(autoincrement())
+  tenantId  String     @map("tenant_id") @db.Uuid
+  /// 邀请令牌的 SHA-256（只存哈希，与 password_reset_token 一致）
+  tokenHash String     @unique @map("token_hash") @db.VarChar(64)
+  /// 指定手机号时只有该号能接受；为空表示拿到链接的人都能用
+  phone     String?    @db.VarChar(20)
+  role      TenantRole @default(MEMBER)
+  maxUses   Int        @default(1) @map("max_uses")
+  usedCount Int        @default(0) @map("used_count")
+  expiresAt DateTime   @map("expires_at") @db.Timestamptz(3)
+  createdBy Int        @map("created_by")
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("tenant_invites")
+}
+
+/// 好友关系。个人会议只能邀请好友，这张表就是依据（见文档 §2.6）。
+///
+/// 双向存两行：A→B 和 B→A。查「我的好友」是一句 where: { userId: me }，
+/// 不用 OR；加好友、删好友都在同一事务里写/删两行，不会出现单向脏数据。
+///
+/// 目前不做"申请-同意"审批：会议邀请本身就是一次告知，再加审批是双重摩擦。
+/// 将来真出现骚扰，加一个 status 字段即可，表结构不用改。
+model Friendship {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  friendId  Int      @map("friend_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user   User @relation("FriendOwner", fields: [userId], references: [id], onDelete: Cascade)
+  friend User @relation("FriendTarget", fields: [friendId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendId])
+  @@index([friendId])
+  @@map("friendships")
 }
 
 /// 系统用户。密码只保存 bcrypt 哈希，永不落库明文。
@@ -149,6 +286,20 @@ model User {
   passwordResetExpiresAt DateTime? @map("password_reset_expires_at") @db.Timestamptz(3)
   /// 令牌版本：改密或重置密码后自增，令已签发的 JWT 立即失效
   tokenVersion           Int       @default(0) @map("token_version")
+
+  /// 当前浏览的空间，也是创建会议时的**默认**归属（表单里可以改，见文档 §2.5）。
+  ///
+  /// 它不是"归属"——归属看 memberships；也不是"会议归属"——那由 meeting.tenantId 决定。
+  /// 每次请求由守卫回库读出，不进 JWT，理由见文档 §4.1。
+  activeTenantId String @map("active_tenant_id") @db.Uuid
+  activeTenant   Tenant @relation("ActiveTenant", fields: [activeTenantId], references: [id], onDelete: Restrict)
+
+  /// 该用户属于哪些空间（个人空间 + 企业空间）
+  memberships Membership[]
+
+  /// 好友关系（双向各存一行，见 Friendship）
+  friendshipsGiven    Friendship[] @relation("FriendOwner")
+  friendshipsReceived Friendship[] @relation("FriendTarget")
 
   /// 自己创建的会议。
   meetings           Meeting[]           @relation("MeetingOwner")
@@ -197,6 +348,8 @@ model User {
   messagesSent Message[]            @relation("MessageSender")
 
   @@index([role])
+  /// 守卫按"当前空间"派生权限时会用到，也方便按空间统计用户数
+  @@index([activeTenantId])
   @@map("users")
 }
 
@@ -206,6 +359,9 @@ model User {
 /// 失败后也没有可追踪的状态。改为「建任务 → 后台执行 → 前端轮询」。
 model MeetingGeneration {
   id          Int              @id @default(autoincrement())
+  /// 所属租户。任务先于会议创建，所以不能等会议建好再推导。
+  /// AI 生成的会议归哪个空间，任务就要记哪个空间，否则按租户恢复任务时会错位。
+  tenantId    String           @map("tenant_id") @db.Uuid
   /// 发起人，用于权限校验与重复提交判定
   userId      Int              @map("user_id")
   /// 会议 id：任务开始时会议尚未创建，因此可空
@@ -221,9 +377,11 @@ model MeetingGeneration {
 
   user    User     @relation("GenerationOwner", fields: [userId], references: [id], onDelete: Cascade)
   meeting Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([userId, status])
   @@index([meetingId])
+  @@index([tenantId, status])
   @@map("meeting_generations")
 }
 
@@ -234,6 +392,8 @@ model MeetingGeneration {
 /// 收件箱会把这类消息与派生通知合并展示。
 model MeetingNotice {
   id        Int       @id @default(autoincrement())
+  /// 所属租户；收件箱按租户推送与统计
+  tenantId  String    @map("tenant_id") @db.Uuid
   userId    Int       @map("user_id")
   meetingId Int       @map("meeting_id")
   /// 消息正文，已按收件人视角写好（如「你已被移出会议」）
@@ -247,10 +407,12 @@ model MeetingNotice {
 
   user    User    @relation("NoticeRecipient", fields: [userId], references: [id], onDelete: Cascade)
   meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt(sort: Desc)])
   /// 出站扫描：只找还没发出去的
   @@index([emailedAt, createdAt])
+  @@index([tenantId, userId, createdAt(sort: Desc)])
   @@map("meeting_notices")
 }
 
@@ -260,15 +422,19 @@ model MeetingNotice {
 /// 因此按 item_key 记录已读，支持点击某条通知后它立刻变为已读。
 /// item_key 由通知类型 + 会议 id 组成，稳定可复现。
 model InboxRead {
-  id      Int      @id @default(autoincrement())
-  userId  Int      @map("user_id")
-  itemKey String   @map("item_key") @db.VarChar(120)
-  readAt  DateTime @default(now()) @map("read_at") @db.Timestamptz(3)
+  id       Int      @id @default(autoincrement())
+  /// 所属租户；已读状态跟着空间走
+  tenantId String   @map("tenant_id") @db.Uuid
+  userId   Int      @map("user_id")
+  itemKey  String   @map("item_key") @db.VarChar(120)
+  readAt   DateTime @default(now()) @map("read_at") @db.Timestamptz(3)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([userId, itemKey])
   @@index([userId])
+  @@index([tenantId, userId])
   @@map("inbox_reads")
 }
 
@@ -360,6 +526,17 @@ model Meeting {
 
   completionStatus MeetingCompletionStatus @default(NOT_STARTED)
 
+  /// 会议归属的租户（企业空间或个人空间）。
+  ///
+  /// **必须显式存在**，不能靠 owner.activeTenantId 推导：用户离职后会议留在企业，
+  /// 推导会跟着人跑。取值来自创建时选择的 tenantId（缺省为 active_tenant_id），
+  /// 见文档 §2.5。
+  ///
+  /// 注意它是**数据归属**，不是访问边界。访问边界 = 租户成员身份 + 参与者关系，
+  /// 因为个人会议的受邀好友本来就不属于这个租户（文档 §6.2）。
+  tenantId String @map("tenant_id") @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
   /// 会议归属者。所有数据隔离都以该字段为准：
   /// 用户只能看到自己拥有的、或被共享给自己的会议。
   ownerId Int  @map("owner_id")
@@ -418,6 +595,11 @@ model Meeting {
   @@index([pinnedAt(sort: Desc)])
   /// 数据隔离的核心查询：按归属者过滤列表。
   @@index([ownerId, createdAt(sort: Desc)])
+  /// 租户维度：多租户后所有列表查询的第一维，复合索引把 tenant_id 放最左
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([tenantId, ownerId, createdAt(sort: Desc)])
+  @@index([tenantId, pinnedAt(sort: Desc)])
+  @@index([tenantId, scheduledAt])
   /// 收件箱提醒要按开会时间扫描。
   @@index([scheduledAt])
   @@map("meetings")
@@ -592,6 +774,12 @@ model TodoCheckItem {
 /// 失败的任务也不该污染会议表。
 model AsrJob {
   id             Int      @id @default(autoincrement())
+  /// 所属租户。
+  ///
+  /// 这一列不是可选的：转写任务详情接口原来只判「不是自己的 + 是管理员」，
+  /// 没有租户维度时，A 企业的管理员能读到 B 企业的任务、甚至删掉别人的录音文件。
+  /// 加列同时是按企业统计 ASR 成本（按分钟计费）的前提。
+  tenantId       String   @map("tenant_id") @db.Uuid
   userId         Int      @map("user_id")
   /// 原始文件名，用于展示与预填会议标题
   filename       String   @db.VarChar(255)
@@ -612,9 +800,11 @@ model AsrJob {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user User @relation("AsrJobUser", fields: [userId], references: [id], onDelete: Cascade)
+  user   User   @relation("AsrJobUser", fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+  @@index([tenantId, userId])
   @@map("asr_jobs")
 }
 

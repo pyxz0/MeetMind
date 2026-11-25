@@ -15,6 +15,8 @@ import LoginView from '../views/LoginView.vue'
 import ResetPasswordView from '../views/ResetPasswordView.vue'
 import ForgotPasswordView from '../views/ForgotPasswordView.vue'
 import UsersView from '../views/UsersView.vue'
+import MembersView from '../views/MembersView.vue'
+import JoinView from '../views/JoinView.vue'
 import ProfileView from '../views/ProfileView.vue'
 import { authStore, type Permission } from '../stores/auth'
 
@@ -170,6 +172,34 @@ const router = createRouter({
       name: 'users',
       component: UsersView,
       meta: { permissions: ['user:read'] },
+    },
+
+    {
+      /**
+       * 成员管理：管"谁在这个空间里"（角色、移出）。
+       *
+       * 与 /users 分开：那边管账号（建号、密码、停用），
+       * 混在一起用户分不清"删除"到底是删账号还是移出企业。
+       *
+       * 还需要 user:manage 权限 —— 只有空间 OWNER / ADMIN 有。
+       */
+      path: '/settings/members',
+      name: 'members',
+      component: MembersView,
+      meta: { permissions: ['user:manage'] },
+    },
+
+    {
+      /**
+       * 接受邀请。
+       *
+       * **不要求登录**：先让人看到"你被邀请加入某某公司"，
+       * 再引导去登录/注册。要求先登录的话，用户根本不知道这个链接是干什么的。
+       */
+      path: '/join/:token',
+      name: 'join',
+      component: JoinView,
+      meta: { requiresAuth: false },
     },
 
     {

@@ -25,7 +25,7 @@ export class AiController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     // 立即返回任务 id，前端轮询进度，避免长请求超时
-    return this.aiService.startGeneration(dto.content, user);
+    return this.aiService.startGeneration(dto.content, user, dto.tenantId);
   }
 
   /** 查询生成进度 */

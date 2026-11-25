@@ -14,6 +14,8 @@ import { UsersModule } from './users/users.module'
 import { InboxModule } from './inbox/inbox.module'
 import { MessagesModule } from './messages/messages.module'
 import { AuditModule } from './audit/audit.module'
+import { FriendsModule } from './friends/friends.module'
+import { TenantsModule } from './tenants/tenants.module'
 import { NotificationsModule } from './notifications/notifications.module'
 import { PlatformModule } from './platforms/platform.module'
 import { SystemModule } from './system/system.module'
@@ -35,6 +37,10 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard'
     InboxModule,
     MessagesModule,
     AuditModule,
+    // 好友关系：个人会议只能邀请好友（文档 §2.6）
+    FriendsModule,
+    // 工作空间：创建企业、成员管理、切换空间
+    TenantsModule,
     AiModule,
     MeetingsModule,
     AsrModule,

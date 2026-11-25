@@ -1,28 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { createScheduledMeeting, getPlatformStatus, type PlatformStatus } from '../api/meeting'
 import { listContacts, type Contact } from '../api/auth'
+import { listFriends } from '../api/friends'
+import { listMyTenants, type MyTenant } from '../api/tenants'
+import { authStore } from '../stores/auth'
 
 const router = useRouter()
-
-const contacts = ref<Contact[]>([])
-const contactsLoading = ref(false)
-
-const loadContacts = async () => {
-  if (contacts.value.length) return
-
-  contactsLoading.value = true
-
-  try {
-    contacts.value = await listContacts()
-  } catch {
-    contacts.value = []
-  } finally {
-    contactsLoading.value = false
-  }
-}
 
 /* ---------- 临时会议 ---------- */
 
@@ -36,6 +22,13 @@ const startInstant = () => {
 const form = reactive({
   title: '',
   scheduledAt: '' as string | number | Date | '',
+  /**
+   * 会议归属的空间。
+   *
+   * 默认 = 当前浏览的空间（空串表示交给后端按当前空间处理）。
+   * 只有多于一个空间时才显示选择器 —— 只有一个还让选是多余的一步。
+   */
+  tenantId: '',
   leaderIds: [] as number[],
   memberIds: [] as number[],
   /** 是否同时到腾讯会议建会 */
@@ -43,6 +36,87 @@ const form = reactive({
   /** 手动填写的会议号 / 入会链接 / 整段邀请文本 */
   joinText: '',
 })
+
+/** 我所属的空间；只有一个时不显示选择器 */
+const tenants = ref<MyTenant[]>([])
+
+const loadTenants = async () => {
+  if (!authStore.isAuthenticated.value) return
+
+  try {
+    tenants.value = await listMyTenants()
+
+    /**
+     * 默认选中当前空间，而不是留空显示 placeholder。
+     *
+     * 让用户一眼看到"这场会会落到哪"，比一个「请选择」更明确 ——
+     * 这个选择会影响谁能在列表里看到这场会。
+     */
+    const active = tenants.value.find((item) => item.isActive)
+
+    if (active && !form.tenantId) {
+      form.tenantId = active.id
+    }
+  } catch {
+    tenants.value = []
+  }
+}
+
+/** 选择器的选项文案：带上类型，避免两个同名空间分不清 */
+const tenantLabel = (item: MyTenant) =>
+  `${item.name}（${item.type === 'COMPANY' ? '企业' : '个人'}）`
+
+/** 当前选中的空间 */
+const selectedTenant = computed(
+  () => tenants.value.find((item) => item.id === form.tenantId) ?? null,
+)
+
+/* ---------- 参会人候选 ---------- */
+
+const contacts = ref<Contact[]>([])
+const contactsLoading = ref(false)
+
+/**
+ * 参会人候选跟着「保存到」的空间走。
+ *
+ * 企业会议只能拉本企业成员，个人会议只能拉好友（后端会拒，见文档 §2.6）。
+ * 但前端不该先给出一份用不了的名单 —— 让人挑完、提交、再吃 400 是最差的体验。
+ */
+const loadContacts = async () => {
+  if (!authStore.isAuthenticated.value) return
+
+  contactsLoading.value = true
+
+  try {
+    contacts.value =
+      selectedTenant.value?.type === 'PERSONAL'
+        ? (await listFriends()).map((friend) => ({
+            id: friend.id,
+            name: friend.name,
+            phone: friend.phone,
+          }))
+        : await listContacts()
+  } catch {
+    contacts.value = []
+  } finally {
+    contactsLoading.value = false
+  }
+}
+
+/**
+ * 换空间就换一份候选名单。
+ *
+ * 已选的人一并清空：他们在新空间里多半不适用（企业同事不是好友，
+ * 好友也可能不是企业成员），留着只会在提交时被后端拒掉。
+ */
+watch(
+  () => form.tenantId,
+  () => {
+    form.leaderIds = []
+    form.memberIds = []
+    void loadContacts()
+  }
+)
 
 /**
  * 会议平台接入状态。
@@ -86,6 +160,8 @@ const submit = async () => {
     const meeting = await createScheduledMeeting({
       title: form.title.trim() || undefined,
       scheduledAt: when.toISOString(),
+      // 空串交给后端按当前空间处理，避免这里自己猜默认值
+      tenantId: form.tenantId || undefined,
       leaderIds: form.leaderIds,
       memberIds: form.memberIds,
       platform:
@@ -115,7 +191,20 @@ const submit = async () => {
   }
 }
 
-onMounted(loadContacts)
+/**
+ * 顺序有讲究：先拿到空间列表，才知道该用「企业成员」还是「好友」作候选。
+ *
+ * 正常情况下 loadTenants 会给 form.tenantId 赋上当前空间，watch 随即拉一次候选；
+ * 只有拿不到空间（异常）时才在这里兜底拉一次。
+ */
+onMounted(async () => {
+  await loadTenants()
+
+  if (!form.tenantId) {
+    await loadContacts()
+  }
+})
+
 onMounted(loadPlatform)
 </script>
 
@@ -168,6 +257,21 @@ onMounted(loadPlatform)
           </p>
 
           <el-form label-position="top" class="mode-fields">
+            <!--
+              只有多个空间时才显示：只有一个还让选是多余的一步。
+              这个选择决定会议归属，也决定谁能看到它。
+            -->
+            <el-form-item v-if="tenants.length > 1" label="保存到">
+              <el-select v-model="form.tenantId" style="width: 100%">
+                <el-option
+                  v-for="item in tenants"
+                  :key="item.id"
+                  :label="tenantLabel(item)"
+                  :value="item.id"
+                />
+              </el-select>
+            </el-form-item>
+
             <el-form-item label="会议主题">
               <el-input v-model="form.title" maxlength="200" placeholder="不填则使用「未命名会议」" />
             </el-form-item>
